@@ -11,6 +11,8 @@
 #include <FilterInterfaces.h>
 #include <IVideoRenderer.h>
 #include <LAVAudioSettings.h>
+#include <atlstr.h>
+#include "MpcAudioRenderer/IMpcAudioRenderer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -26,6 +28,7 @@ const CLSID CLSID_MPCVR = {0x71F080AA, 0x8661, 0x4093, {0xB1, 0x5E, 0x4F, 0x69, 
 const CLSID CLSID_LAVSplitter = {0x171252A0, 0x8820, 0x4AFE, {0x9D, 0xF8, 0x5C, 0x92, 0xB2, 0xD6, 0x6B, 0x04}};
 const CLSID CLSID_LAVVideo = {0xEE30215D, 0x164F, 0x4A92, {0xA4, 0xEB, 0x9D, 0x4C, 0x13, 0x39, 0x0F, 0x9F}};
 const CLSID CLSID_LAVAudio = {0xE8E73B6B, 0x4CB3, 0x44A4, {0xBE, 0x99, 0x4F, 0x7B, 0xCB, 0x96, 0xE4, 0x91}};
+const CLSID CLSID_MpcAudioRenderer = {0x601d2a2b, 0x9cde, 0x40bd, {0x86, 0x50, 0x04, 0x85, 0xe3, 0x52, 0x27, 0x27}};
 
 CComPtr<IPin> FindPin(const CComPtr<IBaseFilter>& filter, PIN_DIRECTION dir)
 {
@@ -337,6 +340,23 @@ HRESULT MpcPlayer::ApplyBitstreamConfig()
     las->SetBitstreamConfig(Bitstream_DTS,    on && bitstream_.dts    ? TRUE : FALSE);
     las->SetBitstreamConfig(Bitstream_DTSHD,  on && bitstream_.dtsHd  ? TRUE : FALSE);
     las->SetDTSHDFraming(on && bitstream_.dtsHdFraming ? TRUE : FALSE);
+    // Keep the audio renderer in sync (mode change while playing).
+    ApplyRendererConfig();
+    return S_OK;
+}
+
+HRESULT MpcPlayer::SetAudioDevice(const std::wstring& endpointId, const std::wstring& endpointName)
+{
+    audioDeviceId_ = endpointId;
+    audioDeviceName_ = endpointName;
+    if (!graph_ || !audioRenderer_) return S_OK;  // stored now, applied at ConnectAudio
+    return ApplyRendererConfig();
+}
+
+HRESULT MpcPlayer::GetAudioDevice(std::wstring& endpointId, std::wstring& endpointName) const
+{
+    endpointId = audioDeviceId_;
+    endpointName = audioDeviceName_;
     return S_OK;
 }
 
@@ -413,9 +433,17 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
 
     HRESULT hrB = graph_->AddFilter(audioDecoder, L"LAV Audio");
     CComPtr<IBaseFilter> audioRenderer;
-    HRESULT hrC = audioRenderer.CoCreateInstance(CLSID_DSoundRender);
+    // Prefer the registered MpcAudioRenderer (WASAPI device routing + bitstream).
+    // Falls back to the system DirectSound renderer when it is not registered.
+    HRESULT hrC = audioRenderer.CoCreateInstance(CLSID_MpcAudioRenderer);
+    audioRendererIsMpcAudio_ = SUCCEEDED(hrC);
+    if (FAILED(hrC)) {
+        audioRendererIsMpcAudio_ = false;
+        hrC = audioRenderer.CoCreateInstance(CLSID_DSoundRender);
+    }
     std::cout << "[AUDIO] AddFilter LAVAudio hr=0x" << std::hex << (unsigned long)hrB
-              << " CoCreate DSound hr=0x" << (unsigned long)hrC << std::dec << "\n";
+              << " CoCreate(renderer=" << (audioRendererIsMpcAudio_ ? "MpcAudioRenderer" : "DSound")
+              << ") hr=0x" << (unsigned long)hrC << std::dec << "\n";
     if (FAILED(hrB) || FAILED(hrC)) {
         if (SUCCEEDED(hrB)) graph_->RemoveFilter(audioDecoder);
         return S_FALSE;
@@ -447,7 +475,29 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
         return S_FALSE;
     }
     audioRenderer_ = audioRenderer;
+    // Apply mode + device to the audio renderer NOW (before Run), then hand the
+    // LAV decoder its bitstream config so both halves agree on the output.
+    ApplyRendererConfig();
     return S_OK;
+}
+
+HRESULT MpcPlayer::ApplyRendererConfig()
+{
+    if (!audioRenderer_) return S_FALSE;
+    CComQIPtr<IMpcAudioRendererFilter> mar = audioRenderer_;
+    if (!mar) return S_FALSE;
+
+    const bool bitstream = audioMode_ == AudioMode::Bitstream;
+    mar->SetWasapiMode(bitstream ? MODE_WASAPI_EXCLUSIVE_BITSTREAM : MODE_WASAPI_SHARED);
+    mar->SetBitExactOutput(bitstream ? TRUE : FALSE);
+    if (!audioDeviceId_.empty()) {
+        mar->SetDeviceId(CString(audioDeviceId_.c_str()), CString(audioDeviceName_.c_str()));
+    }
+    const HRESULT hr = mar->Apply();
+    std::cout << "[AUDIO] renderer cfg mode=" << (bitstream ? "bitstream" : "shared")
+              << " device='" << Utf8(audioDeviceName_) << "' apply=0x"
+              << std::hex << (unsigned long)hr << std::dec << "\n";
+    return hr;
 }
 
 HRESULT MpcPlayer::BuildGraph(std::wstring_view source)

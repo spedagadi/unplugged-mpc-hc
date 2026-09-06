@@ -1091,6 +1091,7 @@ STDMETHODIMP CMpcAudioRenderer::GetPages(CAUUID* pPages)
 {
 	CheckPointer(pPages, E_POINTER);
 
+#ifndef MPC_AX_NO_PROPERTY_PAGE
 	BOOL bShowStatusPage = m_pInputPin && m_pInputPin->IsConnected();
 
 	pPages->cElems = bShowStatusPage ? 2 : 1;
@@ -1103,12 +1104,21 @@ STDMETHODIMP CMpcAudioRenderer::GetPages(CAUUID* pPages)
 	}
 
 	return S_OK;
+#else
+	// MPC_AX_NO_PROPERTY_PAGE: the .ax build strips the mpc-hc property pages
+	// (they drag the whole app theme). No pages exposed — the shell drives the
+	// renderer through IMpcAudioRendererFilter instead.
+	pPages->cElems = 0;
+	pPages->pElems = nullptr;
+	return S_OK;
+#endif
 }
 
 STDMETHODIMP CMpcAudioRenderer::CreatePage(const GUID& guid, IPropertyPage** ppPage)
 {
 	CheckPointer(ppPage, E_POINTER);
 
+#ifndef MPC_AX_NO_PROPERTY_PAGE
 	if (*ppPage != nullptr) {
 		return E_INVALIDARG;
 	}
@@ -1122,6 +1132,9 @@ STDMETHODIMP CMpcAudioRenderer::CreatePage(const GUID& guid, IPropertyPage** ppP
 	}
 
 	return *ppPage ? S_OK : E_FAIL;
+#else
+	return E_NOTIMPL;
+#endif
 }
 
 // === IMpcAudioRendererFilter

@@ -1,0 +1,6 @@
+C:\Code\mpc-hc\tools\mpc_audio_ax\audio_register.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\audio_register.obj
+C:\Code\mpc-hc\tools\mpc_audio_ax\ax_app.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\ax_app.obj
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\MpcAudioRenderer.obj
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\AudioDevice.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\AudioDevice.obj
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\AudioSyncClock.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\AudioSyncClock.obj
+C:\Code\mpc-hc\src\thirdparty\BaseClasses\dllentry.cpp;C:\Code\mpc-hc\tools\mpc_audio_ax\mpc_audio_ax\x64\Release\dllentry.obj

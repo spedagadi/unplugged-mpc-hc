@@ -786,9 +786,10 @@ void PaintSysRow(HDC dc, int y, int w, const Row& r) {
 // Right-panel tab + System icon rail + rows.
 // ── Playback sheet: streams / audio device / hardware ──────────────────────
 enum class PlayRowKind { Video = 0, Audio = 1, Subtitle = 2, AudioDevice = 3 };
-struct PlayRow { PlayRowKind kind; int index; std::wstring label; bool active; RECT rc; };
+struct PlayRow { PlayRowKind kind; int index; std::wstring label; std::wstring id; bool active; RECT rc; };
 std::vector<PlayRow> g_playRows;
 std::wstring g_hwLine;
+std::wstring g_selAudioDeviceId, g_selAudioDeviceName;
 
 void RefreshPlaybackInfo() {
     g_playRows.clear();
@@ -815,7 +816,8 @@ void RefreshPlaybackInfo() {
         for (auto& d : devs) {
             PlayRow r; r.kind = PlayRowKind::AudioDevice; r.index = 0;
             r.label = d.name + (d.isDefault ? L"  (default)" : L"");
-            r.active = d.isDefault;
+            r.id = d.id;
+            r.active = !g_selAudioDeviceId.empty() ? (d.id == g_selAudioDeviceId) : d.isDefault;
             g_playRows.push_back(r);
         }
     }
@@ -843,7 +845,9 @@ struct AudioOutRow {
 std::vector<AudioOutRow> g_audioOutRows;
 
 void PaintPlaySheet(HDC dc, int w, int h) {
-    RECT bg = {0, 0, w, h};
+    // Background below the tab bar only — the Playback|System tabs are drawn
+    // first by PaintRight and must stay visible over this sheet.
+    RECT bg = {0, kTabH, w, h};
     HBRUSH b = CreateSolidBrush(COL_PANEL); FillRect(dc, &bg, b); DeleteObject(b);
 
     int y = kTabH + S(12);
@@ -1308,10 +1312,17 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                 g_player->SetSubtitleTrack(r.index);
                                 RefreshPlaybackInfo();
                             } else if (r.kind == PlayRowKind::AudioDevice) {
+                                // Route playback through the chosen WASAPI endpoint
+                                // (e.g. an HDMI/AVR). MpcAudioRenderer picks it up;
+                                // DSound fallback ignores it and stays on default.
+                                g_selAudioDeviceId = r.id;
+                                g_selAudioDeviceName = r.label;
+                                size_t at = g_selAudioDeviceName.find(L"  (default)");
+                                if (at != std::wstring::npos) g_selAudioDeviceName.erase(at);
+                                g_player->SetAudioDevice(r.id, g_selAudioDeviceName);
                                 for (auto& x : g_playRows) if (x.kind == PlayRowKind::AudioDevice) x.active = false;
-                                r.active = true;   // visible selection (routing lands with the renderer swap)
-                                std::wcout << L"[AUDIO] selected device: " << r.label
-                                           << L"  (endpoint routing arrives with the MpcAudioRenderer swap)\n";
+                                r.active = true;
+                                std::wcout << L"[AUDIO] routed to device: " << g_selAudioDeviceName << L"\n";
                             }
                             InvalidateRect(h, nullptr, FALSE);
                             return 0;

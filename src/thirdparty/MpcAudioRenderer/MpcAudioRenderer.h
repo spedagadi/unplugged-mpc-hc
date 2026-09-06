@@ -25,7 +25,14 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <FunctionDiscoveryKeys_devpkey.h>
+#ifndef MPC_AX_NO_PROPERTY_PAGE
 #include "MpcAudioRendererSettingsWnd.h"
+#else
+// The .ax build strips the mpc-hc property page UI; these two headers give the
+// class its interfaces without pulling the app theme.
+#include "IMpcAudioRenderer.h"
+#include "InternalPropertyPage.h" // ISpecifyPropertyPages2
+#endif
 #include "AudioTools/Mixer.h"
 #include "AudioTools/AudioFilter.h"
 #include "AudioTools/DitherInt16.h"

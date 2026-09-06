@@ -171,8 +171,12 @@ public:
     HRESULT SetAudioTrack(int posIndex);
     HRESULT SetSubtitleTrack(int posIndex);
 
-    // Audio endpoints (informational; endpoint routing lands with MpcAudioRenderer)
+    // Audio endpoints. GetAudioDevices enumerates WASAPI render endpoints;
+    // SetAudioDevice routes playback to one of them (through MpcAudioRenderer
+    // when it is registered; otherwise the DSound fallback keeps the default).
     HRESULT GetAudioDevices(std::vector<AudioDeviceInfo>&) const;
+    HRESULT SetAudioDevice(const std::wstring& endpointId, const std::wstring& endpointName);
+    HRESULT GetAudioDevice(std::wstring& endpointId, std::wstring& endpointName) const;
 
     // MPCVR-Zion bridges
     HRESULT SetMlSettings(const MlSettings&);
@@ -195,7 +199,8 @@ private:
     HRESULT ConfigureRendererWindow();
     HRESULT ConnectAudio(IBaseFilter* splitter);
     HRESULT ApplyVolume();
-    HRESULT ApplyBitstreamConfig();
+    HRESULT ApplyBitstreamConfig();   // LAV Audio passthrough config
+    HRESULT ApplyRendererConfig();    // MpcAudioRenderer mode + device
     HRESULT SelectStream(TrackKind kind, int posIndex);
     HRESULT Notify(std::string_view eventName);
     HRESULT UpdateSnapshot() const;
@@ -216,5 +221,7 @@ private:
     bool audioEnabled_ = true;
     AudioMode audioMode_ = AudioMode::PCM;
     BitstreamConfig bitstream_;
+    std::wstring audioDeviceId_, audioDeviceName_;
+    bool audioRendererIsMpcAudio_ = false;   // true when MpcAudioRenderer won the CoCreate
     mutable Snapshot snapshot_;
 };

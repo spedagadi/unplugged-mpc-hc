@@ -28,19 +28,23 @@
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalIncludeDirectories>..\..\src;..\..\include;..\..\src\thirdparty\BaseClasses;..\..\src\thirdparty;..\..\src\thirdparty\MpcAudioRenderer;..\..\src\thirdparty\mpcbe_common;..\..\src\DSUtil;..\..\src\filters</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_USRDLL;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ForcedIncludeFiles>ax_pch.h</ForcedIncludeFiles>
+      <AdditionalIncludeDirectories>$(ProjectDir);..\..\src;..\..\include;..\..\src\thirdparty\BaseClasses;..\..\src\thirdparty;..\..\src\thirdparty\MpcAudioRenderer;..\..\src\thirdparty\mpcbe_common;..\..\src\DSUtil;..\..\src\filters</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_USRDLL;NOMINMAX;MPC_AX_NO_PROPERTY_PAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>BaseClasses.lib;DSUtil.lib;AudioTools.lib;soxr.lib;strmiids.lib;ole32.lib;oleaut32.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>BaseClasses.lib;DSUtil.lib;AudioTools.lib;bs2b.lib;soxr.lib;ffmpeg.lib;strmiids.lib;ole32.lib;oleaut32.lib;winmm.lib;vfw32.lib;avrt.lib;ws2_32.lib;advapi32.lib;comctl32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\..\bin\lib\Release_x64</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>..\..\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.def</ModuleDefinitionFile>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="audio_register.cpp" />
+    <ClCompile Include="ax_app.cpp" />
     <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\AudioDevice.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\AudioSyncClock.cpp" />
     <ClCompile Include="..\..\src\thirdparty\BaseClasses\dllentry.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
