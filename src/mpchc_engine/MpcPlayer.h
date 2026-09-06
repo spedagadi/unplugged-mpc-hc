@@ -33,6 +33,20 @@ public:
         Subtitle,
     };
 
+    enum class AudioMode {
+        PCM,
+        Bitstream,
+    };
+
+    struct BitstreamConfig {
+        bool ac3 = false;
+        bool eac3 = false;
+        bool trueHd = false;
+        bool dts = false;
+        bool dtsHd = false;
+        bool dtsHdFraming = false;
+    };
+
     struct Snapshot {
         State state = State::Idle;
         LONGLONG position = 0;
@@ -147,6 +161,10 @@ public:
     HRESULT SetMuted(bool);
     HRESULT SetAudioEnabled(bool);
     HRESULT GetAudioEnabled(bool&) const;
+    HRESULT SetAudioMode(AudioMode);
+    HRESULT GetAudioMode(AudioMode&) const;
+    HRESULT SetBitstreamConfig(const BitstreamConfig&);
+    HRESULT GetBitstreamConfig(BitstreamConfig&) const;
 
     // Streams
     HRESULT GetTracks(std::vector<TrackInfo>&) const;
@@ -177,6 +195,7 @@ private:
     HRESULT ConfigureRendererWindow();
     HRESULT ConnectAudio(IBaseFilter* splitter);
     HRESULT ApplyVolume();
+    HRESULT ApplyBitstreamConfig();
     HRESULT SelectStream(TrackKind kind, int posIndex);
     HRESULT Notify(std::string_view eventName);
     HRESULT UpdateSnapshot() const;
@@ -195,5 +214,7 @@ private:
     int volumePercent_ = 100;
     bool muted_ = false;
     bool audioEnabled_ = true;
+    AudioMode audioMode_ = AudioMode::PCM;
+    BitstreamConfig bitstream_;
     mutable Snapshot snapshot_;
 };

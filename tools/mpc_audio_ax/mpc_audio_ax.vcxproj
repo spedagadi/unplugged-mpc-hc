@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{E3A9C5B2-7D4A-4F1E-9B4C-0D6A2F8B9E12}</ProjectGuid>
+    <Keyword>MFCProj</Keyword>
+    <ProjectName>mpc_audio_ax</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <Import Project="..\..\src\platform.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseOfMfc>Static</UseOfMfc>
+    <CharacterSet>Unicode</CharacterSet>
+    <TargetName>MpcAudioRenderer</TargetName>
+    <TargetExt>.ax</TargetExt>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>..\..\src;..\..\include;..\..\src\thirdparty\BaseClasses;..\..\src\thirdparty;..\..\src\thirdparty\MpcAudioRenderer;..\..\src\thirdparty\mpcbe_common;..\..\src\DSUtil;..\..\src\filters</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_USRDLL;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>BaseClasses.lib;DSUtil.lib;AudioTools.lib;soxr.lib;strmiids.lib;ole32.lib;oleaut32.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\bin\lib\Release_x64</AdditionalLibraryDirectories>
+      <ModuleDefinitionFile>..\..\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="audio_register.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\BaseClasses\dllentry.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

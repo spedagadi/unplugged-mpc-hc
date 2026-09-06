@@ -10,6 +10,7 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <FilterInterfaces.h>
 #include <IVideoRenderer.h>
+#include <LAVAudioSettings.h>
 
 #include <algorithm>
 #include <cmath>
@@ -298,6 +299,47 @@ HRESULT MpcPlayer::GetAudioEnabled(bool& on) const
     return S_OK;
 }
 
+HRESULT MpcPlayer::SetAudioMode(AudioMode m)
+{
+    audioMode_ = m;
+    return ApplyBitstreamConfig();
+}
+
+HRESULT MpcPlayer::GetAudioMode(AudioMode& m) const
+{
+    m = audioMode_;
+    return S_OK;
+}
+
+HRESULT MpcPlayer::SetBitstreamConfig(const BitstreamConfig& b)
+{
+    bitstream_ = b;
+    return ApplyBitstreamConfig();
+}
+
+HRESULT MpcPlayer::GetBitstreamConfig(BitstreamConfig& b) const
+{
+    b = bitstream_;
+    return S_OK;
+}
+
+HRESULT MpcPlayer::ApplyBitstreamConfig()
+{
+    if (!audioDecoder_) return S_FALSE;
+    CComQIPtr<ILAVAudioSettings> las = audioDecoder_;
+    if (!las) return S_FALSE;
+    // No registry persistence — matches the "demo/no-persistence" rule for this shell.
+    las->SetRuntimeConfig(TRUE);
+    const bool on = (audioMode_ == AudioMode::Bitstream);
+    las->SetBitstreamConfig(Bitstream_AC3,    on && bitstream_.ac3    ? TRUE : FALSE);
+    las->SetBitstreamConfig(Bitstream_EAC3,   on && bitstream_.eac3   ? TRUE : FALSE);
+    las->SetBitstreamConfig(Bitstream_TRUEHD, on && bitstream_.trueHd ? TRUE : FALSE);
+    las->SetBitstreamConfig(Bitstream_DTS,    on && bitstream_.dts    ? TRUE : FALSE);
+    las->SetBitstreamConfig(Bitstream_DTSHD,  on && bitstream_.dtsHd  ? TRUE : FALSE);
+    las->SetDTSHDFraming(on && bitstream_.dtsHdFraming ? TRUE : FALSE);
+    return S_OK;
+}
+
 HRESULT MpcPlayer::ApplyVolume()
 {
     if (!graph_) return S_OK;
@@ -384,6 +426,10 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
         return S_FALSE;
     }
 
+    // Apply LAV bitstream config BEFORE pin connect (LAV requirement).
+    audioDecoder_ = audioDecoder;
+    ApplyBitstreamConfig();
+
     CComPtr<IPin> splitOut = FindUnconnectedPin(splitter, PINDIR_OUTPUT);
     CComPtr<IPin> decIn = FindUnconnectedPin(audioDecoder, PINDIR_INPUT);
     HRESULT hrE = (splitOut && decIn) ? graph_->Connect(splitOut, decIn) : E_POINTER;
@@ -397,9 +443,9 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
     if (FAILED(hrE) || FAILED(hrF)) {
         graph_->RemoveFilter(audioRenderer);
         graph_->RemoveFilter(audioDecoder);
+        audioDecoder_.Release();
         return S_FALSE;
     }
-    audioDecoder_ = audioDecoder;
     audioRenderer_ = audioRenderer;
     return S_OK;
 }

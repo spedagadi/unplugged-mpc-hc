@@ -1,0 +1,25 @@
+mode: -hosted (our child HWND)
+[OK] FilterGraph hr=0
+[OK] AddSourceFilter hr=0
+[OK] CoCreate LAV Splitter hr=0
+[OK] CoCreate LAV Video hr=0
+[FAIL] CoCreate MPCVR AllocatorPresenter hr=80040154
+[OK] CoCreate MPCVR VideoRenderer fallback hr=0
+[OK] AddFilter(3) hr=0
+[OK] src->splitter hr=0
+[OK] splitter->decoder hr=0
+[OK] decoder->MPCVR hr=0
+filters in graph:
+  MPC Video Renderer
+  LAV Video
+  LAV Splitter
+  source
+[OK] video hosted in our HWND via IVideoWindow
+[OK] Run hr=1
+[CTRL] video surface resized to 240x195
+duration=300000000 pos=120560000
+renderer module resolved: C:\Code\VideoRenderer\_bin\MpcVideoRenderer-0.10.8.2589\MpcVideoRenderer64.ax
+identity: create-CLSID {71F080AA-8661-4093-B15E-4F6903E77D0A} = MPC Video Renderer
+window png: s1_window.png
+hosted-in-our-window=yes
+S1_COMPLETE

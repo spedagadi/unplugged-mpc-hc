@@ -1,0 +1,1143 @@
+        1 file(s) copied.
+        1 file(s) copied.
+Not all build dependencies were found: Missing bash.exe in Git installation
+
+See "docs\Compilation.md" for more information.
+
+  gccver=16.1.0
+  The system cannot find the path specified.
+          1 file(s) copied.
+          1 file(s) copied.
+  sizecbar.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\sizecbar.lib
+  TreePropSheet.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\TreePropSheet.lib
+  libiconv.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\libiconv.lib
+  DeCSS.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\DeCSS.lib
+  Microsoft (R) Library Manager Version 14.44.35222.0
+  Copyright (C) Microsoft Corporation.  All rights reserved.
+  
+  LCDUI.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\LCDUI.lib
+  zlib.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\zlib.lib
+  CmdUI.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\CmdUI.lib
+  ResizableLib.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\ResizableLib.lib
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-strtoimax.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-strtof.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-cos.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-sin.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-pow.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-sqrt.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib32_libmingwex_a-powi.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+          1 file(s) moved.
+          1 file(s) copied.
+  DSUtil.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\DSUtil.lib
+  Microsoft (R) Library Manager Version 14.44.35222.0
+  Copyright (C) Microsoft Corporation.  All rights reserved.
+  
+  SubPic.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\SubPic.lib
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-strtoimax.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-cos.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-sin.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-pow.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-sqrt.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+LINK : warning LNK4014: cannot find member object lib64_libmingwex_a-sqrtf.o [C:\Code\mpc-hc\build\BuildConfig.vcxproj]
+  libunibreak.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\libunibreak.lib
+          1 file(s) moved.
+  BaseClasses.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\BaseClasses.lib
+  libharfbuzz.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\libharfbuzz.lib
+  libfribidi.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\libfribidi.lib
+  freetype2.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\freetype2.lib
+  soxr.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\soxr.lib
+  AudioTools.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\AudioTools.lib
+  SyncClock.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\SyncClock.lib
+  VideoRenderers.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\VideoRenderers.lib
+  SoundTouch.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\SoundTouch.lib
+  zita-resampler.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\zita-resampler.lib
+  minhook.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\minhook.lib
+  bs2b.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\bs2b.lib
+  lcms2.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\lcms2.lib
+  tinyxml2.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\tinyxml2.lib
+  unrar.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\unrar.lib
+  sanear.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\sanear.lib
+  stdafx.cpp
+  BaseMuxer.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\BaseMuxer.lib
+  libass\libass\x86\be_blur.asm
+  libass\libass\x86\blend_bitmaps.asm
+  libass\libass\x86\blur.asm
+  sh ffbuild/version.sh . msvc_ffversion.h && mv msvc_ffversion.h ../../../ffmpeg//libavutil/ffversion.h
+  FilterApp.cpp
+  InternalPropertyPage.cpp
+  PinInfoWnd.cpp
+  Filters.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\Filters.lib
+  stdafx.cpp
+  stdafx.cpp
+  stdafx.cpp
+  stdafx.cpp
+  stdafx.cpp
+  File.cpp
+  Mediatype.cpp
+  OutputPin.cpp
+  RFS.cpp
+  Utils.cpp
+  libavcodec/ac3_parser.c
+  libavcodec/adts_parser.c
+  ac3_parser.c
+  adts_parser.c
+  libavcodec/allcodecs.c
+  libavcodec/avcodec.c
+  allcodecs.c
+  avcodec.c
+  libavcodec/avdct.c
+  libavcodec/bitstream.c
+  avdct.c
+  libavcodec/bitstream_filters.c
+  bitstream.c
+  bitstream_filters.c
+  libavcodec/bsf.c
+C:\Code\mpc-hc\src\thirdparty\LAVFilters\src\ffmpeg\libavcodec\put_bits.h(84): warning C4003: not enough arguments for function-like macro invocation 'av_unreachable' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavcodec/codec_desc.c
+  codec_desc.c
+  bsf.c
+  libavcodec/codec_par.c
+  libavcodec/decode.c
+  codec_par.c
+  decode.c
+  libavcodec/encode.c
+  libavcodec/faandct.c
+libavcodec/avcodec.c(756): warning C5287: operands are different enum types 'AVColorRange' and 'AVAlphaMode'; use an explicit cast to silence this warning [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavcodec/avcodec.c(757): warning C5287: operands are different enum types 'AVColorRange' and 'AVAlphaMode'; use an explicit cast to silence this warning [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  faandct.c
+  encode.c
+  libavcodec/faanidct.c
+  libavcodec/fdctdsp.c
+  faanidct.c
+  libavcodec/file_open.c
+  fdctdsp.c
+  libavcodec/get_buffer.c
+  file_open.c
+  WavDest.cpp
+  get_buffer.c
+  libavcodec/idctdsp.c
+  libavcodec/imgconvert.c
+  idctdsp.c
+  imgconvert.c
+  libavcodec/jfdctfst.c
+  libavcodec/jfdctint.c
+  jfdctfst.c
+  jfdctint.c
+  libavcodec/jni.c
+  Audio.cpp
+  libavcodec/jrevdct.c
+  AudioSwitcher.cpp
+  StreamSwitcher.cpp
+  libavcodec/mathtables.c
+  RARFileSource.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\RARFileSource.lib
+  jni.c
+  StreamDriveThru.cpp
+  jrevdct.c
+  DSMMuxer.cpp
+  libavcodec/options.c
+  mathtables.c
+  MatroskaFile.cpp
+  libavcodec/packet.c
+  MatroskaMuxer.cpp
+  options.c
+  packet.c
+  libavcodec/parser.c
+  libavcodec/parsers.c
+  parser.c
+  parsers.c
+  libavcodec/profiles.c
+  libavcodec/pthread.c
+  profiles.c
+  pthread.c
+  libavcodec/pthread_frame.c
+  libavcodec/pthread_slice.c
+  pthread_frame.c
+  libavcodec/raw.c
+  pthread_slice.c
+  libavcodec/simple_idct.c
+  libavcodec/utils.c
+  WavDest.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\WavDest.lib
+  raw.c
+  utils.c
+  StreamDriveThru.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\StreamDriveThru.lib
+  simple_idct.c
+  libavcodec/x86/constants.c
+  libass\libass\x86\cpuid.asm
+  libavcodec/x86/fdctdsp_init.c
+  libavcodec/x86/idctdsp_init.c
+  constants.c
+C:\Code\mpc-hc\src\thirdparty\LAVFilters\src\ffmpeg\libavcodec\put_bits.h(84): warning C4003: not enough arguments for function-like macro invocation 'av_unreachable' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  idctdsp_init.c
+libavcodec/utils.c(1030): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavcodec/utils.c(1066): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  fdctdsp_init.c
+  libavcodec/x86/idctdsp.asm
+  libavcodec/x86/fdct.c
+  libavcodec/x86/simple_idct.asm
+  DSMMuxer.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\DSMMuxer.lib
+  AudioSwitcher.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\AudioSwitcher.lib
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavcodec/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavcodec/x86/idctdsp.o libavcodec/x86/idctdsp.asm
+  fdct.c
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavcodec/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavcodec/x86/simple_idct.o libavcodec/x86/simple_idct.asm
+  libavcodec/x86/simple_idct10.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavcodec/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavcodec/x86/simple_idct10.o libavcodec/x86/simple_idct10.asm
+  libavfilter/af_aresample.c
+  libass\libass\x86\rasterizer.asm
+  MatroskaMuxer.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\MatroskaMuxer.lib
+  af_aresample.c
+  libavfilter/af_atempo.c
+  libavfilter/af_biquads.c
+  libavfilter/allfilters.c
+  af_atempo.c
+  allfilters.c
+  af_biquads.c
+  libavfilter/audio.c
+  libavfilter/avfilter.c
+  libavfilter/avfiltergraph.c
+  audio.c
+../../../ffmpeg/libavfilter/filter_list.c(2): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+../../../ffmpeg/libavfilter/filter_list.c(3): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+../../../ffmpeg/libavfilter/filter_list.c(4): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+../../../ffmpeg/libavfilter/filter_list.c(5): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+../../../ffmpeg/libavfilter/filter_list.c(6): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+../../../ffmpeg/libavfilter/filter_list.c(7): warning C4133: 'initializing': incompatible types - from 'const FFFilter *' to 'const AVFilter *const ' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/allfilters.c(644): warning C4133: 'initializing': incompatible types - from 'const AVFilter *const ' to 'const FFFilter *' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  avfiltergraph.c
+  avfilter.c
+  libavfilter/buffersink.c
+  libavfilter/buffersrc.c
+  buffersink.c
+libavfilter/audio.c(51): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavfilter/formats.c
+  buffersrc.c
+  libavfilter/framepool.c
+  libavfilter/framequeue.c
+  formats.c
+  framepool.c
+  framequeue.c
+  libavfilter/graphparser.c
+  libavfilter/pthread.c
+  libavfilter/video.c
+libavfilter/formats.c(361): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/formats.c(362): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/formats.c(363): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/formats.c(364): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/formats.c(365): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  graphparser.c
+  video.c
+  pthread.c
+libavfilter/framequeue.c(150): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavfilter/framequeue.c(151): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/adler32.c
+  libavutil/aes.c
+  libavutil/aes_ctr.c
+libavfilter/video.c(86): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  aes.c
+  aes_ctr.c
+  libavutil/audio_fifo.c
+  adler32.c
+  libavutil/avsscanf.c
+  libavutil/avstring.c
+  audio_fifo.c
+  avstring.c
+  libavutil/base64.c
+  avsscanf.c
+  libavutil/blowfish.c
+libavutil/avstring.c(241): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/avstring.c(243): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  base64.c
+  libavutil/bprint.c
+  blowfish.c
+  libavutil/buffer.c
+  libavutil/camellia.c
+  bprint.c
+  camellia.c
+libavutil/bprint.c(189): warning C4267: '=': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/bprint.c(215): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/cast5.c
+  buffer.c
+  libavutil/channel_layout.c
+  cast5.c
+  libavutil/cpu.c
+  channel_layout.c
+  libavutil/crc.c
+  cpu.c
+  libavutil/des.c
+  crc.c
+libavutil/channel_layout.c(112): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/channel_layout.c(145): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/dict.c
+libavutil/channel_layout.c(663): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  des.c
+  libavutil/display.c
+  dict.c
+  libavutil/dovi_meta.c
+  display.c
+  libavutil/downmix_info.c
+  dovi_meta.c
+  libavutil/encryption_info.c
+  downmix_info.c
+  libavutil/error.c
+  encryption_info.c
+  libavutil/eval.c
+  error.c
+  libavutil/fifo.c
+  eval.c
+  libavutil/file.c
+  fifo.c
+  libavutil/file_open.c
+  file.c
+  libavutil/film_grain_params.c
+  file_open.c
+  libavutil/fixed_dsp.c
+  film_grain_params.c
+  libavutil/float_dsp.c
+  fixed_dsp.c
+  libavutil/frame.c
+  float_dsp.c
+  libavutil/hash.c
+  frame.c
+  hash.c
+  libavutil/hdr_dynamic_metadata.c
+  libavutil/hmac.c
+libavutil/frame.c(784): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/frame.c(785): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/frame.c(798): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/frame.c(802): warning C4267: 'function': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/frame.c(822): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/frame.c(823): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  hdr_dynamic_metadata.c
+  hmac.c
+  libavutil/hwcontext.c
+  libavutil/imgutils.c
+  hwcontext.c
+  libavutil/integer.c
+  imgutils.c
+  libavutil/intmath.c
+.\libavcodec/put_bits.h(84): warning C4003: not enough arguments for function-like macro invocation 'av_unreachable' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/hdr_dynamic_metadata.c(76): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/hdr_dynamic_metadata.c(313): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/hdr_dynamic_metadata.c(444): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/hdr_dynamic_metadata.c(634): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  integer.c
+  libavutil/lfg.c
+  intmath.c
+  libavutil/lls.c
+libavutil/imgutils.c(165): warning C4267: '+=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/imgutils.c(496): warning C4267: '+=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/imgutils.c(574): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/imgutils.c(574): warning C4267: 'function': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  lfg.c
+  lls.c
+  libavutil/log.c
+  libavutil/log2_tab.c
+  libavutil/mastering_display_metadata.c
+  log2_tab.c
+  mastering_display_metadata.c
+  log.c
+  libavutil/mathematics.c
+  libavutil/md5.c
+  mathematics.c
+  libavutil/mem.c
+  md5.c
+  libavutil/murmur3.c
+  mem.c
+  murmur3.c
+  libavutil/opt.c
+  libavutil/parseutils.c
+libavutil/md5.c(162): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  opt.c
+  libavutil/pixdesc.c
+  parseutils.c
+libavutil/murmur3.c(130): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/pixelutils.c
+  pixdesc.c
+  libavutil/random_seed.c
+  pixelutils.c
+  libavutil/rational.c
+libavutil/opt.c(376): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/opt.c(1203): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  random_seed.c
+libavutil/parseutils.c(372): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/parseutils.c(377): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/parseutils.c(484): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  rational.c
+  libavutil/rc4.c
+libavutil/pixdesc.c(3524): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/refstruct.c
+  libavutil/reverse.c
+  rc4.c
+  reverse.c
+  libavutil/ripemd.c
+  refstruct.c
+  libavutil/samplefmt.c
+  ripemd.c
+  samplefmt.c
+  libavutil/sha.c
+libavutil/mem.c(520): warning C4267: '=': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/mem.c(551): warning C4267: '=': conversion from 'size_t' to 'unsigned int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/sha512.c
+  sha.c
+  libavutil/side_data.c
+  sha512.c
+libavutil/ripemd.c(139): warning C4101: 't': unreferenced local variable [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil/ripemd.c(196): warning C4101: 't': unreferenced local variable [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/slicethread.c
+libavutil/ripemd.c(321): warning C4101: 't': unreferenced local variable [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/spherical.c
+libavutil/ripemd.c(393): warning C4101: 't': unreferenced local variable [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  spherical.c
+  slicethread.c
+libavutil/random_seed.c(168): warning C4267: 'function': conversion from 'size_t' to 'ULONG', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  side_data.c
+  libavutil/stereo3d.c
+  libavutil/tea.c
+  libavutil/threadmessage.c
+  stereo3d.c
+  threadmessage.c
+  tea.c
+  libavutil/time.c
+  libavutil/timecode.c
+  timecode.c
+  libavutil/timestamp.c
+  time.c
+  libavutil/tree.c
+  timestamp.c
+  tree.c
+  libavutil/twofish.c
+  libavutil/tx.c
+libavutil/slicethread.c(78): warning C4133: 'function': incompatible types - from 'int *' to 'intptr_t *' [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/tx_double.c
+  tx.c
+  tx_double.c
+  libavutil/tx_float.c
+  twofish.c
+libavutil/threadmessage.c(115): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libavutil/tx_int32.c
+  tx_float.c
+  tx_int32.c
+  libavutil/utils.c
+  libavutil/video_enc_params.c
+  utils.c
+  video_enc_params.c
+  libavutil/xga_font_data.c
+  libavutil/xtea.c
+  xga_font_data.c
+  xtea.c
+  libavutil/x86/cpu.c
+  cpu.c
+  libavutil/x86/fixed_dsp_init.c
+  libavutil/x86/float_dsp_init.c
+  libavutil/x86/imgutils_init.c
+  fixed_dsp_init.c
+  imgutils_init.c
+  float_dsp_init.c
+  libavutil/x86/lls_init.c
+  libavutil/x86/tx_float_init.c
+  libavutil/x86/cpuid.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/cpuid.o libavutil/x86/cpuid.asm
+  lls_init.c
+  tx_float_init.c
+  libavutil/x86/emms.asm
+  libavutil/x86/fixed_dsp.asm
+  libavutil/x86/float_dsp.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/float_dsp.o libavutil/x86/float_dsp.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/fixed_dsp.o libavutil/x86/fixed_dsp.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/emms.o libavutil/x86/emms.asm
+  libavutil/x86/imgutils.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/imgutils.o libavutil/x86/imgutils.asm
+  libavutil/x86/lls.asm
+  libavutil/x86/tx_float.asm
+  libswresample/audioconvert.c
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/lls.o libavutil/x86/lls.asm
+  stdafx.cpp
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibavutil/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil/x86/tx_float.o libavutil/x86/tx_float.asm
+  audioconvert.c
+  libswresample/dither.c
+  ass.c
+  ass_arabic_charmap.c
+  ass_bitmap.c
+  ass_bitmap_engine.c
+  ass_blur.c
+  ass_cache.c
+  libswresample/options.c
+  ass_directwrite.c
+  ass_drawing.c
+  ass_filesystem.c
+  ass_font.c
+  ass_fontselect.c
+  ass_library.c
+  ass_outline.c
+  ass_parse.c
+  ass_rasterizer.c
+  libswresample/rematrix.c
+  c_rasterizer.c
+  c_blend_bitmaps.c
+  c_blur.c
+  options.c
+  rematrix.c
+  c_be_blur.c
+  ass_render.c
+  ass_render_api.c
+  ass_shaper.c
+  dither.c
+  ass_string.c
+C:\Code\mpc-hc\src\thirdparty\libass\libass\libass\c\blur_template.h(249,26): warning C4146: unary minus operator applied to unsigned type, result still unsigned [C:\Code\mpc-hc\src\thirdparty\libass\libass.vcxproj]
+  (compiling source file 'libass/libass/c/c_blur.c')
+  
+C:\Code\mpc-hc\src\thirdparty\libass\libass\libass\c\blur_template.h(249,26): warning C4146: unary minus operator applied to unsigned type, result still unsigned [C:\Code\mpc-hc\src\thirdparty\libass\libass.vcxproj]
+  (compiling source file 'libass/libass/c/c_blur.c')
+  
+  ass_strtod.c
+  ass_utils.c
+  libswresample/resample.c
+libswresample/dither.c(120): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  libswresample/resample_dsp.c
+  resample.c
+  libswresample/soxr_resample.c
+  resample_dsp.c
+  soxr_resample.c
+  libswresample/swresample.c
+  libswresample/swresample_frame.c
+  swresample.c
+  swresample_frame.c
+  libswresample/x86/audio_convert_init.c
+  libswresample/x86/rematrix_init.c
+libswresample/soxr_resample.c(96): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  audio_convert_init.c
+  libswresample/x86/resample_init.c
+  rematrix_init.c
+  libswresample/x86/audio_convert.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibswresample/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libswresample/x86/audio_convert.o libswresample/x86/audio_convert.asm
+  resample_init.c
+  libswresample/x86/rematrix.asm
+  libswresample/x86/resample.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibswresample/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libswresample/x86/resample.o libswresample/x86/resample.asm
+  nasm -I. -I../../../ffmpeg/ -f win64 -DWIN64=1 -DPIC  -Pconfig.asm -Ilibswresample/x86/ -o ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libswresample/x86/rematrix.o libswresample/x86/rematrix.asm
+  ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavfilter.a
+  libass.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\libass.lib
+  ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavcodec.a
+  stdafx.cpp
+  BufferFilter.cpp
+  BufferFilter.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\BufferFilter.lib
+  Ellipse.cpp
+  FreeTypePathTools.cpp
+  OpenTypeLangTags.cpp
+  RenderingCache.cpp
+  CCDecoder.cpp
+  CompositionObject.cpp
+  DVBSub.cpp
+  ColorConvTable.cpp
+  LibassContext.cpp
+  SubRendererSettings.cpp
+  SubtitleHelpers.cpp
+  PGSSub.cpp
+  Rasterizer.cpp
+  RealTextParser.cpp
+  RLECodedSubtitle.cpp
+  RTS.cpp
+  StdioFile64.cpp
+  STS.cpp
+  SubtitleInputPin.cpp
+  TextFile.cpp
+C:\Code\mpc-hc\src\Subtitles\CompositionObject.cpp(127,39): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/CompositionObject.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\CompositionObject.cpp(180,34): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/CompositionObject.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\SubtitleHelpers.cpp(64,37): warning C4305: 'argument': truncation from 'int' to 'bool' [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/SubtitleHelpers.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\SubtitleHelpers.cpp(99,47): warning C4305: 'argument': truncation from 'int' to 'bool' [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/SubtitleHelpers.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\SubtitleHelpers.cpp(138,50): warning C4305: 'argument': truncation from 'int' to 'bool' [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/SubtitleHelpers.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\SubtitleHelpers.cpp(149,43): warning C4305: 'argument': truncation from 'int' to 'bool' [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/SubtitleHelpers.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\SubtitleHelpers.cpp(157,54): warning C4305: 'argument': truncation from 'int' to 'bool' [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/SubtitleHelpers.cpp')
+  
+  USFSubtitles.cpp
+  VobSubFile.cpp
+  VobSubFileRipper.cpp
+  VobSubImage.cpp
+C:\Code\mpc-hc\src\Subtitles\Rasterizer.cpp(2101,25): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/Rasterizer.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\PGSSub.cpp(129,39): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/PGSSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\PGSSub.cpp(161,73): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/PGSSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\PGSSub.cpp(166,59): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/PGSSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\DVBSub.cpp(183,33): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/DVBSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\DVBSub.cpp(242,74): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/DVBSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\DVBSub.cpp(344,49): warning C4267: 'argument': conversion from 'size_t' to 'const int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libswresample.a
+  (compiling source file '/DVBSub.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(492,32): warning C4996: 'std::codecvt_utf8<wchar_t,1114111,(std::codecvt_mode)0>': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\include\codecvt(34,39):
+      see declaration of 'std::codecvt_utf8'
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(493,10): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\include\xlocbuf(303,39):
+      see declaration of 'std::wstring_convert'
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(493,50): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>::wstring_convert': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(495,23): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>::from_bytes': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(499,32): warning C4996: 'std::codecvt_utf8<wchar_t,1114111,(std::codecvt_mode)0>': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\include\codecvt(34,39):
+      see declaration of 'std::codecvt_utf8'
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(500,10): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\include\xlocbuf(303,39):
+      see declaration of 'std::wstring_convert'
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(500,50): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>::wstring_convert': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(502,23): warning C4996: 'std::wstring_convert<s2ws::convert_typeX,wchar_t,std::allocator<wchar_t>,std::allocator<char>>::to_bytes': warning STL4017: std::wbuffer_convert, std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8, std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this warning. [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+  
+C:\Code\mpc-hc\src\Subtitles\LibassContext.cpp(704,72): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\Subtitles\Subtitles.vcxproj]
+  (compiling source file '/LibassContext.cpp')
+  
+  Subtitles.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\Subtitles.lib
+  stdafx.cpp
+  SubtitleSource.cpp
+  SubtitleSource.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\SubtitleSource.lib
+  ../../../ffmpeg/../../../bin/obj/Release_x64/ffmpeg/libavutil.a
+  ../../../ffmpeg/../../../bin/lib/Release_x64/ffmpeg.lib
+libavutil.a(file_open.o) : warning LNK4006: ff_open already defined in libavcodec.a(file_open.o); second definition ignored [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil.a(file_open.o) : warning LNK4006: ff_fopen_utf8 already defined in libavcodec.a(file_open.o); second definition ignored [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+libavutil.a(file_open.o) : warning LNK4006: ff_tempfile already defined in libavcodec.a(file_open.o); second definition ignored [C:\Code\mpc-hc\src\thirdparty\ffmpeg\ffmpeg.vcxproj]
+  stdafx.cpp
+  AudioDevice.cpp
+  AudioSyncClock.cpp
+  MpcAudioRenderer.cpp
+  MpcAudioRendererSettingsWnd.cpp
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRendererSettingsWnd.cpp(180,41): warning C4244: 'argument': conversion from 'DWORD_PTR' to 'INT', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRendererSettingsWnd.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(682,116): warning C4244: 'argument': conversion from 'REFERENCE_TIME' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1514,42): warning C4244: '=': conversion from 'double' to 'REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1527,41): warning C4244: '=': conversion from 'double' to 'REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1531,43): warning C4244: 'initializing': conversion from 'REFERENCE_TIME' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1531,32): warning C4244: 'initializing': conversion from 'REFERENCE_TIME' to 'const DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1547,62): warning C4244: 'initializing': conversion from 'double' to 'REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1547,34): warning C4244: 'initializing': conversion from 'double' to 'const REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1548,36): warning C4244: 'initializing': conversion from 'int64_t' to 'UINT32', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1548,34): warning C4244: 'initializing': conversion from 'int64_t' to 'const UINT32', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1622,14): warning C4244: '/=': conversion from 'double' to 'REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1721,45): warning C4244: '=': conversion from 'double' to 'REFERENCE_TIME', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1758,35): warning C4244: 'initializing': conversion from 'int64_t' to 'UINT32', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(1758,33): warning C4244: 'initializing': conversion from 'int64_t' to 'const UINT32', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(2461,58): warning C4244: 'initializing': conversion from 'REFERENCE_TIME' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(2461,32): warning C4244: 'initializing': conversion from 'REFERENCE_TIME' to 'const DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.cpp(3280,29): warning C4244: 'argument': conversion from 'REFERENCE_TIME' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.vcxproj]
+  (compiling source file '/MpcAudioRenderer.cpp')
+  
+  MpcAudioRenderer.vcxproj -> C:\Code\mpc-hc\bin\lib\Release_x64\MpcAudioRenderer.lib
+  stdafx.cpp
+  MessageBoxDialog.cpp
+  XeScrollBarBase.cpp
+  AboutDlg.cpp
+  AddCommandDlg.cpp
+  AppSettings.cpp
+  AuthDlg.cpp
+  BaseGraph.cpp
+  CMPCThemeButton.cpp
+  CMPCThemeFrameUtil.cpp
+  CMPCThemeFrameWnd.cpp
+  CMPCThemeInternalPropertyPageWnd.cpp
+  CMPCThemeMiniDockFrameWnd.cpp
+  CMPCThemeModelessResizableDialog.cpp
+  CMPCThemeProgressCtrl.cpp
+  CMPCThemePropPageButton.cpp
+  CMPCThemeResizablePropertyPage.cpp
+  CMPCThemeResizablePropertySheet.cpp
+  CMPCThemeScrollBarRenderer.cpp
+  CMPCThemeTitleBarControlButton.cpp
+  CMPCThemeUtil.cpp
+  CMPCThemeComboBox.cpp
+  CMPCThemeDialog.cpp
+  CMPCThemeDockBar.cpp
+  CMPCThemeEdit.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(360,20): warning C4244: 'initializing': conversion from 'int' to 'float', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(364,22): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(371,22): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(379,22): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(380,50): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBarRenderer.cpp(387,22): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBarRenderer.cpp')
+  
+  CMPCThemeHeaderCtrl.cpp
+C:\Code\mpc-hc\src\mpc-hc\AddCommandDlg.cpp(192,36): warning C4244: '=': conversion from 'DWORD_PTR' to 'WORD', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/AddCommandDlg.cpp')
+  
+  CMPCThemeInlineEdit.cpp
+  CMPCThemeGroupBox.cpp
+  CMPCThemeLinkCtrl.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeComboBox.cpp(107,14): warning C4244: 'initializing': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeComboBox.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeComboBox.cpp(108,14): warning C4244: 'initializing': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeComboBox.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeComboBox.cpp(117,45): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeComboBox.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeComboBox.cpp(117,39): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeComboBox.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeComboBox.cpp(119,57): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeComboBox.cpp')
+  
+  CMPCThemeListBox.cpp
+  CMPCThemeMenu.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeEdit.cpp(373,21): warning C4244: 'initializing': conversion from 'LRESULT' to 'BOOL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeEdit.cpp')
+  
+  CMPCThemePlayerListCtrl.cpp
+  CMPCThemePPageBase.cpp
+  CMPCThemePropPageFrame.cpp
+  CMPCThemeRadioOrCheck.cpp
+  CMPCThemeScrollBar.cpp
+  CMPCThemeScrollBarHelper.cpp
+  CMPCThemeSliderCtrl.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(58,20): warning C4244: 'initializing': conversion from 'int' to 'float', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(62,26): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(69,26): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  CMPCThemeSpinButtonCtrl.cpp
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(77,26): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(78,54): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeScrollBar.cpp(85,26): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeScrollBar.cpp')
+  
+  CMPCThemeStatic.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(68,14): warning C4244: 'initializing': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(79,49): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(79,43): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(81,61): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(83,43): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(84,57): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeHeaderCtrl.cpp(178,23): warning C4244: 'initializing': conversion from 'DWORD_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeHeaderCtrl.cpp')
+  
+  CMPCThemeStaticLink.cpp
+  CMPCTheme.cpp
+  CMPCThemeToolTipCtrl.cpp
+  CMPCThemeTreeCtrl.cpp
+  ChildView.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeRadioOrCheck.cpp(56,27): warning C4244: 'initializing': conversion from 'LONG_PTR' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeRadioOrCheck.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeRadioOrCheck.cpp(109,58): warning C4244: 'argument': conversion from 'LRESULT' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeRadioOrCheck.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeRadioOrCheck.cpp(111,58): warning C4244: 'argument': conversion from 'LRESULT' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeRadioOrCheck.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeRadioOrCheck.cpp(113,58): warning C4244: 'argument': conversion from 'LRESULT' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeRadioOrCheck.cpp')
+  
+  CmdLineHelpDlg.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(56,36): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(57,34): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(62,35): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(63,34): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(68,35): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(69,37): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(75,35): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(76,34): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(85,45): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(85,39): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(87,39): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(89,45): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(89,39): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeSpinButtonCtrl.cpp(91,65): warning C4244: 'argument': conversion from 'int' to 'Gdiplus::REAL', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeSpinButtonCtrl.cpp')
+  
+  CMPCThemeCmdUIDialog.cpp
+  CMPCThemeComPropertyPage.cpp
+  CMPCThemeMaskedEdit.cpp
+  CMPCThemeMsgBox.cpp
+  CMPCThemePlayerBar.cpp
+  CMPCThemePropertyPage.cpp
+  CMPCThemePropertySheet.cpp
+  CMPCThemeResizableDialog.cpp
+  CMPCThemeStatusBar.cpp
+  CMPCThemeTabCtrl.cpp
+  ColorButton.cpp
+  ColorControlsDlg.cpp
+  ColorProfileUtil.cpp
+  ComPropertyPage.cpp
+  ComPropertySheet.cpp
+  CoverArt.cpp
+  CrashReporter.cpp
+  CShockwaveFlash.cpp
+  DebugShadersDlg.cpp
+  DeinterlacerFilter.cpp
+  DpiAwareResizableDialog.cpp
+  DpiHelper.cpp
+  DVBChannel.cpp
+  EditListEditor.cpp
+  EditWithButton.cpp
+  EventDispatcher.cpp
+  ExceptionHandler.cpp
+  FakeFilterMapper2.cpp
+  FavoriteAddDlg.cpp
+  FavoriteOrganizeDlg.cpp
+  FGFilter.cpp
+  FGFilterLAV.cpp
+  FGManager.cpp
+C:\Code\mpc-hc\src\mpc-hc\DebugShadersDlg.cpp(250,18): warning C4244: 'initializing': conversion from 'DWORD_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/DebugShadersDlg.cpp')
+  
+  FGManagerBDA.cpp
+  FileAssoc.cpp
+  DropTarget.cpp
+  FreeviewEPGDecode.cpp
+  GPUInfo.cpp
+  ImageGrayer.cpp
+  MainFrmControls.cpp
+  FloatEdit.cpp
+  FullscreenWnd.cpp
+  GoToDlg.cpp
+  GraphThread.cpp
+  HistoryDlg.cpp
+  Ifo.cpp
+  KeyProvider.cpp
+  LcdSupport.cpp
+  MainFrm.cpp
+  MediaFormats.cpp
+C:\Code\mpc-hc\src\mpc-hc\FGManager.cpp(2147,16): warning C4101: 'pFGF': unreferenced local variable [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/FGManager.cpp')
+  
+  MediaTypesDlg.cpp
+  ModelessResizableDialog.cpp
+C:\Code\mpc-hc\src\mpc-hc\ModelessResizableDialog.cpp(20,19): warning C4244: 'argument': conversion from 'INT_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/ModelessResizableDialog.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\ModelessResizableDialog.cpp(24,19): warning C4244: 'argument': conversion from 'INT_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/ModelessResizableDialog.cpp')
+  
+  Monitors.cpp
+  MouseTouch.cpp
+  MouseWndWithArtView.cpp
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeUtil.cpp(225,70): warning C4244: 'argument': conversion from 'UINT_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeUtil.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\CMPCThemeUtil.cpp(1200,19): warning C4706: assignment used as a condition [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/CMPCThemeUtil.cpp')
+      C:\Code\mpc-hc\src\mpc-hc\CMPCThemeUtil.cpp(1200,19):
+      if an assignment is intended you can enclose it in parentheses, '(e1 = e2)', to silence this warning
+  
+  MPCFolderPickerDialog.cpp
+  MPCPngImage.cpp
+  Mpeg2SectionData.cpp
+  mplayerc.cpp
+  MultiMonitor.cpp
+  OpenDirHelper.cpp
+  OpenDlg.cpp
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(377,25): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(380,29): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(383,33): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(424,26): warning C4244: 'initializing': conversion from 'UINT64' to 'uint8_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(434,39): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(435,39): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(438,30): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(439,32): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(446,33): warning C4244: '=': conversion from 'UINT64' to 'WORD', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\Mpeg2SectionData.cpp(447,27): warning C4244: 'initializing': conversion from 'UINT64' to 'uint16_t', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/Mpeg2SectionData.cpp')
+  
+  OpenFileDlg.cpp
+  OSD.cpp
+  PlayerBar.cpp
+  PlayerCaptureBar.cpp
+  PlayerCaptureDialog.cpp
+  PlayerInfoBar.cpp
+  PlayerListCtrl.cpp
+  PlayerNavigationBar.cpp
+  PlayerNavigationDialog.cpp
+  PlayerPlaylistBar.cpp
+  PlayerPreView.cpp
+  PlayerSeekBar.cpp
+  PlayerStatusBar.cpp
+C:\Code\mpc-hc\src\mpc-hc\MainFrm.cpp(14528,59): warning C4018: '<': signed/unsigned mismatch [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/MainFrm.cpp')
+  
+  PlayerSubresyncBar.cpp
+  PlayerToolBar.cpp
+  Playlist.cpp
+  PnSPresetsDlg.cpp
+  PPageAccelTbl.cpp
+C:\Code\mpc-hc\src\mpc-hc\PPageAccelTbl.cpp(1091,51): warning C4244: 'argument': conversion from 'INT_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageAccelTbl.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PPageAccelTbl.cpp(1319,10): warning C4101: 'discard': unreferenced local variable [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageAccelTbl.cpp')
+  
+  Profile.cpp
+C:\Code\mpc-hc\src\mpc-hc\PlayerPlaylistBar.cpp(706,19): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerPlaylistBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PlayerPlaylistBar.cpp(838,27): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerPlaylistBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PlayerPlaylistBar.cpp(1608,51): warning C4018: '>=': signed/unsigned mismatch [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerPlaylistBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PlayerPlaylistBar.cpp(2012,20): warning C4311: 'type cast': pointer truncation from 'POSITION' to 'int' [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerPlaylistBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PlayerPlaylistBar.cpp(2012,20): warning C4302: 'type cast': truncation from 'POSITION' to 'int' [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerPlaylistBar.cpp')
+  
+  PPageAdvanced.cpp
+  PPageAudioRenderer.cpp
+  PPageAudioSwitcher.cpp
+  PPageBase.cpp
+  PPageCapture.cpp
+  PPageDVD.cpp
+  PPageExternalFilters.cpp
+  PPageFileInfoClip.cpp
+  PPageFileInfoDetails.cpp
+  PPageFileInfoRes.cpp
+  PPageFileInfoSheet.cpp
+  PPageFileMediaInfo.cpp
+  PPageFormats.cpp
+  PPageFullscreen.cpp
+C:\Code\mpc-hc\src\mpc-hc\PlayerToolBar.cpp(173,27): warning C4244: 'initializing': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerToolBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PlayerToolBar.cpp(174,28): warning C4244: 'initializing': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerToolBar.cpp')
+  
+  PPageInternalFilters.cpp
+C:\Code\mpc-hc\src\mpc-hc\PlayerToolBar.cpp(522,39): warning C4244: '=': conversion from 'float' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PlayerToolBar.cpp')
+  
+  PPageLogo.cpp
+  PPageMisc.cpp
+  PPageMouse.cpp
+  PPageOutput.cpp
+  PPagePlayback.cpp
+  PPagePlayer.cpp
+  PPageShaders.cpp
+  PPageSheet.cpp
+  PPageSubMisc.cpp
+  PPageSubStyle.cpp
+  PPageSubtitles.cpp
+  PPageVideoRenderer.cpp
+  PPageTheme.cpp
+  PPageToolBar.cpp
+  PPageToolBarLayout.cpp
+  PPageTweaks.cpp
+  PPageWebServer.cpp
+  RarEntrySelectorDialog.cpp
+  RegFilterChooserDlg.cpp
+  SaveDlg.cpp
+  SaveImageDialog.cpp
+  SaveSubtitlesFileDialog.cpp
+  SaveTextFileDialog.cpp
+  SaveThumbnailsDialog.cpp
+  SelectMediaType.cpp
+  Shaders.cpp
+  ShockwaveGraph.cpp
+  MediaTransControls.cpp
+  STB_Image.cpp
+  SVGImage.cpp
+  Translations.cpp
+  StaticLink.cpp
+  StatusLabel.cpp
+  SubtitleDlDlg.cpp
+  SubtitlesProvider.cpp
+  SubtitlesProviders.cpp
+  SubtitlesProvidersUtils.cpp
+  TextPassThruFilter.cpp
+  TunerScanDlg.cpp
+  UpdateChecker.cpp
+  UpdateCheckerDlg.cpp
+  VersionInfo.cpp
+  vkCodes.cpp
+  VolumeCtrl.cpp
+  WebClientSocket.cpp
+  WebServer.cpp
+C:\Code\mpc-hc\src\mpc-hc\PPageToolBar.cpp(69,41): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageToolBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PPageToolBar.cpp(70,30): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageToolBar.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PPageToolBar.cpp(113,48): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageToolBar.cpp')
+  
+  WebServerSocket.cpp
+  WicUtils.cpp
+C:\Code\mpc-hc\src\mpc-hc\WicUtils.cpp(131,74): warning C4267: 'argument': conversion from 'size_t' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/WicUtils.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\WicUtils.cpp(137,80): warning C4267: 'argument': conversion from 'size_t' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/WicUtils.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\WicUtils.cpp(143,79): warning C4267: 'argument': conversion from 'size_t' to 'UINT', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/WicUtils.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\PPageToolBarLayout.cpp(437,51): warning C4244: 'argument': conversion from 'INT_PTR' to 'int', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/PPageToolBarLayout.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\WicUtils.cpp(294,51): warning C4267: 'argument': conversion from 'size_t' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/WicUtils.cpp')
+  
+C:\Code\mpc-hc\src\mpc-hc\WicUtils.cpp(509,56): warning C4267: 'argument': conversion from 'size_t' to 'DWORD', possible loss of data [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  (compiling source file '/WicUtils.cpp')
+  
+  WinHotkeyCtrl.cpp
+  YoutubeDL.cpp
+  TimXmlRpc.cpp
+     Creating library C:\Code\mpc-hc\bin\mpc-hc_x64 Lite\mpc-hc64.lib and object C:\Code\mpc-hc\bin\mpc-hc_x64 Lite\mpc-hc64.exp
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 55788 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+LINK : warning LNK4199: /DELAYLOAD:psapi.dll ignored; no imports found from psapi.dll [C:\Code\mpc-hc\src\mpc-hc\mpc-hc.vcxproj]
+  mpc-hc.vcxproj -> C:\Code\mpc-hc\bin\mpc-hc_x64 Lite\mpc-hc64.exe
+ 
+------------------------------
+[INFO]:  mpc-hc.sln Release Lite x64 compiled successfully
+------------------------------ 
+
+ 
+------------------------------
+[INFO]:  Compilation started on 06/09/2026-10:06:04.27 and completed on 06/09/2026-10:07:59.94 [1m 55s 670ms]
+------------------------------ 
+
+BUILD_EXIT=0 

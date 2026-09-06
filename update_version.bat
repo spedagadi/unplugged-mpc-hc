@@ -23,7 +23,7 @@ PUSHD "%FILE_DIR%"
 
 SET "COMMON=%FILE_DIR%\common.bat"
 
-IF EXIST "build.user.bat" CALL "build.user.bat"
+IF EXIST "build.user.bat" CALL "%~dp0build.user.bat"
 
 IF NOT DEFINED MPCHC_GIT IF DEFINED GIT (SET MPCHC_GIT=%GIT%) ELSE (SET MPCHC_GIT="C:\Program Files\Git")
 

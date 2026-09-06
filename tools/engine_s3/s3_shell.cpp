@@ -833,6 +833,15 @@ void RefreshPlaybackInfo() {
     }
 }
 
+// -- Audio-output rows (Playback tab: PCM / Bitstream + per-codec toggles) --
+struct AudioOutRow {
+    enum class Kind { Mode, Toggle };
+    Kind kind;
+    const wchar_t* label;
+    RECT rc;
+};
+std::vector<AudioOutRow> g_audioOutRows;
+
 void PaintPlaySheet(HDC dc, int w, int h) {
     RECT bg = {0, 0, w, h};
     HBRUSH b = CreateSolidBrush(COL_PANEL); FillRect(dc, &bg, b); DeleteObject(b);
@@ -881,6 +890,63 @@ void PaintPlaySheet(HDC dc, int w, int h) {
         SetTextColor(dc, COL_MID);
         DrawTextW(dc, g_hwLine.c_str(), -1, &rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, fo);
+        y += S(28);
+    }
+
+    // OUTPUT: HD audio bitstream — PCM/Bitstream cycle + per-codec toggles + DTS-HD framing
+    if (g_player) {
+        Section(L"OUTPUT");
+        MpcPlayer::AudioMode mode = MpcPlayer::AudioMode::PCM;
+        MpcPlayer::BitstreamConfig bs{};
+        g_player->GetAudioMode(mode);
+        g_player->GetBitstreamConfig(bs);
+        g_audioOutRows.clear();
+
+        auto Toggle = [&](const wchar_t* label, bool on) {
+            RECT rr = {kPad, y, w - kPad, y + S(28)};
+            SetBkMode(dc, TRANSPARENT);
+            HFONT fo = (HFONT)SelectObject(dc, g_fLabel);
+            SetTextColor(dc, COL_TEXT);
+            RECT lb = {kPad + S(6), y, w - S(70), y + S(28)};
+            DrawTextW(dc, label, -1, &lb, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, fo);
+            RECT sw = {w - kPad - S(46), y + S(4), w - kPad, y + S(26)};
+            HBRUSH bgb = CreateSolidBrush(on ? COL_ACCENT : RGB(0x2A, 0x2A, 0x2E));
+            FillRect(dc, &sw, bgb); DeleteObject(bgb);
+            HBRUSH br = CreateSolidBrush(on ? COL_ACCENT2 : COL_BORDER);
+            FrameRect(dc, &sw, br); DeleteObject(br);
+            fo = (HFONT)SelectObject(dc, g_fStatus);
+            SetTextColor(dc, on ? RGB(0, 0, 0) : COL_MID);
+            DrawTextW(dc, on ? L"ON" : L"OFF", -1, &sw, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, fo);
+            g_audioOutRows.push_back({AudioOutRow::Kind::Toggle, label, rr});
+            y += S(30);
+        };
+
+        {
+            // Mode cycle
+            RECT rr = {kPad, y, w - kPad, y + S(28)};
+            SetBkMode(dc, TRANSPARENT);
+            HFONT fo = (HFONT)SelectObject(dc, g_fLabel);
+            SetTextColor(dc, COL_TEXT);
+            RECT lb = {kPad + S(6), y, w - S(150), y + S(28)};
+            DrawTextW(dc, L"Mode", -1, &lb, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, fo);
+            fo = (HFONT)SelectObject(dc, g_fValue);
+            SetTextColor(dc, COL_ACCENT2);
+            RECT cr = {w - S(148), y, w - kPad, y + S(28)};
+            const wchar_t* mtxt = (mode == MpcPlayer::AudioMode::Bitstream) ? L"\u3008  Bitstream  \u3009" : L"\u3008  PCM  \u3009";
+            DrawTextW(dc, mtxt, -1, &cr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, fo);
+            g_audioOutRows.push_back({AudioOutRow::Kind::Mode, L"Mode", rr});
+            y += S(32);
+        }
+        Toggle(L"AC-3",           bs.ac3);
+        Toggle(L"E-AC-3",         bs.eac3);
+        Toggle(L"TrueHD",         bs.trueHd);
+        Toggle(L"DTS",            bs.dts);
+        Toggle(L"DTS-HD",         bs.dtsHd);
+        Toggle(L"DTS-HD framing", bs.dtsHdFraming);
     }
 }
 
@@ -1250,6 +1316,29 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                             InvalidateRect(h, nullptr, FALSE);
                             return 0;
                         }
+                    }
+                    for (auto& r : g_audioOutRows) {
+                        if (!PtInRect(&r.rc, p)) continue;
+                        MpcPlayer::AudioMode mode = MpcPlayer::AudioMode::PCM;
+                        MpcPlayer::BitstreamConfig bs{};
+                        g_player->GetAudioMode(mode);
+                        g_player->GetBitstreamConfig(bs);
+                        if (r.kind == AudioOutRow::Kind::Mode) {
+                            mode = (mode == MpcPlayer::AudioMode::PCM) ? MpcPlayer::AudioMode::Bitstream : MpcPlayer::AudioMode::PCM;
+                            g_player->SetAudioMode(mode);
+                            std::wcout << L"[AUDIO] mode = " << (mode == MpcPlayer::AudioMode::Bitstream ? L"Bitstream" : L"PCM") << L"\n";
+                        } else {
+                            if (wcscmp(r.label, L"AC-3") == 0)           bs.ac3 = !bs.ac3;
+                            else if (wcscmp(r.label, L"E-AC-3") == 0)    bs.eac3 = !bs.eac3;
+                            else if (wcscmp(r.label, L"TrueHD") == 0)    bs.trueHd = !bs.trueHd;
+                            else if (wcscmp(r.label, L"DTS") == 0)       bs.dts = !bs.dts;
+                            else if (wcscmp(r.label, L"DTS-HD") == 0)    bs.dtsHd = !bs.dtsHd;
+                            else if (wcscmp(r.label, L"DTS-HD framing") == 0) bs.dtsHdFraming = !bs.dtsHdFraming;
+                            g_player->SetBitstreamConfig(bs);
+                            std::wcout << L"[AUDIO] bitstream " << r.label << L"\n";
+                        }
+                        InvalidateRect(h, nullptr, FALSE);
+                        return 0;
                     }
                 }
                 return 0;

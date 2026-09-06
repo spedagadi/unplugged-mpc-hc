@@ -1,0 +1,15 @@
+[INIT] AttachRenderTarget hr=0x0 SetRenderer(MPCVR) hr=0x0
+[INIT] Open hr=0x0 Play hr=0x1
+[BRIDGE] test-set hr=0x0
+[BRIDGE] test-echo enable=1 mode=1 gamma=1.35 shadow=0.15 highlight=-0.1 chNeutral=1.5 cr=0.4
+[STATS] mode: Manual   domain: SDR-remap   active: no
+gamma=0.0000   shadow=0.000   highlight=0.000
+scene: peak=0.0000 avg=0.0000   pred=0.0000   feat=n/a
+hunt=0.000(off)   chroma=0.00/0.00 knee=0.00 skin=0.00(off)
+cr=0.000(off)   radiance=0.000@0.00(off)
+[SYS] zion.toneMode = Off (live)
+[BRIDGE] SetMlSettings hr=0x0
+[BRIDGE] echo enable=1 mode=1 gamma=0.5 shadow=0.4 highlight=0
+[SYS] zion.toneMode = Auto (live)
+[BRIDGE] SetMlSettings hr=0x0
+[BRIDGE] echo enable=1 mode=1 gamma=0.5 shadow=0.4 highlight=0.65

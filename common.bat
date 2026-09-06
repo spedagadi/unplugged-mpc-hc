@@ -24,11 +24,11 @@ POPD
 EXIT /B
 
 :SubPreBuild
-IF EXIST "build.user.bat" CALL "build.user.bat"
+IF EXIST "build.user.bat" CALL "%~dp0build.user.bat"
 EXIT /B
 
 :SubSetPath
-IF EXIST "build.user.bat" CALL "build.user.bat"
+IF EXIST "build.user.bat" CALL "%~dp0build.user.bat"
 IF NOT DEFINED MPCHC_MINGW32 IF DEFINED MINGW32 (SET "MPCHC_MINGW32=%MINGW32%") ELSE (SET "MPCHC_MINGW32=C:\msys64\mingw32")
 IF NOT DEFINED MPCHC_MINGW64 IF DEFINED MINGW64 (SET "MPCHC_MINGW64=%MINGW64%") ELSE (SET "MPCHC_MINGW64=C:\msys64\mingw64")
 IF NOT DEFINED MPCHC_MSYS    IF DEFINED MSYS    (SET "MPCHC_MSYS=%MSYS%")       ELSE (SET "MPCHC_MSYS=C:\msys64")

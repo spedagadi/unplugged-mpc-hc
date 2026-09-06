@@ -1,0 +1,20 @@
+[INIT] AttachRenderTarget hr=0x0 SetRenderer(MPCVR) hr=0x0
+[AUDIO] CoCreate LAVAudio hr=0x0
+[AUDIO] AddFilter LAVAudio hr=0x0 CoCreate DSound hr=0x0
+[AUDIO] connect pin hrE=0x0 dec->render hrF=0x0
+[INIT] Open hr=0x0 Play hr=0x1
+[BRIDGE] SetMlSettings hr=0x0
+[BRIDGE] echo enable=1 mode=2 gamma=1 shadow=0 highlight=0
+[BRIDGE] baseline echo enable=1 mode=2 tone=1 chroma=1 cr=0 radi=0
+[STATS] mode: Auto   domain: SDR-remap   active: no
+gamma=0.0000   shadow=0.000   highlight=0.000
+scene: peak=0.0000 avg=0.0000   pred=0.0000   feat=n/a
+hunt=0.000(off)   chroma=0.00/0.00 knee=0.00 skin=0.00(off)
+cr=0.000(off)   radiance=0.000@0.00(off)
+[PROC] DirectX 11
+Graphics adapter: NVIDIA GeForce RTX 2080 Ti (10DE:1E07)
+VideoProcessor  : D3D11, RateConversion_0
+DeinterlaceTech.: none
+Reference Frames: Past 0, Future 0
+Display: MSI MD342CQP 3440x1440 100.000 Hz Primary windowed
+  Color: RGB 8-bit HDR10: Off
