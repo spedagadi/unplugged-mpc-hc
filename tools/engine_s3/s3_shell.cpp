@@ -835,6 +835,43 @@ void RefreshPlaybackInfo() {
     }
 }
 
+// Demo defaults: ML ON, Tone Auto, Chroma Default, Detail Off, every Tone/Chroma
+// option enabled — independent of MPCVR's persisted state. Applied for whatever
+// is playing (startup or file-picker open).
+void ApplyDemoDefaults() {
+    for (auto& r : g_rows) {
+        if      (!strcmp(r.key, "zion.toneMode"))   r.opt = 0;   // Auto
+        else if (!strcmp(r.key, "zion.chromaMode")) r.opt = 0;   // Default
+        else if (!strcmp(r.key, "zion.detailMode")) r.opt = 2;   // Off
+    }
+    g_mlMasterEnable = true;   // Enable ML grade ON
+    for (auto& r : g_rows)
+        if (r.group == kGroupZion && r.type == RowType::Slider)
+            r.enabledFlag = true;   // all Tone/Chroma options enabled
+    UpdateGates();
+    RebuildLayout();
+    PushMlToRenderer();
+    MpcPlayer::MlSettings back;
+    if (g_player && SUCCEEDED(g_player->GetMlSettings(back)))
+        std::cout << "[BRIDGE] baseline echo enable=" << (back.enable ? 1 : 0)
+                  << " mode=" << back.mode
+                  << " tone=" << (back.toneCurveEnabled ? 1 : 0)
+                  << " chroma=" << (back.chromaEnabled ? 1 : 0)
+                  << " cr=" << (back.crEnabled ? 1 : 0)
+                  << " radi=" << (back.radiEnabled ? 1 : 0) << "\n";
+}
+
+// Fill the Playback sheet (streams / audio devices / hardware) + seed the bridged
+// rows for a freshly opened file. Called on startup AND on every picker open.
+void RenderSessionEntered() {
+    PullMlFromRenderer();
+    PullHdrFromRenderer();
+    PullOutFromRenderer();
+    { bool aOn = false; if (g_player && SUCCEEDED(g_player->GetAudioEnabled(aOn))) g_audioOn = aOn; }
+    RefreshPlaybackInfo();
+    ApplyDemoDefaults();
+}
+
 // -- Audio-output rows (Playback tab: PCM / Bitstream + per-codec toggles) --
 struct AudioOutRow {
     enum class Kind { Mode, Toggle };
@@ -1452,6 +1489,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_player->Stop();
                 g_player->Open(g_openFile);
                 g_player->Play();
+                RenderSessionEntered();   // refresh Playback sheet + seed bridges/demo defaults
             }
         } else if (w == kCmdPlayPause && g_player) {
             MpcPlayer::Snapshot sn; g_player->GetSnapshot(sn);
@@ -1591,36 +1629,7 @@ int wmain(int argc, wchar_t* argv[]) {
             const HRESULT hrP = player.Play();
             std::cout << "[INIT] Open hr=0x" << std::hex << (unsigned long)hrO
                       << " Play hr=0x" << (unsigned long)hrP << std::dec << "\n";
-            PullMlFromRenderer();   // seed the ZION rows from MPCVR's real settings
-            PullHdrFromRenderer();
-            PullOutFromRenderer();
-            { bool aOn = false; if (SUCCEEDED(player.GetAudioEnabled(aOn))) g_audioOn = aOn; }
-            RefreshPlaybackInfo();
-
-            // Baseline: ALWAYS Tone curve Off, Chroma Default, Detail Off (CR/Res off),
-            // regardless of MPCVR's persisted settings from previous runs.
-            // Demo default: ML ON, Tone Auto, Chroma Default, Detail Off, every
-            // Tone/Chroma option enabled — regardless of MPCVR's saved/zero state.
-            for (auto& r : g_rows) {
-                if      (!strcmp(r.key, "zion.toneMode"))   r.opt = 0;   // Auto
-                else if (!strcmp(r.key, "zion.chromaMode")) r.opt = 0;   // Default
-                else if (!strcmp(r.key, "zion.detailMode")) r.opt = 2;   // Off
-            }
-            g_mlMasterEnable = true;   // Enable ML grade ON
-            for (auto& r : g_rows)
-                if (r.group == kGroupZion && r.type == RowType::Slider)
-                    r.enabledFlag = true;   // all Tone/Chroma options enabled
-            UpdateGates();
-            RebuildLayout();
-            PushMlToRenderer();
-            MpcPlayer::MlSettings back;
-            if (SUCCEEDED(player.GetMlSettings(back)))
-                std::cout << "[BRIDGE] baseline echo enable=" << (back.enable ? 1 : 0)
-                          << " mode=" << back.mode
-                          << " tone=" << (back.toneCurveEnabled ? 1 : 0)
-                          << " chroma=" << (back.chromaEnabled ? 1 : 0)
-                          << " cr=" << (back.crEnabled ? 1 : 0)
-                          << " radi=" << (back.radiEnabled ? 1 : 0) << "\n";
+            RenderSessionEntered();
             std::wstring stats;
             if (SUCCEEDED(player.GetMlStats(stats)))
                 std::wcout << L"[STATS] " << stats << L"\n";
