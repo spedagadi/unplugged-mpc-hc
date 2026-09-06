@@ -39,12 +39,14 @@ public:
     };
 
     struct BitstreamConfig {
-        bool ac3 = false;
-        bool eac3 = false;
-        bool trueHd = false;
-        bool dts = false;
-        bool dtsHd = false;
-        bool dtsHdFraming = false;
+        // All-default ON: the demo targets an AVR over HDMI; every HD format
+        // passes through so the receiver decodes.
+        bool ac3 = true;
+        bool eac3 = true;
+        bool trueHd = true;
+        bool dts = true;
+        bool dtsHd = true;
+        bool dtsHdFraming = true;
     };
 
     struct Snapshot {
@@ -219,7 +221,7 @@ private:
     int volumePercent_ = 100;
     bool muted_ = false;
     bool audioEnabled_ = true;
-    AudioMode audioMode_ = AudioMode::PCM;
+    AudioMode audioMode_ = AudioMode::Bitstream;   // demo default: HDMI bitstream passthrough
     BitstreamConfig bitstream_;
     std::wstring audioDeviceId_, audioDeviceName_;
     bool audioRendererIsMpcAudio_ = false;   // true when MpcAudioRenderer won the CoCreate

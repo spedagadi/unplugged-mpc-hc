@@ -859,6 +859,23 @@ void ApplyDemoDefaults() {
                   << " chroma=" << (back.chromaEnabled ? 1 : 0)
                   << " cr=" << (back.crEnabled ? 1 : 0)
                   << " radi=" << (back.radiEnabled ? 1 : 0) << "\n";
+
+    // Audio demo default: HDMI bitstream passthrough, every HD format ON —
+    // the receiver decodes; the Playback sheet's OUTPUT section starts ready
+    // (long subtitle lists used to push it below the fold on the HTPC).
+    if (g_player) {
+        MpcPlayer::BitstreamConfig bs;
+        bs.ac3 = bs.eac3 = bs.trueHd = bs.dts = bs.dtsHd = bs.dtsHdFraming = true;
+        g_player->SetAudioMode(MpcPlayer::AudioMode::Bitstream);
+        g_player->SetBitstreamConfig(bs);
+        MpcPlayer::AudioMode am = MpcPlayer::AudioMode::PCM;
+        MpcPlayer::BitstreamConfig cb{};
+        g_player->GetAudioMode(am);
+        g_player->GetBitstreamConfig(cb);
+        std::cout << "[AUDIO] demo default mode=" << (am == MpcPlayer::AudioMode::Bitstream ? "bitstream" : "pcm")
+                  << " formats=" << (cb.ac3 ? 1 : 0) << (cb.eac3 ? 1 : 0) << (cb.trueHd ? 1 : 0)
+                  << (cb.dts ? 1 : 0) << (cb.dtsHd ? 1 : 0) << "\n";
+    }
 }
 
 // Fill the Playback sheet (streams / audio devices / hardware) + seed the bridged
