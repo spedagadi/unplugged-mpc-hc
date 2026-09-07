@@ -25,6 +25,43 @@
 #include <functional>
 #include <string_view>
 #include <algorithm>
+#include <cstdio>
+#include <cstdint>
+#include <cstdarg>
+#include <chrono>
+#include <ctime>
+
+// ── diagnostic log ──────────────────────────────────────────────────────────
+namespace {
+FILE* g_diagLog = nullptr;
+uint32_t g_configSeq = 0;
+
+void DiagOpen() {
+    if (g_diagLog) return;
+    g_diagLog = _wfopen(L"s3_shell_diag.log", L"a");
+    if (g_diagLog) {
+        fprintf(g_diagLog, "\n=== s3_shell session start ===\n");
+        fflush(g_diagLog);
+    }
+}
+void DiagClose() { if (g_diagLog) { fclose(g_diagLog); g_diagLog = nullptr; } }
+
+void DiagLog(const char* fmt, ...) {
+    if (!g_diagLog) return;
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count() % 1000;
+    struct tm lt; localtime_s(&lt, &t);
+    fprintf(g_diagLog, "%02d:%02d:%02d.%03d  ",
+        lt.tm_hour, lt.tm_min, lt.tm_sec, (int)ms);
+    va_list ap; va_start(ap, fmt);
+    vfprintf(g_diagLog, fmt, ap);
+    va_end(ap);
+    fprintf(g_diagLog, "\n");
+    fflush(g_diagLog);
+}
+} // namespace
 
 // -- theme (Unplugged tokens) ------------------------------------------------
 namespace {
@@ -115,14 +152,12 @@ struct Row {
 std::vector<Row> g_rows;
 int g_toneModeRow = -1;    // index of the tone-curve Mode row
 int g_chromaModeRow = -1;  // index of the chroma Mode row
-int g_detailModeRow = -1;  // index of the detail Mode row
 
 bool ModeManual(int row) {
     return row >= 0 && row < (int)g_rows.size() && g_rows[row].opt == 1;
 }
 bool ToneManual()   { return ModeManual(g_toneModeRow); }
 bool ChromaManual() { return ModeManual(g_chromaModeRow); }
-bool DetailManual() { return ModeManual(g_detailModeRow); }
 
 enum RowGroup : int {
     kGroupSource = 0,
@@ -149,21 +184,20 @@ bool SecActive(int modeRow) { return SectionMode(modeRow) != 2; }
 //                   on AND the section is in Manual (Auto/Default = model-driven).
 // Non-Manual sections snap their sliders to the stored defaults.
 void UpdateGates() {
-    const bool toneM = SecManual(g_toneModeRow), chrM = SecManual(g_chromaModeRow), detM = SecManual(g_detailModeRow);
-    const bool toneA = SecActive(g_toneModeRow), chrA = SecActive(g_chromaModeRow), detA = SecActive(g_detailModeRow);
+    const bool toneM = SecManual(g_toneModeRow), chrM = SecManual(g_chromaModeRow);
+    const bool toneA = SecActive(g_toneModeRow), chrA = SecActive(g_chromaModeRow);
     for (size_t i = 0; i < g_rows.size(); ++i) {
         Row& r = g_rows[i];
         if (strcmp(r.key, "zion.enabled") == 0) { r.disabled = r.adjustable = false; continue; }
         // HDR/OUTPUT/SYSTEM groups are independent settings — never ML-locked.
         if (r.group != kGroupZion) { r.disabled = false; r.adjustable = true; continue; }
-        const bool modeRow = (int)i == g_toneModeRow || (int)i == g_chromaModeRow || (int)i == g_detailModeRow;
+        const bool modeRow = (int)i == g_toneModeRow || (int)i == g_chromaModeRow;
         if (modeRow) { r.disabled = !g_mlMasterEnable; r.adjustable = false; continue; }
 
         bool hardLive = g_mlMasterEnable;
         bool secM = true, secA = true;
         if (r.gate == 1) { secM = toneM; secA = toneA; }
         else if (r.gate == 2) { secM = chrM; secA = chrA; }
-        else if (r.gate == 3) { secM = detM; secA = detA; }
         r.disabled = !hardLive || !secA;             // hard lock only when OFF/master
         r.adjustable = !r.disabled && r.enabledFlag && secM;
         if (r.type == RowType::Slider && !secM) r.val = r.defaultVal;   // Auto/Default/Off snap
@@ -207,15 +241,12 @@ void BuildRows() {
     add(L"Knee", RowType::Slider, kGroupZion, "zion.knee", true, L"CHROMA", {}, 0, 0.10f, 0.90f, 0.55f, 0.55f, 2);
     add(L"Skin", RowType::Slider, kGroupZion, "zion.skin", true, L"CHROMA", {}, 0, 0.50f, 1.00f, 0.95f, 0.95f, 2);
 
-    add(L"Mode", RowType::Cycle, kGroupZion, "zion.detailMode", true, L"DETAIL",
-        {L"Auto", L"Manual", L"Off"}, 2);   // baseline: Off → CR/Res unchecked
-    g_detailModeRow = (int)g_rows.size() - 1;
-    add(L"CR strength", RowType::Slider, kGroupZion, "zion.cr", true, L"DETAIL", {}, 0, 0.00f, 0.50f, 0.30f, 0.30f, 3);
-    add(L"Res knee", RowType::Slider, kGroupZion, "zion.resKnee", true, L"DETAIL", {}, 0, 0.40f, 0.90f, 0.60f, 0.60f, 3);
-    add(L"Res strength", RowType::Slider, kGroupZion, "zion.resStr", true, L"DETAIL", {}, 0, 0.00f, 0.60f, 0.30f, 0.30f, 3);
-
     add(L"Passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
     add(L"Frame log", RowType::Toggle, kGroupZion, "zion.debugFrameLog", false, L"DEBUG");
+
+    // -- BLACK BARS (P0 repaint + red-rect debug overlay) --
+    add(L"Repaint bars", RowType::Toggle, kGroupZion, "zion.barsRepaint", true, L"BLACK BARS", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Highlight bars", RowType::Toggle, kGroupZion, "zion.barsHighlight", true, L"BLACK BARS");
 
     // -- HDR (independent output settings; exact MPCVR dialog semantics) --
     add(L"Prefer DV over PQ/HLG", RowType::Toggle, kGroupHdr, "hdr.preferDoVi", true, L"TONE MAPPING");
@@ -268,6 +299,8 @@ void BuildRows() {
             strncmp(r.key, "hdr.", 4) == 0)
             r.hasUncheck = false;
 
+    for (auto& r : g_rows)
+        if (!strcmp(r.key, "zion.enabled")) { g_mlMasterEnable = r.on; break; }
     UpdateGates();
 }
 
@@ -431,12 +464,29 @@ RECT CheckboxBand(const LayoutEntry& e, int panelW, const Row&) {
 void ApplyRow(int i) {
     if (i < 0 || i >= (int)g_rows.size()) return;
     Row& r = g_rows[i];
+    const char* typeStr = r.type == RowType::Toggle ? "Toggle" :
+                          r.type == RowType::Cycle  ? "Cycle"  : "Slider";
+    // capture old state for logging
+    bool oldOn = r.on; int oldOpt = r.opt; float oldVal = r.val;
     switch (r.type) {
     case RowType::Toggle: r.on = !r.on; break;
     case RowType::Cycle:  r.opt = (r.opt + 1) % (int)r.options.size(); break;
     case RowType::Slider:
         break;  // value set by hit-test before ApplyRow for sliders
     }
+    if (r.type == RowType::Toggle)
+        DiagLog("[CLICK] row=%d key='%s' type=%s  %s -> %s",
+            i, r.key, typeStr, oldOn ? "ON" : "OFF", r.on ? "ON" : "OFF");
+    else if (r.type == RowType::Cycle) {
+        char oldOp[64] = {0}, newOp[64] = {0};
+        if (oldOpt < (int)r.options.size())
+            WideCharToMultiByte(CP_ACP, 0, r.options[oldOpt], -1, oldOp, 64, nullptr, nullptr);
+        WideCharToMultiByte(CP_ACP, 0, r.options[r.opt], -1, newOp, 64, nullptr, nullptr);
+        DiagLog("[CLICK] row=%d key='%s' type=%s  '%s' -> '%s'",
+            i, r.key, typeStr, oldOp, newOp);
+    } else
+        DiagLog("[CLICK] row=%d key='%s' type=%s  %.4f -> %.4f",
+            i, r.key, typeStr, oldVal, r.val);
     if (strcmp(r.key, "zion.enabled") == 0) {
         g_mlMasterEnable = r.on;
         UpdateGates();   // master off → every Zion control locks
@@ -483,12 +533,11 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     MpcPlayer::MlSettings m;
     const int toneOpt = RowOpt("zion.toneMode");   // 0 Auto, 1 Manual, 2 Off
     const int chrOpt  = RowOpt("zion.chromaMode");
-    const int detOpt  = RowOpt("zion.detailMode");
     m.enable = RowOn("zion.enabled");
     // Signed-off mapping: the master mode is driven ONLY by the Tone-curve
     // section (MPCVR has a single iMLMode; chroma/detail are subfeature gates).
     m.mode = (toneOpt == 1) ? 1 : (toneOpt == 0 ? 2 : 0);   // Manual / Auto / Disable
-    const bool toneOn = toneOpt != 2, chrOn = chrOpt != 2, detOn = detOpt != 2;
+    const bool toneOn = toneOpt != 2, chrOn = chrOpt != 2;
     m.toneCurveEnabled = toneOn;   // the dialog's "Tone curve" checkbox
     m.gammaEnabled     = toneOn && RowFlag("zion.gamma");
     m.shadowEnabled    = toneOn && RowFlag("zion.shadow");
@@ -507,13 +556,22 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.chFire    = RowVal("zion.chF");
     m.chKnee    = RowVal("zion.knee");
     m.chSkin    = RowVal("zion.skin");
-    m.crEnabled  = detOn && RowFlag("zion.cr");
-    m.radiEnabled = detOn && (RowFlag("zion.resKnee") || RowFlag("zion.resStr"));
-    m.crStrength  = RowVal("zion.cr");
-    m.radiKnee    = RowVal("zion.resKnee");
-    m.radiStrength = RowVal("zion.resStr");
     m.debugLog  = RowOn("zion.debugFrameLog");
     m.debugCopy = RowOn("zion.debugCopyShaders");
+    m.barsEnabled = RowOn("zion.barsRepaint");
+    m.barsHighlight = RowOn("zion.barsHighlight");
+    m.configSeq = ++g_configSeq;
+    DiagLog("[BUILD] configSeq=%u enable=%d mode=%d toneCurve=%d gamma=%.3f(en=%d) "
+        "shadow=%.3f(en=%d) highlight=%.3f(en=%d) chroma=%d hunt=%.2f(en=%d) "
+        "chN=%.2f(en=%d) chF=%.2f(en=%d) knee=%.2f skin=%.2f "
+        "bars=%d barsHL=%d debugLog=%d debugCopy=%d",
+        m.configSeq, (int)m.enable, m.mode, (int)m.toneCurveEnabled,
+        m.gamma, (int)m.gammaEnabled, m.shadow, (int)m.shadowEnabled,
+        m.highlight, (int)m.highlightEnabled, (int)m.chromaEnabled,
+        m.hunt, (int)m.huntEnabled, m.chNeutral, (int)m.chNeutralEnabled,
+        m.chFire, (int)m.chFireEnabled, m.chKnee, m.chSkin,
+        (int)m.barsEnabled, (int)m.barsHighlight,
+        (int)m.debugLog, (int)m.debugCopy);
     return m;
 }
 
@@ -531,28 +589,41 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         else if (!strcmp(r.key, "zion.chF"))       { r.val = m.chFire; r.enabledFlag = m.chFireEnabled; }
         else if (!strcmp(r.key, "zion.knee"))      { r.val = m.chKnee; r.enabledFlag = true; }
         else if (!strcmp(r.key, "zion.skin"))      { r.val = m.chSkin; r.enabledFlag = true; }
-        else if (!strcmp(r.key, "zion.detailMode")) { r.opt = (m.crEnabled || m.radiEnabled) ? (m.mode == 1 ? 1 : 0) : 2; }
-        else if (!strcmp(r.key, "zion.cr"))        { r.val = m.crStrength; r.enabledFlag = m.crEnabled; }
-        else if (!strcmp(r.key, "zion.resKnee"))   { r.val = m.radiKnee; r.enabledFlag = m.radiEnabled; }
-        else if (!strcmp(r.key, "zion.resStr"))    { r.val = m.radiStrength; r.enabledFlag = m.radiEnabled; }
         else if (!strcmp(r.key, "zion.debugFrameLog")) { r.on = m.debugLog; }
         else if (!strcmp(r.key, "zion.debugCopyShaders")) { r.on = m.debugCopy; }
+        else if (!strcmp(r.key, "zion.barsRepaint"))   { r.on = m.barsEnabled; }
+        else if (!strcmp(r.key, "zion.barsHighlight")) { r.on = m.barsHighlight; }
     }
     g_mlMasterEnable = m.enable;
     UpdateGates();
 }
 
 void PushMlToRenderer() {
-    if (!g_player) return;
-    const HRESULT hr = g_player->SetMlSettings(BuildMlFromRows());
+    if (!g_player) {
+        DiagLog("[PUSH] g_player is null, skipping");
+        return;
+    }
+    auto ml = BuildMlFromRows();
+    DiagLog("[PUSH] calling SetMlSettings configSeq=%u", ml.configSeq);
+    const HRESULT hr = g_player->SetMlSettings(ml);
+    DiagLog("[PUSH] SetMlSettings returned hr=0x%08lx %s",
+        (unsigned long)hr, SUCCEEDED(hr) ? "OK" : "FAIL");
     std::cout << "[BRIDGE] SetMlSettings hr=0x" << std::hex << (unsigned long)hr << std::dec << "\n";
     MpcPlayer::MlSettings back;
-    if (SUCCEEDED(g_player->GetMlSettings(back)))
+    if (SUCCEEDED(g_player->GetMlSettings(back))) {
+        DiagLog("[ECHO] configSeq=%u enable=%d mode=%d gamma=%.3f shadow=%.3f "
+            "highlight=%.3f bars=%d barsHL=%d",
+            back.configSeq, (int)back.enable, back.mode,
+            back.gamma, back.shadow, back.highlight,
+            (int)back.barsEnabled, (int)back.barsHighlight);
         std::cout << "[BRIDGE] echo enable=" << (back.enable ? 1 : 0)
                   << " mode=" << back.mode
                   << " gamma=" << back.gamma
                   << " shadow=" << back.shadow
                   << " highlight=" << back.highlight << "\n";
+    } else {
+        DiagLog("[ECHO] GetMlSettings failed");
+    }
 }
 
 std::wstring g_mlStats;   // live ML internals from MPCVR (polled, shown in the left pane)
@@ -833,60 +904,6 @@ void RefreshPlaybackInfo() {
             }
         }
     }
-}
-
-// Demo defaults: ML ON, Tone Auto, Chroma Default, Detail Off, every Tone/Chroma
-// option enabled — independent of MPCVR's persisted state. Applied for whatever
-// is playing (startup or file-picker open).
-void ApplyDemoDefaults() {
-    for (auto& r : g_rows) {
-        if      (!strcmp(r.key, "zion.toneMode"))   r.opt = 0;   // Auto
-        else if (!strcmp(r.key, "zion.chromaMode")) r.opt = 0;   // Default
-        else if (!strcmp(r.key, "zion.detailMode")) r.opt = 2;   // Off
-    }
-    g_mlMasterEnable = true;   // Enable ML grade ON
-    for (auto& r : g_rows)
-        if (r.group == kGroupZion && r.type == RowType::Slider)
-            r.enabledFlag = true;   // all Tone/Chroma options enabled
-    UpdateGates();
-    RebuildLayout();
-    PushMlToRenderer();
-    MpcPlayer::MlSettings back;
-    if (g_player && SUCCEEDED(g_player->GetMlSettings(back)))
-        std::cout << "[BRIDGE] baseline echo enable=" << (back.enable ? 1 : 0)
-                  << " mode=" << back.mode
-                  << " tone=" << (back.toneCurveEnabled ? 1 : 0)
-                  << " chroma=" << (back.chromaEnabled ? 1 : 0)
-                  << " cr=" << (back.crEnabled ? 1 : 0)
-                  << " radi=" << (back.radiEnabled ? 1 : 0) << "\n";
-
-    // Audio demo default: HDMI bitstream passthrough, every HD format ON —
-    // the receiver decodes; the Playback sheet's OUTPUT section starts ready
-    // (long subtitle lists used to push it below the fold on the HTPC).
-    if (g_player) {
-        MpcPlayer::BitstreamConfig bs;
-        bs.ac3 = bs.eac3 = bs.trueHd = bs.dts = bs.dtsHd = bs.dtsHdFraming = true;
-        g_player->SetAudioMode(MpcPlayer::AudioMode::Bitstream);
-        g_player->SetBitstreamConfig(bs);
-        MpcPlayer::AudioMode am = MpcPlayer::AudioMode::PCM;
-        MpcPlayer::BitstreamConfig cb{};
-        g_player->GetAudioMode(am);
-        g_player->GetBitstreamConfig(cb);
-        std::cout << "[AUDIO] demo default mode=" << (am == MpcPlayer::AudioMode::Bitstream ? "bitstream" : "pcm")
-                  << " formats=" << (cb.ac3 ? 1 : 0) << (cb.eac3 ? 1 : 0) << (cb.trueHd ? 1 : 0)
-                  << (cb.dts ? 1 : 0) << (cb.dtsHd ? 1 : 0) << "\n";
-    }
-}
-
-// Fill the Playback sheet (streams / audio devices / hardware) + seed the bridged
-// rows for a freshly opened file. Called on startup AND on every picker open.
-void RenderSessionEntered() {
-    PullMlFromRenderer();
-    PullHdrFromRenderer();
-    PullOutFromRenderer();
-    { bool aOn = false; if (g_player && SUCCEEDED(g_player->GetAudioEnabled(aOn))) g_audioOn = aOn; }
-    RefreshPlaybackInfo();
-    ApplyDemoDefaults();
 }
 
 // -- Audio-output rows (Playback tab: PCM / Bitstream + per-codec toggles) --
@@ -1247,7 +1264,7 @@ void HandleSysClick(const POINT& p, int panelW, int panelH) {
     } else if (r.type != RowType::Slider) {
         if (r.disabled) return;   // locked by master-off or section mode off
         ApplyRow(rowIdx);
-        if (rowIdx == g_toneModeRow || rowIdx == g_chromaModeRow || rowIdx == g_detailModeRow) {
+        if (rowIdx == g_toneModeRow || rowIdx == g_chromaModeRow) {
             UpdateGates();
             RebuildLayout();   // mode != Manual snaps + locks the section's sliders
         }
@@ -1506,7 +1523,11 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_player->Stop();
                 g_player->Open(g_openFile);
                 g_player->Play();
-                RenderSessionEntered();   // refresh Playback sheet + seed bridges/demo defaults
+                PullMlFromRenderer();
+                PullHdrFromRenderer();
+                PullOutFromRenderer();
+                RebuildLayout();
+                DiagLog("[OPEN] pulled settings from MPCVR after file picker");
             }
         } else if (w == kCmdPlayPause && g_player) {
             MpcPlayer::Snapshot sn; g_player->GetSnapshot(sn);
@@ -1585,6 +1606,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
+    DiagOpen();
+    DiagLog("[INIT] s3_shell starting, argc=%d", argc);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX icx = {sizeof(icx)};
     icx.dwICC = ICC_BAR_CLASSES;
@@ -1646,7 +1669,13 @@ int wmain(int argc, wchar_t* argv[]) {
             const HRESULT hrP = player.Play();
             std::cout << "[INIT] Open hr=0x" << std::hex << (unsigned long)hrO
                       << " Play hr=0x" << (unsigned long)hrP << std::dec << "\n";
-            RenderSessionEntered();
+            PullMlFromRenderer();
+            PullHdrFromRenderer();
+            PullOutFromRenderer();
+            { bool aOn = false; if (SUCCEEDED(player.GetAudioEnabled(aOn))) g_audioOn = aOn; }
+            RefreshPlaybackInfo();
+            RebuildLayout();
+            DiagLog("[INIT] pulled settings from MPCVR after Open");
             std::wstring stats;
             if (SUCCEEDED(player.GetMlStats(stats)))
                 std::wcout << L"[STATS] " << stats << L"\n";
@@ -1670,6 +1699,8 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     DestroyWindow(g_hwnd);
+    DiagLog("[SHUTDOWN] s3_shell exiting");
+    DiagClose();
     CoUninitialize();
     return 0;
 }

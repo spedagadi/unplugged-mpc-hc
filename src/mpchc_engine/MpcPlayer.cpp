@@ -654,13 +654,25 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLChromaKnee = m.chKnee;
     s.bMLChromaSkinEnabled = m.chSkinEnabled;
     s.fMLChromaSkinProtect = m.chSkin;
-    s.bMLCREnabled = m.crEnabled;
-    s.fMLCRStrength = m.crStrength;
-    s.bMLRadiEnabled = m.radiEnabled;
-    s.fMLRadiKnee = m.radiKnee;
-    s.fMLRadiStrength = m.radiStrength;
     s.bMLDebugLog = m.debugLog;
     s.bMLDebugCopy = m.debugCopy;
+    s.bMLBars = m.barsEnabled;
+    s.bMLBarsHighlight = m.barsHighlight;
+    s.configSeq = m.configSeq;
+    OutputDebugStringA("[ENGINE] ApplyMlToSettings");
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "[ENGINE] configSeq=%u enable=%d mode=%d toneCurve=%d gamma=%.3f(en=%d) shadow=%.3f(en=%d) "
+        "highlight=%.3f(en=%d) chroma=%d hunt=%.2f(en=%d) chN=%.2f(en=%d) chF=%.2f(en=%d) "
+        "knee=%.2f skin=%.2f bars=%d barsHL=%d debugLog=%d debugCopy=%d sizeof(Settings_t)=%zu\n",
+        m.configSeq, (int)m.enable, m.mode, (int)m.toneCurveEnabled,
+        m.gamma, (int)m.gammaEnabled, m.shadow, (int)m.shadowEnabled,
+        m.highlight, (int)m.highlightEnabled, (int)m.chromaEnabled,
+        m.hunt, (int)m.huntEnabled, m.chNeutral, (int)m.chNeutralEnabled,
+        m.chFire, (int)m.chFireEnabled, m.chKnee, m.chSkin,
+        (int)m.barsEnabled, (int)m.barsHighlight,
+        (int)m.debugLog, (int)m.debugCopy, sizeof(Settings_t));
+    OutputDebugStringA(buf);
 }
 
 void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
@@ -685,13 +697,11 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.chKnee = s.fMLChromaKnee;
     m.chSkinEnabled = s.bMLChromaSkinEnabled;
     m.chSkin = s.fMLChromaSkinProtect;
-    m.crEnabled = s.bMLCREnabled;
-    m.crStrength = s.fMLCRStrength;
-    m.radiEnabled = s.bMLRadiEnabled;
-    m.radiKnee = s.fMLRadiKnee;
-    m.radiStrength = s.fMLRadiStrength;
     m.debugLog = s.bMLDebugLog;
     m.debugCopy = s.bMLDebugCopy;
+    m.barsEnabled = s.bMLBars;
+    m.barsHighlight = s.bMLBarsHighlight;
+    m.configSeq = s.configSeq;
 }
 
 void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
@@ -775,13 +785,24 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
 
 HRESULT MpcPlayer::SetMlSettings(const MlSettings& m)
 {
-    if (!renderer_) return S_FALSE;
+    if (!renderer_) {
+        OutputDebugStringA("[ENGINE] SetMlSettings: renderer_ is null, returning S_FALSE\n");
+        return S_FALSE;
+    }
     CComQIPtr<IVideoRenderer> vr = renderer_;
-    if (!vr) return S_FALSE;
+    if (!vr) {
+        OutputDebugStringA("[ENGINE] SetMlSettings: QI for IVideoRenderer failed, returning S_FALSE\n");
+        return S_FALSE;
+    }
     Settings_t s;
     vr->GetSettings(s);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[ENGINE] SetMlSettings: configSeq=%u, pre-GetSettings sizeof=%zu\n",
+        m.configSeq, sizeof(Settings_t));
+    OutputDebugStringA(buf);
     ApplyMlToSettings(m, s);
     vr->SetSettings(s);
+    OutputDebugStringA("[ENGINE] SetMlSettings: vr->SetSettings() called, returning S_OK\n");
     return S_OK;
 }
 

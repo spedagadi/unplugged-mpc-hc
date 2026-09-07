@@ -39,14 +39,12 @@ public:
     };
 
     struct BitstreamConfig {
-        // All-default ON: the demo targets an AVR over HDMI; every HD format
-        // passes through so the receiver decodes.
-        bool ac3 = true;
-        bool eac3 = true;
-        bool trueHd = true;
-        bool dts = true;
-        bool dtsHd = true;
-        bool dtsHdFraming = true;
+        bool ac3 = false;
+        bool eac3 = false;
+        bool trueHd = false;
+        bool dts = false;
+        bool dtsHd = false;
+        bool dtsHdFraming = false;
     };
 
     struct Snapshot {
@@ -92,13 +90,11 @@ public:
         float chKnee = 0.55f;
         bool  chSkinEnabled = true;
         float chSkin = 0.95f;
-        bool  crEnabled = false;
-        float crStrength = 0.30f;
-        bool  radiEnabled = false;
-        float radiKnee = 0.60f;
-        float radiStrength = 0.30f;
         bool  debugLog = false;
         bool  debugCopy = false;
+        bool  barsEnabled = true;      // P0: repaint detected letterbox bars to black
+        bool  barsHighlight = false;   // P0: red-rect debug overlay on detected bars
+        uint32_t configSeq = 0;        // monotonic config-change counter for diagnostics
     };
 
     struct HdrSettings {
@@ -221,7 +217,7 @@ private:
     int volumePercent_ = 100;
     bool muted_ = false;
     bool audioEnabled_ = true;
-    AudioMode audioMode_ = AudioMode::Bitstream;   // demo default: HDMI bitstream passthrough
+    AudioMode audioMode_ = AudioMode::PCM;
     BitstreamConfig bitstream_;
     std::wstring audioDeviceId_, audioDeviceName_;
     bool audioRendererIsMpcAudio_ = false;   // true when MpcAudioRenderer won the CoCreate
