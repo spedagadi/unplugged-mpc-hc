@@ -228,26 +228,28 @@ void BuildRows() {
     add(L"Mode", RowType::Cycle, kGroupZion, "zion.toneMode", true, L"TONE CURVE",
         {L"Auto", L"Manual", L"Off"}, 0);   // demo default: Auto
     g_toneModeRow = (int)g_rows.size() - 1;
+    add(L"Shadow", RowType::Slider, kGroupZion, "zion.shadowToe", true, L"TONE CURVE", {}, 0, 0.00f, 0.40f, 0.00f, 0.00f, 2);
     add(L"Gamma", RowType::Slider, kGroupZion, "zion.gamma", true, L"TONE CURVE", {}, 0, 0.50f, 1.50f, 1.00f, 1.00f, 1);
     add(L"Highlight", RowType::Slider, kGroupZion, "zion.highlight", true, L"TONE CURVE", {}, 0, -0.30f, 0.40f, 0.00f, 0.00f, 1);
-
-    add(L"Strength", RowType::Slider, kGroupZion, "zion.shadow", true, L"SHADOW", {}, 0, 0.00f, 10.00f, 3.00f, 3.00f, 0);
-    add(L"Zone ceil", RowType::Slider, kGroupZion, "zion.shadowZoneCeil", true, L"SHADOW", {}, 0, 0.05f, 0.50f, 0.20f, 0.20f, 0);
-    add(L"Skin protect", RowType::Slider, kGroupZion, "zion.shadowSkinProtect", true, L"SHADOW", {}, 0, 0.00f, 1.00f, 0.65f, 0.65f, 0);
-    add(L"Ratio cap", RowType::Slider, kGroupZion, "zion.shadowRatioCap", true, L"SHADOW", {}, 0, 1.10f, 2.00f, 1.40f, 1.40f, 0);
 
     add(L"Mode", RowType::Cycle, kGroupZion, "zion.chromaMode", true, L"CHROMA",
         {L"Default", L"Manual", L"Off"}, 0);   // demo default: Default
     g_chromaModeRow = (int)g_rows.size() - 1;
-    add(L"Hunt", RowType::Slider, kGroupZion, "zion.hunt", true, L"CHROMA", {}, 0, 0.00f, 1.00f, 0.80f, 0.80f, 2);
-    add(L"Ch-N", RowType::Slider, kGroupZion, "zion.chN", true, L"CHROMA", {}, 0, 1.00f, 1.50f, 1.20f, 1.20f, 2);
-    add(L"Ch-F", RowType::Slider, kGroupZion, "zion.chF", true, L"CHROMA", {}, 0, 1.00f, 1.50f, 1.35f, 1.35f, 2);
-    add(L"Knee", RowType::Slider, kGroupZion, "zion.knee", true, L"CHROMA", {}, 0, 0.10f, 0.90f, 0.55f, 0.55f, 2);
+    add(L"Ch-N", RowType::Slider, kGroupZion, "zion.chN", true, L"CHROMA", {}, 0, 1.00f, 1.30f, 1.08f, 1.08f, 2);
+    add(L"Ch-F", RowType::Slider, kGroupZion, "zion.chF", true, L"CHROMA", {}, 0, 1.00f, 1.30f, 1.15f, 1.15f, 2);
+    add(L"Knee", RowType::Slider, kGroupZion, "zion.knee", true, L"CHROMA", {}, 0, 0.10f, 0.90f, 0.45f, 0.45f, 2);
     add(L"Skin", RowType::Slider, kGroupZion, "zion.skin", true, L"CHROMA", {}, 0, 0.50f, 1.00f, 0.95f, 0.95f, 2);
+
+    // -- MICRO CONTRAST (texture clarity, automatically gated per scene) --
+    add(L"Enable", RowType::Toggle, kGroupZion, "zion.contrast", true, L"MICRO CONTRAST", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Strength", RowType::Slider, kGroupZion, "zion.contrastStrength", true, L"MICRO CONTRAST", {}, 0, 0.00f, 0.50f, 0.15f, 0.15f, 0);
+    add(L"Zone lo", RowType::Slider, kGroupZion, "zion.contrastZoneLo", true, L"MICRO CONTRAST", {}, 0, 0.00f, 0.60f, 0.15f, 0.15f, 0);
+    add(L"Ratio cap", RowType::Slider, kGroupZion, "zion.contrastRatioCap", true, L"MICRO CONTRAST", {}, 0, 1.00f, 2.00f, 1.40f, 1.40f, 0);
 
     add(L"Passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
     add(L"Frame log", RowType::Toggle, kGroupZion, "zion.debugFrameLog", false, L"DEBUG");
-    add(L"Shadow zones", RowType::Toggle, kGroupZion, "zion.shadowDebugVis", false, L"DEBUG");
+    add(L"Face boxes", RowType::Toggle, kGroupZion, "zion.faceDebugVis", false, L"DEBUG");
+    add(L"MC heat", RowType::Toggle, kGroupZion, "zion.contrastDebugVis", false, L"DEBUG");
 
     // -- BLACK BARS (P0 repaint + red-rect debug overlay) --
     add(L"Repaint bars", RowType::Toggle, kGroupZion, "zion.barsRepaint", true, L"BLACK BARS", {}, 0, 0, 0, 0, 0, 0, true);
@@ -545,40 +547,53 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     const bool toneOn = toneOpt != 2, chrOn = chrOpt != 2;
     m.toneCurveEnabled = toneOn;   // the dialog's "Tone curve" checkbox
     m.gammaEnabled     = toneOn && RowFlag("zion.gamma");
-    m.shadowEnabled    = RowFlag("zion.shadow");
+    m.shadowEnabled    = toneOn && RowFlag("zion.shadowToe");
     m.highlightEnabled = toneOn && RowFlag("zion.highlight");
     m.gamma = RowVal("zion.gamma");
-    m.shadow = RowVal("zion.shadow");
+    m.shadow = RowVal("zion.shadowToe");
     m.highlight = RowVal("zion.highlight");
     m.chromaEnabled = chrOn;
-    m.huntEnabled      = chrOn && RowFlag("zion.hunt");
+    m.huntEnabled      = false;
     m.chNeutralEnabled = chrOn && RowFlag("zion.chN");
     m.chFireEnabled    = chrOn && RowFlag("zion.chF");
     m.chKneeEnabled    = chrOn;   // parameters for Ch-N/Ch-F — always on
     m.chSkinEnabled    = chrOn;
-    m.hunt      = RowVal("zion.hunt");
+    m.hunt      = 0.0f;
     m.chNeutral = RowVal("zion.chN");
     m.chFire    = RowVal("zion.chF");
     m.chKnee    = RowVal("zion.knee");
     m.chSkin    = RowVal("zion.skin");
     m.debugLog  = RowOn("zion.debugFrameLog");
     m.debugCopy = RowOn("zion.debugCopyShaders");
-    m.shadowDebugVis = RowOn("zion.shadowDebugVis");
-    m.shadowZoneCeil = RowVal("zion.shadowZoneCeil");
-    m.shadowSkinProtect = RowVal("zion.shadowSkinProtect");
-    m.shadowRatioCap = RowVal("zion.shadowRatioCap");
+    m.shadowDebugVis = false;
+    m.shadowZoneCeil = 0.20f;
+    m.shadowSkinProtect = 1.0f;
+    m.shadowRatioCap = 1.40f;
+    m.contrastEnabled = RowOn("zion.contrast");          // MICRO CONTRAST section
+    m.contrast = RowVal("zion.contrastStrength");
+    m.contrastZoneLo = RowVal("zion.contrastZoneLo");
+    m.contrastSkinProtect = 1.0f;                        // I-channel only — no skin protection needed
+    m.contrastRatioCap = RowVal("zion.contrastRatioCap");
+    m.contrastDebugVis = RowOn("zion.contrastDebugVis");
+    m.faceProtectEnabled = false;
+    m.faceStrength = 0.0f;
+    m.faceFeather = 0.04f;
+    m.faceExpand = 1.50f;
+    m.faceDebugVis = RowOn("zion.faceDebugVis");
     m.barsEnabled = RowOn("zion.barsRepaint");
     m.barsHighlight = RowOn("zion.barsHighlight");
     m.configSeq = ++g_configSeq;
-    DiagLog("[BUILD] configSeq=%u enable=%d mode=%d toneCurve=%d gamma=%.3f(en=%d) "
-        "shadow=%.3f(en=%d) highlight=%.3f(en=%d) chroma=%d hunt=%.2f(en=%d) "
-        "chN=%.2f(en=%d) chF=%.2f(en=%d) knee=%.2f skin=%.2f "
+    DiagLog("[BUILD] configSeq=%u enable=%d mode=%d toneCurve=%d "
+        "shadow=%.3f(en=%d) gamma=%.3f(en=%d) highlight=%.3f(en=%d) "
+        "chroma=%d chN=%.2f(en=%d) chF=%.2f(en=%d) knee=%.2f skin=%.2f "
+        "micro=%.3f(en=%d) zLo=%.2f rCap=%.2f "
         "bars=%d barsHL=%d debugLog=%d debugCopy=%d",
         m.configSeq, (int)m.enable, m.mode, (int)m.toneCurveEnabled,
-        m.gamma, (int)m.gammaEnabled, m.shadow, (int)m.shadowEnabled,
+        m.shadow, (int)m.shadowEnabled, m.gamma, (int)m.gammaEnabled,
         m.highlight, (int)m.highlightEnabled, (int)m.chromaEnabled,
-        m.hunt, (int)m.huntEnabled, m.chNeutral, (int)m.chNeutralEnabled,
+        m.chNeutral, (int)m.chNeutralEnabled,
         m.chFire, (int)m.chFireEnabled, m.chKnee, m.chSkin,
+        m.contrast, (int)m.contrastEnabled, m.contrastZoneLo, m.contrastRatioCap,
         (int)m.barsEnabled, (int)m.barsHighlight,
         (int)m.debugLog, (int)m.debugCopy);
     return m;
@@ -589,21 +604,22 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         if      (!strcmp(r.key, "zion.enabled"))   { r.on = m.enable; }
         else if (!strcmp(r.key, "zion.toneCurve")) { r.on = m.toneCurveEnabled; }
         else if (!strcmp(r.key, "zion.toneMode"))  { r.opt = m.toneCurveEnabled ? (m.mode == 1 ? 1 : 0) : 2; }
+        else if (!strcmp(r.key, "zion.shadowToe"))  { r.val = m.shadow; r.enabledFlag = m.shadowEnabled; }
         else if (!strcmp(r.key, "zion.gamma"))     { r.val = m.gamma; r.enabledFlag = m.gammaEnabled; }
-        else if (!strcmp(r.key, "zion.shadow"))    { r.val = m.shadow; r.enabledFlag = m.shadowEnabled; }
         else if (!strcmp(r.key, "zion.highlight")) { r.val = m.highlight; r.enabledFlag = m.highlightEnabled; }
         else if (!strcmp(r.key, "zion.chromaMode")) { r.opt = m.chromaEnabled ? (m.mode == 1 ? 1 : 0) : 2; }
-        else if (!strcmp(r.key, "zion.hunt"))      { r.val = m.hunt; r.enabledFlag = m.huntEnabled; }
         else if (!strcmp(r.key, "zion.chN"))       { r.val = m.chNeutral; r.enabledFlag = m.chNeutralEnabled; }
         else if (!strcmp(r.key, "zion.chF"))       { r.val = m.chFire; r.enabledFlag = m.chFireEnabled; }
         else if (!strcmp(r.key, "zion.knee"))      { r.val = m.chKnee; r.enabledFlag = true; }
         else if (!strcmp(r.key, "zion.skin"))      { r.val = m.chSkin; r.enabledFlag = true; }
         else if (!strcmp(r.key, "zion.debugFrameLog")) { r.on = m.debugLog; }
         else if (!strcmp(r.key, "zion.debugCopyShaders")) { r.on = m.debugCopy; }
-        else if (!strcmp(r.key, "zion.shadowDebugVis")) { r.on = m.shadowDebugVis; }
-        else if (!strcmp(r.key, "zion.shadowZoneCeil")) { r.val = m.shadowZoneCeil; }
-        else if (!strcmp(r.key, "zion.shadowSkinProtect")) { r.val = m.shadowSkinProtect; }
-        else if (!strcmp(r.key, "zion.shadowRatioCap")) { r.val = m.shadowRatioCap; }
+        else if (!strcmp(r.key, "zion.contrastDebugVis"))   { r.on = m.contrastDebugVis; }
+        else if (!strcmp(r.key, "zion.contrast"))           { r.on = m.contrastEnabled; }
+        else if (!strcmp(r.key, "zion.contrastStrength"))   { r.val = m.contrast; }
+        else if (!strcmp(r.key, "zion.contrastZoneLo")) { r.val = m.contrastZoneLo; }
+        else if (!strcmp(r.key, "zion.contrastSkinProtect")) { r.val = m.contrastSkinProtect; }
+        else if (!strcmp(r.key, "zion.contrastRatioCap")) { r.val = m.contrastRatioCap; }
         else if (!strcmp(r.key, "zion.barsRepaint"))   { r.on = m.barsEnabled; }
         else if (!strcmp(r.key, "zion.barsHighlight")) { r.on = m.barsHighlight; }
     }
