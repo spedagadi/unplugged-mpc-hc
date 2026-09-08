@@ -229,8 +229,12 @@ void BuildRows() {
         {L"Auto", L"Manual", L"Off"}, 0);   // demo default: Auto
     g_toneModeRow = (int)g_rows.size() - 1;
     add(L"Gamma", RowType::Slider, kGroupZion, "zion.gamma", true, L"TONE CURVE", {}, 0, 0.50f, 1.50f, 1.00f, 1.00f, 1);
-    add(L"Shadow", RowType::Slider, kGroupZion, "zion.shadow", true, L"TONE CURVE", {}, 0, 0.00f, 0.50f, 0.00f, 0.00f, 1);
     add(L"Highlight", RowType::Slider, kGroupZion, "zion.highlight", true, L"TONE CURVE", {}, 0, -0.30f, 0.40f, 0.00f, 0.00f, 1);
+
+    add(L"Strength", RowType::Slider, kGroupZion, "zion.shadow", true, L"SHADOW", {}, 0, 0.00f, 10.00f, 3.00f, 3.00f, 0);
+    add(L"Zone ceil", RowType::Slider, kGroupZion, "zion.shadowZoneCeil", true, L"SHADOW", {}, 0, 0.05f, 0.50f, 0.20f, 0.20f, 0);
+    add(L"Skin protect", RowType::Slider, kGroupZion, "zion.shadowSkinProtect", true, L"SHADOW", {}, 0, 0.00f, 1.00f, 0.65f, 0.65f, 0);
+    add(L"Ratio cap", RowType::Slider, kGroupZion, "zion.shadowRatioCap", true, L"SHADOW", {}, 0, 1.10f, 2.00f, 1.40f, 1.40f, 0);
 
     add(L"Mode", RowType::Cycle, kGroupZion, "zion.chromaMode", true, L"CHROMA",
         {L"Default", L"Manual", L"Off"}, 0);   // demo default: Default
@@ -243,6 +247,7 @@ void BuildRows() {
 
     add(L"Passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
     add(L"Frame log", RowType::Toggle, kGroupZion, "zion.debugFrameLog", false, L"DEBUG");
+    add(L"Shadow zones", RowType::Toggle, kGroupZion, "zion.shadowDebugVis", false, L"DEBUG");
 
     // -- BLACK BARS (P0 repaint + red-rect debug overlay) --
     add(L"Repaint bars", RowType::Toggle, kGroupZion, "zion.barsRepaint", true, L"BLACK BARS", {}, 0, 0, 0, 0, 0, 0, true);
@@ -540,7 +545,7 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     const bool toneOn = toneOpt != 2, chrOn = chrOpt != 2;
     m.toneCurveEnabled = toneOn;   // the dialog's "Tone curve" checkbox
     m.gammaEnabled     = toneOn && RowFlag("zion.gamma");
-    m.shadowEnabled    = toneOn && RowFlag("zion.shadow");
+    m.shadowEnabled    = RowFlag("zion.shadow");
     m.highlightEnabled = toneOn && RowFlag("zion.highlight");
     m.gamma = RowVal("zion.gamma");
     m.shadow = RowVal("zion.shadow");
@@ -558,6 +563,10 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.chSkin    = RowVal("zion.skin");
     m.debugLog  = RowOn("zion.debugFrameLog");
     m.debugCopy = RowOn("zion.debugCopyShaders");
+    m.shadowDebugVis = RowOn("zion.shadowDebugVis");
+    m.shadowZoneCeil = RowVal("zion.shadowZoneCeil");
+    m.shadowSkinProtect = RowVal("zion.shadowSkinProtect");
+    m.shadowRatioCap = RowVal("zion.shadowRatioCap");
     m.barsEnabled = RowOn("zion.barsRepaint");
     m.barsHighlight = RowOn("zion.barsHighlight");
     m.configSeq = ++g_configSeq;
@@ -591,6 +600,10 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         else if (!strcmp(r.key, "zion.skin"))      { r.val = m.chSkin; r.enabledFlag = true; }
         else if (!strcmp(r.key, "zion.debugFrameLog")) { r.on = m.debugLog; }
         else if (!strcmp(r.key, "zion.debugCopyShaders")) { r.on = m.debugCopy; }
+        else if (!strcmp(r.key, "zion.shadowDebugVis")) { r.on = m.shadowDebugVis; }
+        else if (!strcmp(r.key, "zion.shadowZoneCeil")) { r.val = m.shadowZoneCeil; }
+        else if (!strcmp(r.key, "zion.shadowSkinProtect")) { r.val = m.shadowSkinProtect; }
+        else if (!strcmp(r.key, "zion.shadowRatioCap")) { r.val = m.shadowRatioCap; }
         else if (!strcmp(r.key, "zion.barsRepaint"))   { r.on = m.barsEnabled; }
         else if (!strcmp(r.key, "zion.barsHighlight")) { r.on = m.barsHighlight; }
     }

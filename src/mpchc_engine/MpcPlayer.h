@@ -76,7 +76,7 @@ public:
         bool  gammaEnabled = true;
         float gamma = 1.0f;                // [0.5, 1.5]
         bool  shadowEnabled = true;
-        float shadow = 0.0f;               // [0.0, 0.5]
+        float shadow = 2.0f;               // strength tier: 0=Off 1=Low 2=Med 3=High 4=VHi 5=Saturate
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;
@@ -92,6 +92,10 @@ public:
         float chSkin = 0.95f;
         bool  debugLog = false;
         bool  debugCopy = false;
+        bool  shadowDebugVis = false;  // heatmap overlay showing shadow enhancement zones
+        float shadowZoneCeil = 0.20f;
+        float shadowSkinProtect = 0.65f;
+        float shadowRatioCap = 1.40f;
         bool  barsEnabled = true;      // P0: repaint detected letterbox bars to black
         bool  barsHighlight = false;   // P0: red-rect debug overlay on detected bars
         uint32_t configSeq = 0;        // monotonic config-change counter for diagnostics

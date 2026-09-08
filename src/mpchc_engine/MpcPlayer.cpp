@@ -656,6 +656,10 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLChromaSkinProtect = m.chSkin;
     s.bMLDebugLog = m.debugLog;
     s.bMLDebugCopy = m.debugCopy;
+    s.bMLShadowDebugVis = m.shadowDebugVis;
+    s.fMLShadowZoneCeil = m.shadowZoneCeil;
+    s.fMLShadowSkinProtect = m.shadowSkinProtect;
+    s.fMLShadowRatioCap = m.shadowRatioCap;
     s.bMLBars = m.barsEnabled;
     s.bMLBarsHighlight = m.barsHighlight;
     s.configSeq = m.configSeq;
@@ -699,6 +703,10 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.chSkin = s.fMLChromaSkinProtect;
     m.debugLog = s.bMLDebugLog;
     m.debugCopy = s.bMLDebugCopy;
+    m.shadowDebugVis = s.bMLShadowDebugVis;
+    m.shadowZoneCeil = s.fMLShadowZoneCeil;
+    m.shadowSkinProtect = s.fMLShadowSkinProtect;
+    m.shadowRatioCap = s.fMLShadowRatioCap;
     m.barsEnabled = s.bMLBars;
     m.barsHighlight = s.bMLBarsHighlight;
     m.configSeq = s.configSeq;
