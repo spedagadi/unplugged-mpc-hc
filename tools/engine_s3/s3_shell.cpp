@@ -246,8 +246,8 @@ void BuildRows() {
     add(L"Zone lo", RowType::Slider, kGroupZion, "zion.contrastZoneLo", true, L"MICRO CONTRAST", {}, 0, 0.00f, 0.60f, 0.15f, 0.15f, 0);
     add(L"Ratio cap", RowType::Slider, kGroupZion, "zion.contrastRatioCap", true, L"MICRO CONTRAST", {}, 0, 1.00f, 2.00f, 1.40f, 1.40f, 0);
 
-    add(L"Passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
-    add(L"Frame log", RowType::Toggle, kGroupZion, "zion.debugFrameLog", false, L"DEBUG");
+    add(L"HDR passthrough", RowType::Toggle, kGroupZion, "hdr.hdrPass", false, L"DEBUG");
+    add(L"Tone curve passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
     add(L"Face boxes", RowType::Toggle, kGroupZion, "zion.faceDebugVis", false, L"DEBUG");
     add(L"MC heat", RowType::Toggle, kGroupZion, "zion.contrastDebugVis", false, L"DEBUG");
 
@@ -255,10 +255,17 @@ void BuildRows() {
     add(L"Repaint bars", RowType::Toggle, kGroupZion, "zion.barsRepaint", true, L"BLACK BARS", {}, 0, 0, 0, 0, 0, 0, true);
     add(L"Highlight bars", RowType::Toggle, kGroupZion, "zion.barsHighlight", true, L"BLACK BARS");
 
+    // -- SKY SEG (semantic segmentation + stage-3 tone leg) --
+    add(L"Enable", RowType::Toggle, kGroupZion, "zion.skyEnabled", true, L"SKY SEG", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Strength", RowType::Slider, kGroupZion, "zion.skyStrength", true, L"SKY SEG", {}, 0, 0.00f, 1.00f, 0.60f, 0.60f, 0);
+    add(L"Mask overlay", RowType::Toggle, kGroupZion, "zion.skyOverlay", true, L"SKY SEG");
+
     // -- HDR (independent output settings; exact MPCVR dialog semantics) --
     add(L"Prefer DV over PQ/HLG", RowType::Toggle, kGroupHdr, "hdr.preferDoVi", true, L"TONE MAPPING");
     add(L"Convert to SDR", RowType::Toggle, kGroupHdr, "hdr.convertToSdr", true, L"TONE MAPPING");
-    add(L"SDR display nits", RowType::Slider, kGroupHdr, "hdr.sdrNits", true, L"TONE MAPPING", {}, 0, 25.0f, 400.0f, 125.0f, 125.0f);
+    add(L"SDR display nits", RowType::Slider, kGroupHdr, "hdr.sdrNits", true, L"TONE MAPPING", {}, 0, 25.0f, 400.0f, 50.0f, 50.0f);
+    add(L"Tone curve", RowType::Cycle, kGroupHdr, "hdr.toneMapCurve", true, L"TONE MAPPING",
+        {L"ACES", L"Reinhard", L"Hable", L"Mobius", L"BT-2390"}, 4);   // demo default: BT-2390
     add(L"Windows HDR", RowType::Cycle, kGroupHdr, "hdr.toggleDisplay", true, L"DISPLAY TARGET",
         {L"Do not change", L"On (fullscreen)", L"On", L"On/off (fullscreen)", L"On/off"}, 0);
     add(L"Static nits (max)", RowType::Slider, kGroupHdr, "hdr.maxNits", true, L"DISPLAY TARGET", {}, 0, 200.0f, 10000.0f, 1000.0f, 1000.0f);
@@ -508,6 +515,27 @@ void ApplyRow(int i) {
     MultiByteToWideChar(CP_ACP, 0, r.key, -1, keyBuf, 64);
     std::wcout << L"[SYS] " << keyBuf << L" = " << v
                << (r.live ? L" (live)" : L" (next-start)") << L"\n";
+    // HDR passthrough (1) and tone-curve passthrough (2) are mutually exclusive:
+    // turning either one ON switches the other OFF. Because a disabled passthrough
+    // must be re-pushed to the renderer when the OTHER one is toggled, push BOTH
+    // configs whenever either passthrough changes (otherwise the flipped-off flag
+    // stays stale and ML never resumes).
+    if (r.type == RowType::Toggle) {
+        const bool isHdrPass = !strcmp(r.key, "hdr.hdrPass");
+        const bool isTonePass = !strcmp(r.key, "zion.debugCopyShaders");
+        if (isHdrPass || isTonePass) {
+            if (r.on) {
+                const char* other = isHdrPass ? "zion.debugCopyShaders" : "hdr.hdrPass";
+                for (auto& rr : g_rows)
+                    if (!strcmp(rr.key, other)) rr.on = false;
+            }
+            // Both configs so an indirectly-flipped passthrough flag settles
+            // (otherwise the stale flag keeps ML in copy mode after disabling).
+            PushMlToRenderer();
+            PushHdrToRenderer();
+        }
+    }
+
     if (strncmp(r.key, "zion.", 5) == 0) PushMlToRenderer();
     if (strncmp(r.key, "hdr.", 4) == 0) PushHdrToRenderer();
     if (strncmp(r.key, "out.", 4) == 0 || strcmp(r.key, "sys.trayIcon") == 0) PushOutToRenderer();
@@ -582,6 +610,9 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.faceDebugVis = RowOn("zion.faceDebugVis");
     m.barsEnabled = RowOn("zion.barsRepaint");
     m.barsHighlight = RowOn("zion.barsHighlight");
+    m.skyEnabled = RowOn("zion.skyEnabled");
+    m.skyDebugVis = RowOn("zion.skyOverlay");
+    m.skyStrength = RowVal("zion.skyStrength");
     m.configSeq = ++g_configSeq;
     DiagLog("[BUILD] configSeq=%u enable=%d mode=%d toneCurve=%d "
         "shadow=%.3f(en=%d) gamma=%.3f(en=%d) highlight=%.3f(en=%d) "
@@ -622,6 +653,9 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         else if (!strcmp(r.key, "zion.contrastRatioCap")) { r.val = m.contrastRatioCap; }
         else if (!strcmp(r.key, "zion.barsRepaint"))   { r.on = m.barsEnabled; }
         else if (!strcmp(r.key, "zion.barsHighlight")) { r.on = m.barsHighlight; }
+        else if (!strcmp(r.key, "zion.skyEnabled")) { r.on = m.skyEnabled; }
+        else if (!strcmp(r.key, "zion.skyOverlay")) { r.on = m.skyDebugVis; }
+        else if (!strcmp(r.key, "zion.skyStrength")) { r.val = m.skyStrength; }
     }
     g_mlMasterEnable = m.enable;
     UpdateGates();
@@ -678,6 +712,8 @@ MpcPlayer::HdrSettings BuildHdrFromRows() {
     h.toggleDisplay = RowOpt("hdr.toggleDisplay");
     h.displayMaxNits = (int)RowVal("hdr.maxNits");
     h.osdBrightness = (int)RowVal("hdr.osdBright");
+    h.toneMapCurve = RowOpt("hdr.toneMapCurve") + 1;   // 0-indexed options -> 1..5 shader selection
+    h.hdrPassthroughRaw = RowOn("hdr.hdrPass");
     return h;
 }
 
@@ -689,6 +725,8 @@ void ApplyHdrToRows(const MpcPlayer::HdrSettings& h) {
         else if (!strcmp(r.key, "hdr.toggleDisplay")) { r.opt = h.toggleDisplay; }
         else if (!strcmp(r.key, "hdr.maxNits"))       { r.val = (float)h.displayMaxNits; }
         else if (!strcmp(r.key, "hdr.osdBright"))     { r.val = (float)h.osdBrightness; }
+        else if (!strcmp(r.key, "hdr.toneMapCurve")) { r.opt = h.toneMapCurve - 1; }
+        else if (!strcmp(r.key, "hdr.hdrPass"))      { r.on = h.hdrPassthroughRaw; }
     }
 }
 

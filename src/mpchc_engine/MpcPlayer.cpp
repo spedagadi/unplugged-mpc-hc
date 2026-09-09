@@ -666,6 +666,9 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLContrastSkinProtect = m.contrastSkinProtect;
     s.fMLContrastRatioCap = m.contrastRatioCap;
     s.bMLContrastDebugVis = m.contrastDebugVis;
+    s.bMLSkyEnabled = m.skyEnabled;
+    s.bMLSkyDebugVis = m.skyDebugVis;
+    s.fMLSkyStrength = m.skyStrength;
     s.bMLFaceProtectEnabled = m.faceProtectEnabled;
     s.fMLFaceProtect = m.faceStrength;
     s.fMLFaceFeather = m.faceFeather;
@@ -724,6 +727,9 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.contrastSkinProtect = s.fMLContrastSkinProtect;
     m.contrastRatioCap = s.fMLContrastRatioCap;
     m.contrastDebugVis = s.bMLContrastDebugVis;
+    m.skyEnabled = s.bMLSkyEnabled;
+    m.skyDebugVis = s.bMLSkyDebugVis;
+    m.skyStrength = s.fMLSkyStrength;
     m.faceProtectEnabled = s.bMLFaceProtectEnabled;
     m.faceStrength = s.fMLFaceProtect;
     m.faceFeather = s.fMLFaceFeather;
@@ -742,6 +748,8 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.iHdrToggleDisplay = h.toggleDisplay;
     s.iHdrDisplayMaxNits = h.displayMaxNits;
     s.iHdrOsdBrightness = h.osdBrightness;
+    s.iHdrLocalToneMappingType = h.toneMapCurve;
+    s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
 }
 
 void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
@@ -752,6 +760,8 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.toggleDisplay = s.iHdrToggleDisplay;
     h.displayMaxNits = s.iHdrDisplayMaxNits;
     h.osdBrightness = s.iHdrOsdBrightness;
+    h.toneMapCurve = s.iHdrLocalToneMappingType;
+    h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
 }
 
 void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)

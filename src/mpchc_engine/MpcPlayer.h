@@ -102,6 +102,9 @@ public:
         float contrastSkinProtect = 1.0f;
         float contrastRatioCap = 1.40f;
         bool  contrastDebugVis = false;
+        bool  skyEnabled = true;       // sky semantic segmentation (stage-2 overlay)
+        bool  skyDebugVis = false;     // cyan sky-mask overlay for validation
+        float skyStrength = 0.6f;      // sky tone-leg blend amount [0, 1]
         bool  faceProtectEnabled = true;
         float faceStrength = 0.80f;    // face gamma protection [0,1]
         float faceFeather = 0.04f;     // SDF feather width in UV
@@ -115,10 +118,12 @@ public:
     struct HdrSettings {
         bool preferDoVi = false;
         bool convertToSdr = true;
-        int  sdrDisplayNits = 125;
+        int  sdrDisplayNits = 50;
         int  toggleDisplay = 0;            // HDRTD_Disabled..HDRTD_OnOff
         int  displayMaxNits = 1000;
         int  osdBrightness = 0;
+        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
+        bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
     };
 
     struct OutSettings {
