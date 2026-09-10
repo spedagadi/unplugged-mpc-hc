@@ -108,6 +108,7 @@ enum Cmd : int {
     kCmdOpen, kCmdPlayPause, kCmdStop, kCmdSeekBack, kCmdSeekFwd,
     kCmdModeVP, kCmdModeMedia,
     kCmdRepaint,
+    kCmdDecklinkRestart,   // monitor detected a signal/format change — rebuild capture graph
 };
 }  // namespace
 
@@ -121,6 +122,7 @@ HWND g_hBottom = nullptr;
 MpcPlayer* g_player = nullptr;
 MpcPlayer::Renderer g_renderer = MpcPlayer::Renderer::MPCVR;
 std::wstring g_openFile;
+std::wstring g_decklinkDevice;   // --decklink-device <name>: HDMI capture source
 bool g_editMode = true;   // WATCH ⇄ EDIT via Up arrow
 
 // Right rail state
@@ -690,6 +692,9 @@ void PushMlToRenderer() {
 }
 
 std::wstring g_mlStats;   // live ML internals from MPCVR (polled, shown in the left pane)
+std::wstring g_captureLine;  // CAPTURE INPUT: signal + detected format (decklink_monitor)
+std::wstring g_modeLine;     // DEMUXER -> REC: resolution/pixfmt/fps (source pin media type)
+int g_captureLocked = -1;    // -1 unknown, 0 no signal, 1 locked
 
 void PullMlFromRenderer() {
     MpcPlayer::MlSettings m;
@@ -816,6 +821,9 @@ void PullOutFromRenderer() {
 // ── Audio control (bottom bar) ────────────────────────────────────────────
 bool g_audioOn = true;
 RECT g_audBtn = {};
+RECT g_vpBtn = {};
+RECT g_mpBtn = {};
+bool g_vpMode = false;   // true = DeckLink video-processor capture, false = media player
 RECT g_timeline = {};
 bool g_dragTime = false;
 LONGLONG g_dragDur = 0, g_dragTarget = 0;
@@ -1207,15 +1215,45 @@ void PaintLeft(HDC dc, int w, int h) {
     swprintf_s(buf, L"%lld", sn.duration);
     PaintRow(dc, y, 110, L"Duration", buf, COL_TEXT); y += kRowH + 6;
 
-    y = PaintSection(dc, y, w, L"VIDEO SOURCE");
-    PaintRow(dc, y, 110, L"Resolution", L"\u2014", COL_LO); y += kRowH;
-    PaintRow(dc, y, 110, L"Pixel format", L"\u2014", COL_LO); y += kRowH;
-    PaintRow(dc, y, 110, L"Codec", L"\u2014", COL_LO); y += kRowH;
-    PaintRow(dc, y, 110, L"HDR format", L"\u2014", COL_LO); y += kRowH + 6;
-
     y = PaintSection(dc, y, w, L"CAPTURE INPUT");
-    PaintRow(dc, y, 110, L"Device", L"\u2014 S4", COL_LO); y += kRowH;
-    PaintRow(dc, y, 110, L"Signal", L"\u2014 S4", COL_LO); y += kRowH + 6;
+    {
+        const wchar_t* dev = g_decklinkDevice.empty() ? L"\u2014" : g_decklinkDevice.c_str();
+        PaintRow(dc, y, 110, L"Device", dev, COL_TEXT); y += kRowH;
+        COLORREF sigCol = (g_captureLocked == 1) ? COL_OK : (g_captureLocked == 0) ? RGB(0xE0, 0x50, 0x50) : COL_LO;
+        PaintRow(dc, y, 110, L"Signal", g_captureLocked == 1 ? L"\u25cf Locked"
+                : g_captureLocked == 0 ? L"\u25cb No signal" : L"\u2014", sigCol); y += kRowH;
+        if (!g_captureLine.empty()) {
+            PaintRow(dc, y, 150, L"Detected", g_captureLine.c_str(), COL_TEXT); y += kRowH;
+        }
+        y += 6;
+    }
+
+    y = PaintSection(dc, y, w, L"DEMUXER \u2192 REC");
+    if (!g_modeLine.empty()) {
+        PaintRow(dc, y, 90, L"Stream", g_modeLine.c_str(), COL_TEXT); y += kRowH;
+    } else {
+        PaintRow(dc, y, 90, L"Stream", L"\u2014", COL_LO); y += kRowH;
+    }
+    y += 6;
+
+    y = PaintSection(dc, y, w, L"RENDERER IN");
+    {
+        // pull the rendererIn: line from the ML stats blurb (fmt WxH ics=)
+        const wchar_t* rin = L"\u2014";
+        if (!g_mlStats.empty()) {
+            const std::wstring::size_type at = g_mlStats.find(L"rendererIn:");
+            if (at != std::wstring::npos) {
+                const wchar_t* p = g_mlStats.c_str() + at + 11;
+                wchar_t tmp[160] = {};
+                wcsncpy_s(tmp, p, _TRUNCATE);
+                wchar_t* nl = wcschr(tmp, L'\n');
+                if (nl) *nl = 0;
+                rin = tmp;
+            }
+        }
+        PaintRow(dc, y, 110, L"Input", rin, COL_TEXT); y += kRowH;
+        y += 6;
+    }
 
     y = PaintSection(dc, y, w, L"ZION ML");
     if (!g_mlStats.empty()) {
@@ -1260,10 +1298,14 @@ void PaintBottom(HDC dc, int w, int h) {
     RECT vp = {kPad, S(72), kPad + S(150), S(72) + kBtnH};
     RECT mp = {kPad + S(160), S(72), kPad + S(310), S(72) + kBtnH};
     RECT aud = {kPad + S(330), S(72), kPad + S(470), S(72) + kBtnH};
-    DrawButton(dc, vp, L"VP   \u2014  S4", false, false);
-    DrawButton(dc, mp, L"Media", true, true);
-    DrawButton(dc, aud, g_audioOn ? L"Audio  ON" : L"Audio  OFF", false, g_audioOn);
-    g_audBtn = aud;
+    g_vpBtn = vp; g_mpBtn = mp; g_audBtn = aud;
+    const wchar_t* vpLabel = g_vpMode
+        ? (g_decklinkDevice.empty() ? L"VP \u2014 live" : L"VP \u2014 HDMI")
+        : (g_decklinkDevice.empty() ? L"VP  (no device)" : L"VP  \u2014  S4");
+    const wchar_t* mpLabel = L"Media";
+    DrawButton(dc, g_vpBtn, vpLabel, false, g_vpMode);
+    DrawButton(dc, g_mpBtn, mpLabel, false, !g_vpMode);
+    DrawButton(dc, g_audBtn, g_audioOn ? L"Audio  ON" : L"Audio  OFF", false, g_audioOn);
 }
 
 }  // namespace
@@ -1516,6 +1558,14 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
+        if (h == g_hBottom && g_player && PtInRect(&g_vpBtn, p)) {
+            PostMessageW(g_hwnd, WM_APP, kCmdModeVP, 0);
+            return 0;
+        }
+        if (h == g_hBottom && g_player && PtInRect(&g_mpBtn, p)) {
+            PostMessageW(g_hwnd, WM_APP, kCmdModeMedia, 0);
+            return 0;
+        }
         return 0;
     }
     case WM_LBUTTONUP:
@@ -1574,6 +1624,45 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else {
                 g_mlStats.clear();
             }
+
+            // LIVE panel — CAPTURE INPUT (decklink_monitor signal snapshot) + DEMUXER -> REC.
+            if (g_player) {
+                int locked = -1, cs = -1, dr = -1, depth = 0, chroma = -1;
+                int w = 0, h = 0, fn = 0, fd = 0, itl = 2;
+                wchar_t mode[160] = L"—";
+                wchar_t fmt[160] = L"—";
+                if (g_player->GetDecklinkSignalInfo(locked, cs, dr, depth, chroma, w, h, fn, fd, itl)) {
+                    g_captureLocked = locked;
+                    // Detected format: colours · gamma · depth · chroma
+                    const wchar_t* csN = cs == 2 ? L"BT.2020" : cs == 0 ? L"BT.601" : L"BT.709";
+                    const wchar_t* drN = dr == 1 ? L"HDR PQ" : dr == 2 ? L"HDR HLG"
+                        : (cs == 2 && dr == 0) ? L"DolbyVision" : L"SDR";
+                    const wchar_t* chN = chroma == 1 ? L"RGB 4:4:4" : chroma == 0 ? L"YCbCr 4:2:2" : L"";
+                    swprintf_s(fmt, L"%s · %s · %d-bit%s%s", csN, drN, depth,
+                               chN[0] ? L" · " : L"", chN);
+                    if (w > 0 && h > 0) {
+                        double fps = (fn > 0 && fd > 0) ? (double)fn / fd : 0.0;
+                        swprintf_s(mode, L"%d×%d @%.3f%s", w, h, fps,
+                                   itl == 1 ? L" i" : L" p");
+                    }
+                } else {
+                    g_captureLocked = -1;
+                }
+                g_captureLine = std::wstring(fmt) + L" | " + std::wstring(mode);
+
+                // DEMUXER -> REC — what the splitter handed out at connect time.
+                const auto& vs = g_player->GetVideoStreamInfo();
+                if (vs.valid) {
+                    double fps = vs.avgTimePerFrame100ns > 0
+                        ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0;
+                    swprintf_s(mode, L"%d×%d · %s · %.3f fps%s",
+                               vs.width, vs.height, vs.subtypeName.c_str(), fps,
+                               vs.interlaced ? L" i" : L" p");
+                    g_modeLine = mode;
+                } else {
+                    g_modeLine.clear();
+                }
+            }
             InvalidateRect(g_hLeft, nullptr, FALSE);
             return 0;
         }
@@ -1602,12 +1691,77 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else g_player->Pause();
         } else if (w == kCmdStop && g_player) {
             g_player->Stop();
+        } else if (w == kCmdModeVP && g_player) {
+            // Switch to DeckLink video-processor capture.
+            DiagLog("[DECKLINK][shell] kCmdModeVP — switching to VP capture");
+            if (!g_vpMode) {
+                g_vpMode = true;
+                g_player->Stop();
+                if (g_decklinkDevice.empty()) {
+                    DiagLog("[DECKLINK][shell] VP: no --decklink-device configured; open setup");
+                    InvalidateRect(h, nullptr, FALSE);
+                    return 0;
+                }
+                const HRESULT hrD = g_player->SetDecklinkCapture(g_decklinkDevice);
+                DiagLog("[DECKLINK][shell] SetDecklinkCapture hr=0x%08X", (unsigned)hrD);
+                std::wstring probeUrl = L"decklink://" + g_decklinkDevice +
+                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=uyvy422";
+                const HRESULT hrO = g_player->Open(probeUrl);
+                const HRESULT hrP = g_player->Play();
+                DiagLog("[DECKLINK][shell] VP Open hr=0x%08X Play hr=0x%08X", (unsigned)hrO, (unsigned)hrP);
+                g_openFile.clear();
+                PullMlFromRenderer();
+                PullHdrFromRenderer();
+                PullOutFromRenderer();
+                RebuildLayout();
+            }
+        } else if (w == kCmdModeMedia && g_player) {
+            // Back to media player: stop capture + monitor, then open a file.
+            DiagLog("[DECKLINK][shell] kCmdModeMedia — switching to media player");
+            if (g_vpMode) {
+                g_vpMode = false;
+                g_player->StopDecklinkCapture();
+                g_player->Stop();
+                g_decklinkDevice.clear();
+            }
+            OPENFILENAMEW ofn = {sizeof(ofn)};
+            wchar_t file[MAX_PATH + 1] = {};
+            wchar_t filter[] = L"Media\0*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.ts;*.m2ts\0All\0*.*\0\0";
+            ofn.hwndOwner = h; ofn.lpstrFilter = filter; ofn.lpstrFile = file;
+            ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameW(&ofn)) {
+                g_openFile = file;
+                g_player->Open(g_openFile);
+                g_player->Play();
+                PullMlFromRenderer();
+                PullHdrFromRenderer();
+                PullOutFromRenderer();
+                RebuildLayout();
+            }
         } else if (w == kCmdSeekBack && g_player) {
             MpcPlayer::Snapshot sn; g_player->GetSnapshot(sn);
             g_player->Seek(sn.position - 50000000);
         } else if (w == kCmdSeekFwd && g_player) {
             MpcPlayer::Snapshot sn; g_player->GetSnapshot(sn);
             g_player->Seek(sn.position + 50000000);
+        } else if (w == kCmdDecklinkRestart && g_player) {
+            // Signal/format change on the HDMI input — rebuild the capture graph
+            // with the monitor's latest URL + colour space (full Stop→Open→Play).
+            const auto& dl = g_player->DecklinkState();
+            const auto& url = g_player->DecklinkUrlForRestart();
+            DiagLog("[DECKLINK][shell] restart: signalLost=%d url='%S' ics=%d",
+                dl.signalLocked ? 0 : 1, url.c_str(), dl.inputColorSpace);
+            if (url.empty()) {
+                DiagLog("[DECKLINK][shell] restart: no URL yet — skipping rebuild");
+                return 0;
+            }
+            g_player->SetDecklinkInputColor(dl.inputColorSpace);
+            g_openFile = url;
+            const HRESULT hrO = g_player->Open(url);
+            const HRESULT hrP = g_player->Play();
+            RebuildLayout();
+            DiagLog("[DECKLINK][shell] restart done: Open hr=0x%08X Play hr=0x%08X",
+                (unsigned)hrO, (unsigned)hrP);
         }
         InvalidateRect(g_hLeft, nullptr, FALSE);
         InvalidateRect(g_hRight, nullptr, FALSE);
@@ -1666,6 +1820,13 @@ int wmain(int argc, wchar_t* argv[]) {
             else if (_wcsicmp(v, L"vmr9") == 0) g_renderer = MpcPlayer::Renderer::VMR9;
             else if (_wcsicmp(v, L"evr") == 0) g_renderer = MpcPlayer::Renderer::EVR;
             else if (_wcsicmp(v, L"mpcvr") == 0) g_renderer = MpcPlayer::Renderer::MPCVR;
+        } else if (_wcsicmp(argv[i], L"--decklink-device") == 0 && i + 1 < argc) {
+            g_decklinkDevice = argv[++i];
+            // strip surrounding quotes (users wrap multi-word device names)
+            if (g_decklinkDevice.size() >= 2 &&
+                g_decklinkDevice.front() == L'"' && g_decklinkDevice.back() == L'"') {
+                g_decklinkDevice = g_decklinkDevice.substr(1, g_decklinkDevice.size() - 2);
+            }
         } else if (g_openFile.empty()) {
             g_openFile = argv[i];
         }
@@ -1723,7 +1884,19 @@ int wmain(int argc, wchar_t* argv[]) {
 
         MpcPlayer player;
         g_player = &player;
-        player.SetEventCallback([](std::string_view, const MpcPlayer::Snapshot&) {
+        player.SetLogSink([](const char* msg) {
+            DiagLog("%s", msg);               // engine+monitor telemetry into s3_shell_diag.log
+            OutputDebugStringA(msg);
+            OutputDebugStringA("\n");
+        });
+        player.SetEventCallback([](std::string_view eventName, const MpcPlayer::Snapshot&) {
+            if (eventName == "decklink:signal" || eventName == "decklink:lost") {
+                // Monitor thread → UI thread: rebuild the capture graph with the new URL.
+                DiagLog("[DECKLINK][shell] event '%s' → post kCmdDecklinkRestart",
+                    std::string(eventName).c_str());
+                PostMessageW(g_hwnd, WM_APP, kCmdDecklinkRestart, 0);
+                return;
+            }
             PostMessageW(g_hwnd, WM_APP, kCmdRepaint, 0);
         });
         HRESULT hrA = player.AttachRenderTarget(g_hVideo);
@@ -1731,7 +1904,38 @@ int wmain(int argc, wchar_t* argv[]) {
         std::cout << "[INIT] AttachRenderTarget hr=0x" << std::hex << (unsigned long)hrA
                   << " SetRenderer(MPCVR) hr=0x" << (unsigned long)hrR << std::dec << "\n";
 
-        if (!g_openFile.empty()) {
+        // DeckLink HDMI capture: start the signal monitor and open the live
+        // input. The first open uses a probe URL with known-good options; the
+        // monitor's restart (kCmdDecklinkRestart) refines it as soon as the
+        // card reports the real signal (raw_format + format_code via
+        // vf_dl_build_url), avoiding a 3 s autodetect stall.
+        if (!g_decklinkDevice.empty()) {
+            g_vpMode = true;   // CLI started in VP mode — reflect in the bottom-bar button
+            DiagLog("[DECKLINK][shell] init: SetDecklinkCapture('%S')", g_decklinkDevice.c_str());
+            const HRESULT hrD = player.SetDecklinkCapture(g_decklinkDevice);
+            DiagLog("[DECKLINK][shell] SetDecklinkCapture hr=0x%08X", (unsigned)hrD);
+            if (FAILED(hrD)) {
+                std::wcout << L"[INIT] SetDecklinkCapture hr=0x" << std::hex << (unsigned long)hrD << std::dec << L"\n";
+                DiagLog("[DECKLINK][shell] decklink_monitor.dll not available; capture will not auto-restart");
+            }
+            if (g_openFile.empty()) {
+                std::wstring probeUrl = L"decklink://" + g_decklinkDevice +
+                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=uyvy422";
+                DiagLog("[DECKLINK][shell] probe open url='%S'", probeUrl.c_str());
+                const HRESULT hrO = player.Open(probeUrl);
+                const HRESULT hrP = player.Play();
+                std::cout << "[INIT] DeckLink probe Open hr=0x" << std::hex << (unsigned long)hrO
+                          << " Play hr=0x" << (unsigned long)hrP << std::dec << "\n";
+                DiagLog("[DECKLINK][shell] probe Open hr=0x%08X Play hr=0x%08X",
+                    (unsigned)hrO, (unsigned)hrP);
+                PullMlFromRenderer();
+                PullHdrFromRenderer();
+                PullOutFromRenderer();
+                RebuildLayout();
+            }
+        }
+
+        if (!g_openFile.empty() && g_decklinkDevice.empty()) {
             const HRESULT hrO = player.Open(g_openFile);
             const HRESULT hrP = player.Play();
             std::cout << "[INIT] Open hr=0x" << std::hex << (unsigned long)hrO
@@ -1752,8 +1956,9 @@ int wmain(int argc, wchar_t* argv[]) {
             std::wcout.flush();
         }
 
-        // Media Player default state: open a file picker on startup.
-        if (g_openFile.empty()) PostMessageW(g_hwnd, WM_APP, kCmdOpen, 0);
+        // Media Player default state: open a file picker on startup — but NOT in VP
+        // capture mode (a decklink device is configured and the probe already opened).
+        if (g_openFile.empty() && g_decklinkDevice.empty()) PostMessageW(g_hwnd, WM_APP, kCmdOpen, 0);
 
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

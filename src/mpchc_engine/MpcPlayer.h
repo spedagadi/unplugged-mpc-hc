@@ -4,9 +4,12 @@
 #include <dshow.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+
+class DeckLinkMonitor;
 
 class MpcPlayer final {
 public:
@@ -154,6 +157,9 @@ public:
     };
 
     using EventCallback = std::function<void(std::string_view eventName, const Snapshot&)>;
+    using LogSink = std::function<void(const char*)>;
+
+    void SetLogSink(LogSink sink) { logSink_ = std::move(sink); }
 
     MpcPlayer();
     ~MpcPlayer();
@@ -206,6 +212,39 @@ public:
     HRESULT GetProcessorInfo(std::wstring&) const;
     HRESULT GetMlStats(std::wstring&) const;
 
+    // DeckLink HDMI capture (live input via LAVSplitterSource + decklink:// URL)
+    // Video-only: no audio is ingested (HDMI audio routes to the AVR separately).
+    struct VideoStreamInfo {   // what the demuxer handed out (LIVE panel / DEMUXER → REC)
+        bool valid = false;
+        int  width = 0, height = 0;
+        int  avgTimePerFrame100ns = 0;                 // 100 ns units; 0 = unknown
+        int  pixelFormat = 0;                          // 0=UYVY 1=v210 2=NV12 3=other
+        bool interlaced = false;
+        std::wstring subtypeName;                      // e.g. "UYVY", "v210"
+    };
+
+    struct DecklinkSettings {
+        int  inputColorSpace = 0;   // ICS_Auto / ICS_BT601 / ICS_BT709 / ICS_BT2020_* (IVideoRenderer.h)
+        bool videoOnly = true;      // always true for now (no audio ingest)
+        int  lastMode = 0;          // last BMDDisplayMode fourcc observed
+        int  lastColorSpace = -1;   // 0=601 1=709 2=2020
+        int  lastDynamicRange = -1; // 0=SDR 1=PQ 2=HLG
+        bool signalLocked = false;
+    };
+    HRESULT SetDecklinkCapture(const std::wstring& deviceName); // starts the monitor thread
+    HRESULT StopDecklinkCapture();                              // stops the monitor thread
+    HRESULT SetDecklinkInputColor(int ics);                     // push ICS override to the renderer
+    void SetDecklinkDevice(const std::wstring& deviceName) { decklinkDevice_ = deviceName; }
+    const DecklinkSettings& GetDecklinkSettings() const { return decklinkSettings_; }
+    // Latest DeckLink signal snapshot (CAPTURE INPUT / LIVE panel). Returns
+    // false when the monitor DLL is unavailable or no card present.
+    bool GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamicRange,
+                               int& depth, int& chroma, int& w, int& h,
+                               int& fpsNum, int& fpsDen, int& interlace) const;
+    const VideoStreamInfo& GetVideoStreamInfo() const { return videoStreamInfo_; }
+    DecklinkSettings& DecklinkState() { return decklinkSettings_; }
+    const std::wstring& DecklinkUrlForRestart() const { return pendingDecklinkUrl_; }
+
     // Snapshot / events
     HRESULT PumpEvents();
     HRESULT GetSnapshot(Snapshot&) const;
@@ -215,6 +254,9 @@ private:
     HRESULT BuildGraph(std::wstring_view source);
     HRESULT AddRenderer(CComPtr<IBaseFilter>&);
     HRESULT ConfigureRendererWindow();
+    HRESULT ConnectVideoPin(IBaseFilter* source, IPin* decIn); // try-connect over output pins
+    void    CaptureSourceMediaType(IPin* srcPin); // record demuxer media type → LIVE panel
+    void    ApplyDecklinkColorToRenderer(); // push ICS override pre-connect
     HRESULT ConnectAudio(IBaseFilter* splitter);
     HRESULT ApplyVolume();
     HRESULT ApplyBitstreamConfig();   // LAV Audio passthrough config
@@ -241,5 +283,12 @@ private:
     BitstreamConfig bitstream_;
     std::wstring audioDeviceId_, audioDeviceName_;
     bool audioRendererIsMpcAudio_ = false;   // true when MpcAudioRenderer won the CoCreate
+    std::wstring decklinkDevice_;
+    DecklinkSettings decklinkSettings_;
+    VideoStreamInfo videoStreamInfo_;        // captured at graph connect (DEMUXER → REC)
+    std::wstring pendingDecklinkUrl_;        // latest monitor-requested URL (UI thread consumes)
+    std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;
+    LogSink logSink_;
+    void Log(const char* fmt, ...);          // routes to logSink_
     mutable Snapshot snapshot_;
 };

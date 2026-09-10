@@ -33,9 +33,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="MpcPlayer.cpp" />
+    <ClCompile Include="DeckLinkMonitor.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MpcPlayer.h" />
+    <ClInclude Include="DeckLinkMonitor.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
