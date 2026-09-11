@@ -150,6 +150,7 @@ struct Row {
     bool adjustable = true;                // slider drag allowed (Manual only)
     bool enabledFlag = true;               // per-control enable (its dialog checkbox)
     bool hasUncheck = true;                // false = parameter-only (no enable box)
+    bool autoAdjustable = false;           // slider stays hittable in Auto (model-override knobs)
 };
 std::vector<Row> g_rows;
 int g_toneModeRow = -1;    // index of the tone-curve Mode row
@@ -201,8 +202,13 @@ void UpdateGates() {
         if (r.gate == 1) { secM = toneM; secA = toneA; }
         else if (r.gate == 2) { secM = chrM; secA = chrA; }
         r.disabled = !hardLive || !secA;             // hard lock only when OFF/master
-        r.adjustable = !r.disabled && r.enabledFlag && secM;
-        if (r.type == RowType::Slider && !secM) r.val = r.defaultVal;   // Auto/Default/Off snap
+        const bool masterAdj = !r.disabled && r.enabledFlag;   // not locked + checkbox on
+        // autoAdjustable = a model-OVERRIDE knob (e.g. shadow dehaze): hittable in
+        // Auto too — the model sets the base parameter, the user scales it. Normal
+        // sliders stay Manual-only.
+        r.adjustable = masterAdj && (r.autoAdjustable || secM);
+        if (r.type == RowType::Slider && !secM && !r.autoAdjustable)
+            r.val = r.defaultVal;                                 // Auto/Default/Off snap
     }
 }
 
@@ -216,12 +222,12 @@ void BuildRows() {
     auto add = [&](const wchar_t* label, RowType t, int group, const char* key, bool live,
                    const wchar_t* section = nullptr, std::vector<const wchar_t*> options = {},
                    int opt = 0, float min = 0, float max = 100, float val = 50,
-                   float defaultVal = 50, int gate = 0, bool on = false) {
+                   float defaultVal = 50, int gate = 0, bool on = false, bool autoAdj = false) {
         Row r;
         r.label = label; r.type = t; r.group = group; r.key = key; r.live = live;
         r.section = section; r.options = options; r.opt = opt;
         r.min = min; r.max = max; r.val = val; r.defaultVal = defaultVal;
-        r.gate = gate; r.on = on;
+        r.gate = gate; r.on = on; r.autoAdjustable = autoAdj;
         g_rows.push_back(r);
     };
 
@@ -231,7 +237,7 @@ void BuildRows() {
         {L"Auto", L"Manual", L"Off"}, 0);   // demo default: Auto
     g_toneModeRow = (int)g_rows.size() - 1;
     add(L"Shadow", RowType::Slider, kGroupZion, "zion.shadowToe", true, L"TONE CURVE", {}, 0, 0.00f, 0.40f, 0.00f, 0.00f, 2);
-    add(L"Shadow dehaze", RowType::Slider, kGroupZion, "zion.shadowDehaze", true, L"TONE CURVE", {}, 0, 0.00f, 1.00f, 0.00f, 0.00f, 1);   // scale-down of the model shadow-toe lift (lifted-black haze)
+    add(L"Shadow dehaze", RowType::Slider, kGroupZion, "zion.shadowDehaze", true, L"TONE CURVE", {}, 0, 0.00f, 1.00f, 0.00f, 0.00f, 1, false, true);   // model-override: stays adjustable in Auto
     add(L"Gamma", RowType::Slider, kGroupZion, "zion.gamma", true, L"TONE CURVE", {}, 0, 0.50f, 1.50f, 1.00f, 1.00f, 1);
     add(L"Highlight", RowType::Slider, kGroupZion, "zion.highlight", true, L"TONE CURVE", {}, 0, -0.30f, 0.40f, 0.00f, 0.00f, 1);
 
