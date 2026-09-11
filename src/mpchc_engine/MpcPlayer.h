@@ -102,12 +102,16 @@ public:
         bool  contrastEnabled = true;
         float contrast = 0.15f; // micro-contrast clarity strength [0, 0.5]
         float contrastZoneLo = 0.15f;
-        float contrastSkinProtect = 1.0f;
+        float contrastSkinProtect = 0.65f;  // MC damping on person-skin (stage 4)
         float contrastRatioCap = 1.40f;
         bool  contrastDebugVis = false;
-        bool  skyEnabled = true;       // sky semantic segmentation (stage-2 overlay)
+        bool  skyEnabled = false;      // sky semantic segmentation (stage-2 overlay) — default OFF
         bool  skyDebugVis = false;     // cyan sky-mask overlay for validation
         float skyStrength = 0.6f;      // sky tone-leg blend amount [0, 1]
+        bool  personEnabled = true;    // person skin protection (class 11|12)
+        float personStrength = 1.0f;   // LUT-only-inside-people gate [0,1]; 0 = legacy
+        bool  personOverlay = false;   // magenta person-mask overlay (validation)
+        float skinPreserve = 0.0f;     // stage-5 skin tone (default OFF)
         bool  faceProtectEnabled = true;
         float faceStrength = 0.80f;    // face gamma protection [0,1]
         float faceFeather = 0.04f;     // SDF feather width in UV

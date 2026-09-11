@@ -247,10 +247,12 @@ void BuildRows() {
     add(L"Strength", RowType::Slider, kGroupZion, "zion.contrastStrength", true, L"MICRO CONTRAST", {}, 0, 0.00f, 0.50f, 0.15f, 0.15f, 0);
     add(L"Zone lo", RowType::Slider, kGroupZion, "zion.contrastZoneLo", true, L"MICRO CONTRAST", {}, 0, 0.00f, 0.60f, 0.15f, 0.15f, 0);
     add(L"Ratio cap", RowType::Slider, kGroupZion, "zion.contrastRatioCap", true, L"MICRO CONTRAST", {}, 0, 1.00f, 2.00f, 1.40f, 1.40f, 0);
+    add(L"Skin protect", RowType::Slider, kGroupZion, "zion.contrastSkinProtect", true, L"MICRO CONTRAST", {}, 0, 0.00f, 1.00f, 0.65f, 0.65f, 0);
 
     add(L"HDR passthrough", RowType::Toggle, kGroupZion, "hdr.hdrPass", false, L"DEBUG");
     add(L"Tone curve passthrough", RowType::Toggle, kGroupZion, "zion.debugCopyShaders", false, L"DEBUG");
-    add(L"Face boxes", RowType::Toggle, kGroupZion, "zion.faceDebugVis", false, L"DEBUG");
+    add(L"Frame log", RowType::Toggle, kGroupZion, "zion.debugFrameLog", false, L"DEBUG");
+    // add(L"Face boxes", ..., "zion.faceDebugVis", ...);  — face detection disabled (person masks + skin LUT replace it)
     add(L"MC heat", RowType::Toggle, kGroupZion, "zion.contrastDebugVis", false, L"DEBUG");
 
     // -- BLACK BARS (P0 repaint + red-rect debug overlay) --
@@ -258,9 +260,15 @@ void BuildRows() {
     add(L"Highlight bars", RowType::Toggle, kGroupZion, "zion.barsHighlight", true, L"BLACK BARS");
 
     // -- SKY SEG (semantic segmentation + stage-3 tone leg) --
-    add(L"Enable", RowType::Toggle, kGroupZion, "zion.skyEnabled", true, L"SKY SEG", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Enable", RowType::Toggle, kGroupZion, "zion.skyEnabled", true, L"SKY SEG", {}, 0, 0, 0, 0, 0, 0, false);
     add(L"Strength", RowType::Slider, kGroupZion, "zion.skyStrength", true, L"SKY SEG", {}, 0, 0.00f, 1.00f, 0.60f, 0.60f, 0);
     add(L"Mask overlay", RowType::Toggle, kGroupZion, "zion.skyOverlay", true, L"SKY SEG");
+
+    // -- PERSON SKIN (skin protection from class 11|12 of the same segmentation) --
+    add(L"Enable", RowType::Toggle, kGroupZion, "zion.personEnabled", true, L"PERSON SKIN", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Strength", RowType::Slider, kGroupZion, "zion.personStrength", true, L"PERSON SKIN", {}, 0, 0.00f, 1.00f, 1.00f, 1.00f, 0);
+    add(L"Mask overlay", RowType::Toggle, kGroupZion, "zion.personOverlay", true, L"PERSON SKIN");
+    add(L"Tone preserve", RowType::Slider, kGroupZion, "zion.skinPreserve", true, L"PERSON SKIN", {}, 0, 0.00f, 1.00f, 0.00f, 0.00f, 0);
 
     // -- HDR (independent output settings; exact MPCVR dialog semantics) --
     add(L"Prefer DV over PQ/HLG", RowType::Toggle, kGroupHdr, "hdr.preferDoVi", true, L"TONE MAPPING");
@@ -424,17 +432,33 @@ struct LayoutEntry { bool header; const wchar_t* text; size_t idx; int y; int h;
 std::vector<LayoutEntry> g_layout;
 int g_dragRow = -1;   // row currently being slider-dragged
 
+// Collapse/expand state per section title (in-memory; demo mode has no
+// persistence). Sections are collapsed by clicking their header in the panel.
+std::vector<std::wstring> g_collapsed;
+bool IsCollapsed(const wchar_t* sec) {
+    for (auto& s : g_collapsed) if (wcscmp(s.c_str(), sec) == 0) return true;
+    return false;
+}
+void ToggleCollapsed(const wchar_t* sec) {
+    for (auto it = g_collapsed.begin(); it != g_collapsed.end(); ++it)
+        if (wcscmp(it->c_str(), sec) == 0) { g_collapsed.erase(it); return; }
+    g_collapsed.emplace_back(sec);
+}
+
 // Rebuild the group's vertical layout: section headers + rows.
 void RebuildLayout() {
     g_layout.clear();
     int y = kTabH + S(60);
     const wchar_t* prev = L"";
+    bool skipped = false;
     for (auto* r : ActiveRows()) {
         if (r->section && wcscmp(r->section, prev) != 0) {
             g_layout.push_back({true, r->section, (size_t)-1, y, S(26)});
             y += S(26);
             prev = r->section;
+            skipped = IsCollapsed(r->section);
         }
+        if (skipped) continue;   // collapsed section: header entry only
         g_layout.push_back({false, nullptr, (size_t)(r - g_rows.data()), y, kSysRowH});
         y += kSysRowH;
     }
@@ -445,6 +469,14 @@ void RebuildLayout() {
 int RowHit(int y) {
     for (auto& e : g_layout)
         if (!e.header && y >= e.y && y < e.y + e.h) return (int)e.idx;
+    return -1;
+}
+
+// Returns the g_layout index of a section header at client y, or -1.
+int HeaderHit(int y) {
+    for (size_t i = 0; i < g_layout.size(); ++i)
+        if (g_layout[i].header && y >= g_layout[i].y && y < g_layout[i].y + g_layout[i].h)
+            return (int)i;
     return -1;
 }
 
@@ -602,7 +634,7 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.contrastEnabled = RowOn("zion.contrast");          // MICRO CONTRAST section
     m.contrast = RowVal("zion.contrastStrength");
     m.contrastZoneLo = RowVal("zion.contrastZoneLo");
-    m.contrastSkinProtect = 1.0f;                        // I-channel only — no skin protection needed
+    m.contrastSkinProtect = RowVal("zion.contrastSkinProtect");
     m.contrastRatioCap = RowVal("zion.contrastRatioCap");
     m.contrastDebugVis = RowOn("zion.contrastDebugVis");
     m.faceProtectEnabled = false;
@@ -615,6 +647,10 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.skyEnabled = RowOn("zion.skyEnabled");
     m.skyDebugVis = RowOn("zion.skyOverlay");
     m.skyStrength = RowVal("zion.skyStrength");
+    m.personEnabled = RowOn("zion.personEnabled");
+    m.personStrength = RowVal("zion.personStrength");
+    m.personOverlay = RowOn("zion.personOverlay");
+    m.skinPreserve = RowVal("zion.skinPreserve");
     m.configSeq = ++g_configSeq;
     DiagLog("[BUILD] configSeq=%u enable=%d mode=%d toneCurve=%d "
         "shadow=%.3f(en=%d) gamma=%.3f(en=%d) highlight=%.3f(en=%d) "
@@ -658,6 +694,10 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         else if (!strcmp(r.key, "zion.skyEnabled")) { r.on = m.skyEnabled; }
         else if (!strcmp(r.key, "zion.skyOverlay")) { r.on = m.skyDebugVis; }
         else if (!strcmp(r.key, "zion.skyStrength")) { r.val = m.skyStrength; }
+        else if (!strcmp(r.key, "zion.personEnabled")) { r.on = m.personEnabled; }
+        else if (!strcmp(r.key, "zion.personStrength")) { r.val = m.personStrength; }
+        else if (!strcmp(r.key, "zion.personOverlay")) { r.on = m.personOverlay; }
+        else if (!strcmp(r.key, "zion.skinPreserve")) { r.val = m.skinPreserve; }
     }
     g_mlMasterEnable = m.enable;
     UpdateGates();
@@ -1163,10 +1203,15 @@ void PaintRight(HDC dc, int w, int h) {
     RebuildLayout();
     for (auto& e : g_layout) {
         if (e.header) {
-            RECT hr = {x0 + kPad, e.y, w - kPad, e.y + S(18)};
+            // Collapsible section header: chevron (▼ expanded / ▶ collapsed) +
+            // title. The whole S(26) band is the click target.
+            const bool secHot = g_lastMouse.x >= x0 + kPad && g_lastMouse.y >= e.y && g_lastMouse.y < e.y + e.h;
+            RECT cg = {x0 + kPad, e.y, x0 + kPad + S(18), e.y + S(18)};
+            RECT hr = {x0 + kPad + S(18), e.y, w - kPad, e.y + S(18)};
             SetBkMode(dc, TRANSPARENT);
             HFONT fo = (HFONT)SelectObject(dc, g_fSection);
-            SetTextColor(dc, COL_MID);
+            SetTextColor(dc, secHot ? COL_TEXT : COL_MID);
+            DrawTextW(dc, IsCollapsed(e.text) ? L"▶" : L"▼", -1, &cg, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             DrawTextW(dc, e.text, -1, &hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             SelectObject(dc, fo);
             RECT ds = {x0 + kPad, e.y + S(20), w - kPad, e.y + S(21)};
@@ -1344,6 +1389,16 @@ void HandleSysClick(const POINT& p, int panelW, int panelH) {
         }
         return;
     }
+    // Click on a section header → collapse/expand its groupbox.
+    const int hdr = HeaderHit(p.y);
+    if (hdr >= 0) {
+        ToggleCollapsed(g_layout[hdr].text);
+        g_dragRow = -1;   // a collapsed row can no longer be a drag target
+        RebuildLayout();
+        InvalidateRect(g_hRight, nullptr, FALSE);
+        return;
+    }
+
     const int rowIdx = RowHit(p.y);
     if (rowIdx < 0) return;
     Row& r = g_rows[rowIdx];
@@ -1399,6 +1454,7 @@ int HoverToken(HWND h, const POINT& p) {
             const int idx = (p.y - kTabH) / kIconStep;
             return (idx >= 0 && idx < kSysGroupCount) ? 70 + idx : 90;
         }
+        if (g_railTab == RailTab::System && HeaderHit(p.y) >= 0) return 81;
         if (g_railTab == RailTab::System && RowHit(p.y) >= 0) return 80;
         return 90;
     }

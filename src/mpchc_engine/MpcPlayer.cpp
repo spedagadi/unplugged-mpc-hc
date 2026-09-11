@@ -820,6 +820,10 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.bMLSkyEnabled = m.skyEnabled;
     s.bMLSkyDebugVis = m.skyDebugVis;
     s.fMLSkyStrength = m.skyStrength;
+    s.bMLPersonEnabled = m.personEnabled;
+    s.fMLPersonStrength = m.personStrength;
+    s.bMLPersonDebugVis = m.personOverlay;
+    s.fMLSkinPreserve = m.skinPreserve;
     s.bMLFaceProtectEnabled = m.faceProtectEnabled;
     s.fMLFaceProtect = m.faceStrength;
     s.fMLFaceFeather = m.faceFeather;
@@ -881,6 +885,10 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.skyEnabled = s.bMLSkyEnabled;
     m.skyDebugVis = s.bMLSkyDebugVis;
     m.skyStrength = s.fMLSkyStrength;
+    m.personEnabled = s.bMLPersonEnabled;
+    m.personStrength = s.fMLPersonStrength;
+    m.personOverlay = s.bMLPersonDebugVis;
+    m.skinPreserve = s.fMLSkinPreserve;
     m.faceProtectEnabled = s.bMLFaceProtectEnabled;
     m.faceStrength = s.fMLFaceProtect;
     m.faceFeather = s.fMLFaceFeather;
