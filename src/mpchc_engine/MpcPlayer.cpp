@@ -793,6 +793,7 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.bMLShadowEnabled = m.shadowEnabled;
     s.fMLShadow = m.shadow;
     s.fMLShadowDehaze = m.shadowDehaze;
+    s.fMLHighlightRolloffCtrl = m.highlightRolloffCtrl;
     s.bMLHighlightEnabled = m.highlightEnabled;
     s.fMLHighlight = m.highlight;
     s.bMLChromaEnabled = m.chromaEnabled;
@@ -859,6 +860,7 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.shadowEnabled = s.bMLShadowEnabled;
     m.shadow = s.fMLShadow;
     m.shadowDehaze = s.fMLShadowDehaze;
+    m.highlightRolloffCtrl = s.fMLHighlightRolloffCtrl;
     m.highlightEnabled = s.bMLHighlightEnabled;
     m.highlight = s.fMLHighlight;
     m.chromaEnabled = s.bMLChromaEnabled;

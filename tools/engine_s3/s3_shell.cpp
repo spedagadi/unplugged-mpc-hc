@@ -240,6 +240,7 @@ void BuildRows() {
     add(L"Shadow dehaze", RowType::Slider, kGroupZion, "zion.shadowDehaze", true, L"TONE CURVE", {}, 0, 0.00f, 1.00f, 0.00f, 0.00f, 1, false, true);   // model-override: stays adjustable in Auto
     add(L"Gamma", RowType::Slider, kGroupZion, "zion.gamma", true, L"TONE CURVE", {}, 0, 0.50f, 1.50f, 1.00f, 1.00f, 1);
     add(L"Highlight", RowType::Slider, kGroupZion, "zion.highlight", true, L"TONE CURVE", {}, 0, -0.30f, 0.40f, 0.00f, 0.00f, 1);
+    add(L"Highlight shoulder", RowType::Slider, kGroupZion, "zion.highlightRolloffCtrl", true, L"TONE CURVE", {}, 0, -0.20f, 0.20f, 0.00f, 0.00f, 1, false, true);   // model-override: rim soften, adjustable in Auto
 
     add(L"Mode", RowType::Cycle, kGroupZion, "zion.chromaMode", true, L"CHROMA",
         {L"Default", L"Manual", L"Off"}, 0);   // demo default: Default
@@ -621,6 +622,7 @@ MpcPlayer::MlSettings BuildMlFromRows() {
     m.gamma = RowVal("zion.gamma");
     m.shadow = RowVal("zion.shadowToe");
     m.shadowDehaze = RowVal("zion.shadowDehaze");
+    m.highlightRolloffCtrl = RowVal("zion.highlightRolloffCtrl");
     m.highlight = RowVal("zion.highlight");
     m.chromaEnabled = chrOn;
     m.huntEnabled      = false;
@@ -683,6 +685,7 @@ void ApplyMlToRows(const MpcPlayer::MlSettings& m) {
         else if (!strcmp(r.key, "zion.toneMode"))  { r.opt = m.toneCurveEnabled ? (m.mode == 1 ? 1 : 0) : 2; }
         else if (!strcmp(r.key, "zion.shadowToe"))  { r.val = m.shadow; r.enabledFlag = m.shadowEnabled; }
         else if (!strcmp(r.key, "zion.shadowDehaze")) { r.val = m.shadowDehaze; }
+        else if (!strcmp(r.key, "zion.highlightRolloffCtrl")) { r.val = m.highlightRolloffCtrl; }
         else if (!strcmp(r.key, "zion.gamma"))     { r.val = m.gamma; r.enabledFlag = m.gammaEnabled; }
         else if (!strcmp(r.key, "zion.highlight")) { r.val = m.highlight; r.enabledFlag = m.highlightEnabled; }
         else if (!strcmp(r.key, "zion.chromaMode")) { r.opt = m.chromaEnabled ? (m.mode == 1 ? 1 : 0) : 2; }
