@@ -108,7 +108,7 @@ public:
         bool  skyEnabled = false;      // sky semantic segmentation (stage-2 overlay) — default OFF
         bool  skyDebugVis = false;     // cyan sky-mask overlay for validation
         float skyStrength = 0.6f;      // sky tone-leg blend amount [0, 1]
-        bool  personEnabled = true;    // person skin protection (class 11|12)
+        bool  personEnabled = false;   // person skin protection (default OFF; enable when validated)
         float personStrength = 1.0f;   // LUT-only-inside-people gate [0,1]; 0 = legacy
         bool  personOverlay = false;   // magenta person-mask overlay (validation)
         float skinPreserve = 0.0f;     // stage-5 skin tone (default OFF)

@@ -265,7 +265,7 @@ void BuildRows() {
     add(L"Mask overlay", RowType::Toggle, kGroupZion, "zion.skyOverlay", true, L"SKY SEG");
 
     // -- PERSON SKIN (skin protection from class 11|12 of the same segmentation) --
-    add(L"Enable", RowType::Toggle, kGroupZion, "zion.personEnabled", true, L"PERSON SKIN", {}, 0, 0, 0, 0, 0, 0, true);
+    add(L"Enable", RowType::Toggle, kGroupZion, "zion.personEnabled", true, L"PERSON SKIN", {}, 0, 0, 0, 0, 0, 0, false);   // default OFF
     add(L"Strength", RowType::Slider, kGroupZion, "zion.personStrength", true, L"PERSON SKIN", {}, 0, 0.00f, 1.00f, 1.00f, 1.00f, 0);
     add(L"Mask overlay", RowType::Toggle, kGroupZion, "zion.personOverlay", true, L"PERSON SKIN");
     add(L"Tone preserve", RowType::Slider, kGroupZion, "zion.skinPreserve", true, L"PERSON SKIN", {}, 0, 0.00f, 1.00f, 0.00f, 0.00f, 0);
