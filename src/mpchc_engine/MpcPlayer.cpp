@@ -6,12 +6,14 @@
 #include <dvdmedia.h>
 #include <dxva2api.h>
 #include <evr.h>
+#include <control.h>   // IQualProp (renderer perf counters)
 #include <mfidl.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <FilterInterfaces.h>
 #include <IVideoRenderer.h>
 #include <LAVAudioSettings.h>
+#include <LAVSplitterSettings.h>
 #include <atlstr.h>
 #include "MpcAudioRenderer/IMpcAudioRenderer.h"
 #include "DeckLinkMonitor.h"
@@ -609,6 +611,11 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     if (!decOut || !rndIn) return E_POINTER;
     hr = graph_->Connect(decOut, rndIn);
     if (FAILED(hr)) return hr;
+    if (!bDeckLink) {
+        // Record the decoder->renderer media type (LIVE panel DEMUXER->REC and
+        // the HDR color/transfer source for ApplyMediaColorToRenderer).
+        CaptureSourceMediaType(decOut);
+    }
 
     hr = graph_.QueryInterface(&mediaControl_);
     if (FAILED(hr)) return hr;
@@ -617,6 +624,15 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     graph_.QueryInterface(&mediaEvent_);
 
     splitter_ = splitter;
+    if (bDeckLink) {
+        ApplyDecklinkLowLatency(splitter);   // shrink LAV output queue: live capture
+    } else {
+        // HDR media file: the decoder passes PQ/HLG in the media type, but
+        // MPCVR's auto-ICS can resolve it to SDR (G22P709) depending on the
+        // graph handoff. Force the ICS to match the decoded transfer so the ML
+        // grade + tone-map see the real HDR signal (mirrors the decklink path).
+        ApplyMediaColorToRenderer(decOut);
+    }
     if (!bDeckLink) {
         ConnectAudio(splitter);
     }
@@ -686,10 +702,22 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
         videoStreamInfo_.pixelFormat = 3;
         videoStreamInfo_.subtypeName = L"(raw)";
     }
-    Log("[DECKLINK][engine] source media type: %dx%d itl=%d avg=%d fmt=%d",
+    // Transfer function: read the extended format from dwControlFlags (PQ/HLG → HDR).
+    if (mt.formattype == FORMAT_VideoInfo2 && mt.pbFormat) {
+        const VIDEOINFOHEADER2* vih2 = reinterpret_cast<const VIDEOINFOHEADER2*>(mt.pbFormat);
+        if (vih2->dwControlFlags & AMCONTROL_COLORINFO_PRESENT) {
+            DXVA2_ExtendedFormat xf = {};
+            xf.value = vih2->dwControlFlags;
+            videoStreamInfo_.transferFunction = (int)xf.VideoTransferFunction;
+            videoStreamInfo_.hdr = (xf.VideoTransferFunction == MFVideoTransFunc_2084 ||
+                                    xf.VideoTransferFunction == MFVideoTransFunc_HLG);
+        }
+    }
+    Log("[ENGINE] source media type: %dx%d itl=%d avg=%d fmt=%d tf=%d hdr=%d",
         videoStreamInfo_.width, videoStreamInfo_.height,
         videoStreamInfo_.interlaced, videoStreamInfo_.avgTimePerFrame100ns,
-        videoStreamInfo_.pixelFormat);
+        videoStreamInfo_.pixelFormat, videoStreamInfo_.transferFunction,
+        videoStreamInfo_.hdr ? 1 : 0);
     // Free the media type (DeleteMediaType is a base-class helper not linked here;
 // AM_MEDIA_TYPE allocates only pbFormat).
     if (mt.cbFormat && mt.pbFormat) CoTaskMemFree(mt.pbFormat);
@@ -711,6 +739,69 @@ void MpcPlayer::ApplyDecklinkColorToRenderer()
     vr->GetSettings(s);
     s.iInputColorSpace = decklinkSettings_.inputColorSpace;
     Log("[DECKLINK][engine] pushing iInputColorSpace=%d to MPCVR", s.iInputColorSpace);
+    vr->SetSettings(s);
+}
+
+// Live DeckLink capture must not accumulate frames in LAVSplitter's output
+// queue (default 350 packets ≈ 7 s at 50 fps of latency). Cap it low enough to
+// stay visually-latency-free, but not so low that the drain bursts underflow
+// (stutter). 12 packets ≈ 0.25 s at 50 fps — absorbs scheduler jitter without
+// adding perceptible latency.
+void MpcPlayer::ApplyDecklinkLowLatency(IBaseFilter* splitter)
+{
+    if (!splitter) return;
+    CComQIPtr<ILAVFSettings> settings = splitter;
+    if (!settings) {
+        Log("[DECKLINK][engine] ApplyDecklinkLowLatency: splitter lacks ILAVFSettings");
+        return;
+    }
+    HRESULT hr = settings->SetMaxQueueSize(12);
+    Log("[DECKLINK][engine] ApplyDecklinkLowLatency: SetMaxQueueSize(12) hr=0x%08X", (unsigned)hr);
+}
+
+// HDR media file: read the transfer function the decoder handed down in the
+// negotiated media type and force MPCVR's input colour space to match (PQ/HLG)
+// so SourceIsHDR() is true and the ML grade grades real HDR, not a G22P709
+// misread. Mirrors the DeckLink path's explicit ICS push.
+void MpcPlayer::ApplyMediaColorToRenderer(IPin* decOut)
+{
+    if (!renderer_ || !decOut) return;
+    // CaptureSourceMediaType(decOut) ran first and filled videoStreamInfo_
+    // (width/height/transfer). For HDR files force MPCVR's input colour space
+    // from the actual decoded transfer (mirrors the decklink ICS push), so
+    // SourceIsHDR() is true and the ML grade grades the real HDR signal.
+    // TEMP-HACK: the decoder's media type reports transfer Unknown (tf=0) even
+    // for HDR10, so also force PQ whenever the decoded pixel format is 10-bit —
+    // a 10-bit frame almost always means HDR, and this is how the "washed out"
+    // hack is being bisected.
+    int ics = ICS_Auto;
+    switch (videoStreamInfo_.transferFunction) {
+    case MFVideoTransFunc_2084: ics = ICS_BT2020_PQ; break;
+    case MFVideoTransFunc_HLG:   ics = ICS_BT2020_HLG; break;
+    default: break;
+    }
+    if (ics == ICS_Auto) {
+        const bool isP010 = (videoStreamInfo_.pixelFormat == 3 ||
+                             videoStreamInfo_.subtypeName.find(L"010") != std::wstring::npos ||
+                             videoStreamInfo_.subtypeName.find(L"P010") != std::wstring::npos);
+        if (isP010) {
+            ics = ICS_BT2020_PQ;   // TEMP-HACK: 10-bit decoded → assume PQ
+            Log("[ENGINE] ApplyMediaColorToRenderer: TEMP-HACK tf=%d fmt=P010 → force PQ",
+                videoStreamInfo_.transferFunction);
+        }
+    }
+    if (ics == ICS_Auto) {
+        Log("[ENGINE] ApplyMediaColorToRenderer: transfer=%d not HDR — leave ICS auto",
+            videoStreamInfo_.transferFunction);
+        return;
+    }
+    CComQIPtr<IVideoRenderer> vr = renderer_;
+    if (!vr) return;
+    Settings_t s;
+    vr->GetSettings(s);
+    s.iInputColorSpace = ics;
+    Log("[ENGINE] ApplyMediaColorToRenderer: pushing iInputColorSpace=%d (tf=%d)",
+        ics, videoStreamInfo_.transferFunction);
     vr->SetSettings(s);
 }
 
@@ -1171,6 +1262,23 @@ HRESULT MpcPlayer::GetMlStats(std::wstring& out) const
     CComQIPtr<IVideoRenderer> vr = renderer_;
     if (!vr) return S_FALSE;
     vr->GetMLStats(out);
+    return S_OK;
+}
+
+HRESULT MpcPlayer::GetRendererStats(RenderStats& stats) const
+{
+    stats = RenderStats{};
+    if (!renderer_) return S_FALSE;
+    CComQIPtr<IVideoRenderer> vr = renderer_;
+    if (!vr) return S_FALSE;
+    ::RenderStats_t r;
+    vr->GetRenderStats(r);
+    stats.framesReceived = r.framesReceived;
+    stats.framesDrawn    = r.framesDrawn;
+    stats.dropped        = r.dropped;
+    stats.skipped        = r.skipped;
+    stats.failed         = r.failed;
+    stats.drawFps        = r.drawFps;
     return S_OK;
 }
 

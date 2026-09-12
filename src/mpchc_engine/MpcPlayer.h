@@ -218,6 +218,18 @@ public:
     HRESULT GetProcessorInfo(std::wstring&) const;
     HRESULT GetMlStats(std::wstring&) const;
 
+    // Renderer frame accounting (LIVE panel / PERFORMANCE / RENDERER OUT):
+    // receive-side frame counts + dropped/skipped/failed tallies.
+    struct RenderStats {
+        unsigned framesReceived = 0;   // total input frames seen by the renderer
+        unsigned framesDrawn = 0;      // frames actually presented
+        unsigned dropped = 0;          // receive-side drops
+        unsigned skipped = 0;          // double-rate skip path
+        unsigned failed = 0;           // render failures
+        double   drawFps = 0.0;        // presented frames per second (measured)
+    };
+    HRESULT GetRendererStats(RenderStats&) const;
+
     // DeckLink HDMI capture (live input via LAVSplitterSource + decklink:// URL)
     // Video-only: no audio is ingested (HDMI audio routes to the AVR separately).
     struct VideoStreamInfo {   // what the demuxer handed out (LIVE panel / DEMUXER → REC)
@@ -226,6 +238,8 @@ public:
         int  avgTimePerFrame100ns = 0;                 // 100 ns units; 0 = unknown
         int  pixelFormat = 0;                          // 0=UYVY 1=v210 2=NV12 3=other
         bool interlaced = false;
+        int  transferFunction = 0;                     // DXVA2_ExtendedFormat transfer (0=Unknown, 12=PQ/2084, ...)
+        bool hdr = false;                              // transfer is PQ(2084)/HLG → HDR source
         std::wstring subtypeName;                      // e.g. "UYVY", "v210"
     };
 
@@ -263,6 +277,8 @@ private:
     HRESULT ConnectVideoPin(IBaseFilter* source, IPin* decIn); // try-connect over output pins
     void    CaptureSourceMediaType(IPin* srcPin); // record demuxer media type → LIVE panel
     void    ApplyDecklinkColorToRenderer(); // push ICS override pre-connect
+    void    ApplyDecklinkLowLatency(IBaseFilter* splitter); // shrink LAV output queue for live capture
+    void    ApplyMediaColorToRenderer(IPin* decOut); // push ICS override from the decoded media type (HDR files)
     HRESULT ConnectAudio(IBaseFilter* splitter);
     HRESULT ApplyVolume();
     HRESULT ApplyBitstreamConfig();   // LAV Audio passthrough config

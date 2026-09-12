@@ -105,3 +105,53 @@ mode = `MODE_WASAPI_EXCLUSIVE_BITSTREAM` vs shared.
    run `register_all.cmd` elevated, start `bin\s3_shell.exe`.
 4. Diagnose via `s3_shell_diag.log` (`[AUDIO] CoCreate… hr=` / `mode=`, `[DECKLINK][shell]`
    lines) and the LIVE panel.
+
+## Build recipe (verified 2026-09-12 on a fresh box, VS2022 17.14 + MSYS2 UCRT64)
+
+We do **not** run mpc-hc's full `build.bat` — the deliverable is `mpchc_engine.lib`
++ `s3_shell.exe`. All three projects build from this machine's workspace.
+
+1. **Set the environment once**
+   - git is NOT on PATH by default (GitHub Desktop only). Each build invocation needs:
+     `$env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-*\resources\app\git\cmd;" + $env:PATH`
+   - `cmd` will not resolve `*.bat`/`*.cmd` from the CWD (NoDefaultCurrentDirectoryInExePath
+     is set in this shell). Always `cmd /c "C:\full\path\to\script.bat"` (not bare name).
+
+2. **VideoRenderer** (`zion-ml-phase0`) — x64 only (no x86 onnxruntime.lib):
+   ```
+   MSBuild.exe MpcVideoRenderer.sln /p:Configuration=Release /p:Platform=x64 /m /nologo
+   → _bin\Filter_x64\MpcVideoRenderer64.ax
+   ```
+   Needs git-on-PATH (`update_revision.cmd` PreBuildEvent). Requires the ByteTrack
+   sources present at `C:\Code\byte-track-eigen` (hard-coded include + ClCompile paths in
+   `Source\MpcVideoRenderer.vcxproj`). ⚠️ `BYTETracker.h` was never committed upstream —
+   keep the sibling `byte-track-eigen` repo (modified `get_recent_lost_tracks` added).
+
+3. **mpc-hc engine** (`zion-s3-shell`) — the whole player build is NOT required:
+   ```
+   tools\engine_s3\rebuild_engine.bat
+   → src\mpchc_engine\bin\lib\Release_x64\mpchc_engine.lib
+   ```
+   (msbuild mpchc_engine.vcxproj with `/p:WindowsTargetPlatformVersion=10.0
+   /p:ML_MPCVR_INCLUDE=<VideoRenderer>\Source /p:LAV_INCLUDE=..\..\src\thirdparty\LAVFilters\src\include`)
+
+4. **s3_shell** (same edge):
+   ```
+   tools\engine_s3\build_s3_shell.bat
+   → tools\engine_s3\s3_shell.exe
+   ```
+
+5. **LAVFilters** — MSBuild the filters against the copied prebuilt ffmpeg libs
+   (avoid the 30-min `build.bat` ffmpeg rebuild unless the decklink patch changed):
+   ```
+   MSBuild.exe LAVFilters.sln /p:Configuration=Release /p:Platform=x64 /m /nologo
+   → bin_x64\LAVSplitter.ax, LAVVideo.ax, LAVAudio.ax
+   ```
+   ⚠️ Copied trees carry stale PCH/obj from the source machine's older MSVC → the
+   first build dies with C1853. Fix: delete `bin_x64\**\*.pch,*.obj,*.ipch` then rebuild.
+   Verified: x64 filters link against the decklink-patched `avdevice-lav-63.dll` in `bin_x64`.
+
+6. **Fixes applied on the fresh box** (not forwarded upstream yet):
+   - `src\platform.props`: default SDK 8.1 → `10.0` (= latest installed; never pin a build#).
+   - `tools\engine_s3\rebuild_engine.bat`: MPCVR include → this machine's path.
+   - mpc-hc `build.user.bat` (gitignored, per-machine): UCRT64 paths, not mingw64

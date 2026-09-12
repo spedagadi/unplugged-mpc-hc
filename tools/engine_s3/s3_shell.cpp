@@ -1,4 +1,4 @@
-// s3_shell.cpp — S3: UI shell skeleton bound to MpcPlayer.
+﻿// s3_shell.cpp — S3: UI shell skeleton bound to MpcPlayer.
 //
 // One window; video fills the client; overlay panels float above it.
 // RIGHT rail = tabbed (Playback | System). System = hierarchical settings
@@ -82,7 +82,7 @@ constexpr COLORREF COL_OK      = RGB(0x4C, 0xAF, 0x50);
 float g_scale = 1.0f;
 int S(float v) { return (int)(v * g_scale + 0.5f); }
 
-int kLeftW = 260;
+int kLeftW = 440;    // LIVE panel — same width as the Settings panel (kRightW)
 int kRightW = 440;   // fixed width for ALL tabs (no widen/squeeze); scales with DPI
 int kBottomH = 140;
 int kPad = 16;
@@ -99,7 +99,7 @@ int kIconStep = 64;  // icon tab + gap
 
 void InitGeometry() {
     g_scale = GetDpiForSystem() / 96.0f;
-    kLeftW = S(260); kRightW = S(440);
+    kLeftW = S(440); kRightW = S(440);
     kBottomH = S(140); kPad = S(16); kRowH = S(22); kBtnH = S(34);
     kTabH = S(34); kRailW = S(80); kCatH = S(26); kSysRowH = S(40);
     kIconH = S(58); kIconStep = S(64);
@@ -428,17 +428,18 @@ void InitFonts() {
 // -- paint helpers ------------------------------------------------------------
 namespace {
 
-void PaintRow(HDC dc, int y, int colW, const wchar_t* label, const wchar_t* value,
-              COLORREF vc) {
+void PaintRow(HDC dc, int y, int colW, int panelW, const wchar_t* label,
+              const wchar_t* value, COLORREF vc) {
     RECT a = {kPad, y, kPad + colW - 8, y + kRowH};
-    RECT b = {kPad + colW - 4, y, 2 * kPad + colW - 4, y + kRowH};
+    // value spans from the key column to the panel's right edge (kPad margin)
+    RECT b = {kPad + colW - 4, y, panelW - kPad, y + kRowH};
     SetBkMode(dc, TRANSPARENT);
     HFONT fo = (HFONT)SelectObject(dc, g_fLabel);
     SetTextColor(dc, COL_MID);
     DrawTextW(dc, label, -1, &a, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, g_fValue);
     SetTextColor(dc, vc);
-    DrawTextW(dc, value, -1, &b, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(dc, value, -1, &b, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     SelectObject(dc, fo);
 }
 
@@ -451,6 +452,20 @@ int PaintSection(HDC dc, int y, int w, const wchar_t* title) {
     SelectObject(dc, fo);
     RECT sep = {kPad, y + 20, w - kPad, y + 21};
     HBRUSH bb = CreateSolidBrush(COL_BORDER); FillRect(dc, &sep, bb); DeleteObject(bb);
+    return y + 28;
+}
+
+// LIVE-panel section title — uses the same COL_ACCENT accent as the active
+// settings tabs / toggles so both panels share one visual language.
+int PaintSectionAccent(HDC dc, int y, int w, const wchar_t* title) {
+    RECT r = {kPad, y, w - kPad, y + 18};
+    SetBkMode(dc, TRANSPARENT);
+    HFONT fo = (HFONT)SelectObject(dc, g_fSection);
+    SetTextColor(dc, COL_ACCENT);
+    DrawTextW(dc, title, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, fo);
+    RECT sep = {kPad, y + 20, w - kPad, y + 21};
+    HBRUSH bb = CreateSolidBrush(COL_ACCENT2); FillRect(dc, &sep, bb); DeleteObject(bb);
     return y + 28;
 }
 
@@ -798,6 +813,9 @@ void PushMlToRenderer() {
 std::wstring g_mlStats;   // live ML internals from MPCVR (polled, shown in the left pane)
 std::wstring g_captureLine;  // CAPTURE INPUT: signal + detected format (decklink_monitor)
 std::wstring g_modeLine;     // DEMUXER -> REC: resolution/pixfmt/fps (source pin media type)
+std::wstring g_droppedLine;  // PERFORMANCE: dropped / missed frames
+std::wstring g_delayedLine;  // PERFORMANCE: delayed frames
+std::wstring g_targetTrc, g_targetCs, g_targetPrim;  // RENDERER OUT: display target
 int g_captureLocked = -1;    // -1 unknown, 0 no signal, 1 locked
 
 void PullMlFromRenderer() {
@@ -1424,22 +1442,22 @@ void PaintLeft(HDC dc, int w, int h) {
     RECT r = {0, 0, w, h};
     HBRUSH bg = CreateSolidBrush(COL_PANEL); FillRect(dc, &r, bg); DeleteObject(bg);
 
-    RECT hd = {kPad, S(14), w - kPad, S(44)};
+    RECT hd = {kPad, S(14), w - kPad, S(34)};
     SetBkMode(dc, TRANSPARENT);
-    HFONT fo = (HFONT)SelectObject(dc, g_fHeader);
-    SetTextColor(dc, COL_OK);
-    DrawTextW(dc, L"\u25CF", -1, &hd, DT_LEFT);
-    RECT tt = {kPad + S(18), S(14), w - kPad, S(44)};
+    HFONT fo = (HFONT)SelectObject(dc, g_fSection);
+    SetTextColor(dc, COL_ACCENT);
+    DrawTextW(dc, L"\u25cf", -1, &hd, DT_LEFT | DT_VCENTER);
+    RECT tt = {kPad + S(8), S(14), w - kPad, S(34)};
     SetTextColor(dc, COL_TEXT);
     DrawTextW(dc, L"LIVE", -1, &tt, DT_LEFT | DT_VCENTER);
     SelectObject(dc, fo);
 
-    int y = S(60);
+    int y = S(44);   // header now 11px — compact top gap, matching settings panel
     MpcPlayer::Snapshot sn{};
     if (g_player) g_player->GetSnapshot(sn);
     const bool playing = sn.state == MpcPlayer::State::Playing;
 
-    y = PaintSection(dc, y, w, L"PERFORMANCE");
+    y = PaintSectionAccent(dc, y, w, L"PERFORMANCE");
     wchar_t buf[160];
     const wchar_t* st = L"idle";
     switch (sn.state) {
@@ -1450,53 +1468,107 @@ void PaintLeft(HDC dc, int w, int h) {
     case MpcPlayer::State::Stopped: st = L"stopped"; break;
     case MpcPlayer::State::Error: st = L"error"; break;
     }
-    PaintRow(dc, y, 110, L"State", st, playing ? COL_OK : COL_TEXT); y += kRowH;
+    PaintRow(dc, y, 110, w, L"State", st, playing ? COL_OK : COL_TEXT); y += kRowH;
     swprintf_s(buf, L"%lld", sn.position);
-    PaintRow(dc, y, 110, L"Position", buf, COL_TEXT); y += kRowH;
+    PaintRow(dc, y, 110, w, L"Position", buf, COL_TEXT); y += kRowH;
     swprintf_s(buf, L"%lld", sn.duration);
-    PaintRow(dc, y, 110, L"Duration", buf, COL_TEXT); y += kRowH + 6;
+    PaintRow(dc, y, 110, w, L"Duration", buf, COL_TEXT); y += kRowH;
+    PaintRow(dc, y, 110, w, L"Missed", g_droppedLine.empty() ? L"\u2014" : g_droppedLine.c_str(),
+             COL_TEXT); y += kRowH;
+    PaintRow(dc, y, 110, w, L"Delayed", g_delayedLine.empty() ? L"\u2014" : g_delayedLine.c_str(),
+             COL_TEXT); y += kRowH + 6;
 
-    y = PaintSection(dc, y, w, L"CAPTURE INPUT");
+    y = PaintSectionAccent(dc, y, w, L"CAPTURE INPUT");
     {
         const wchar_t* dev = g_decklinkDevice.empty() ? L"\u2014" : g_decklinkDevice.c_str();
-        PaintRow(dc, y, 110, L"Device", dev, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Device", dev, COL_TEXT); y += kRowH;
         COLORREF sigCol = (g_captureLocked == 1) ? COL_OK : (g_captureLocked == 0) ? RGB(0xE0, 0x50, 0x50) : COL_LO;
-        PaintRow(dc, y, 110, L"Signal", g_captureLocked == 1 ? L"\u25cf Locked"
+        PaintRow(dc, y, 110, w, L"Signal", g_captureLocked == 1 ? L"\u25cf Locked"
                 : g_captureLocked == 0 ? L"\u25cb No signal" : L"\u2014", sigCol); y += kRowH;
         if (!g_captureLine.empty()) {
-            PaintRow(dc, y, 150, L"Detected", g_captureLine.c_str(), COL_TEXT); y += kRowH;
+            PaintRow(dc, y, 110, w, L"Detected", g_captureLine.c_str(), COL_TEXT); y += kRowH;
         }
         y += 6;
     }
 
-    y = PaintSection(dc, y, w, L"DEMUXER \u2192 REC");
-    if (!g_modeLine.empty()) {
-        PaintRow(dc, y, 90, L"Stream", g_modeLine.c_str(), COL_TEXT); y += kRowH;
-    } else {
-        PaintRow(dc, y, 90, L"Stream", L"\u2014", COL_LO); y += kRowH;
+    y = PaintSectionAccent(dc, y, w, L"DEMUXER \u2192 REC");
+    {
+        const auto& vs = g_player ? g_player->GetVideoStreamInfo() : MpcPlayer::VideoStreamInfo{};
+        wchar_t buf2[128];
+        if (vs.valid) {
+            swprintf_s(buf2, L"%d\u00d7%d%s", vs.width, vs.height, vs.interlaced ? L" i" : L" p");
+            PaintRow(dc, y, 110, w, L"Resolution", buf2, COL_TEXT); y += kRowH;
+            // Pixel format humanized: UYVY/v210/NV12 -> "YCbCr 4:2:2 \u00b7 8-bit" etc.
+            const wchar_t* pf = L"?";
+            switch (vs.pixelFormat) {
+            case 0: pf = L"YCbCr 4:2:2 \u00b7 8-bit"; break;   // UYVY
+            case 1: pf = L"YCbCr 4:2:2 \u00b7 10-bit"; break;  // v210
+            case 2: pf = L"YCbCr 4:2:0 \u00b7 8-bit"; break;   // NV12
+            default: pf = vs.subtypeName.empty() ? L"raw" : vs.subtypeName.c_str(); break;
+            }
+            PaintRow(dc, y, 110, w, L"Pixel fmt", pf, COL_TEXT); y += kRowH;
+            double fps = vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0;
+            swprintf_s(buf2, L"%.3f fps", fps);
+            PaintRow(dc, y, 110, w, L"Framerate", buf2, COL_TEXT); y += kRowH;
+        } else {
+            PaintRow(dc, y, 110, w, L"Resolution", L"\u2014", COL_LO); y += kRowH;
+            PaintRow(dc, y, 110, w, L"Pixel fmt", L"\u2014", COL_LO); y += kRowH;
+            PaintRow(dc, y, 110, w, L"Framerate", L"\u2014", COL_LO); y += kRowH;
+        }
     }
     y += 6;
 
-    y = PaintSection(dc, y, w, L"RENDERER IN");
+    y = PaintSectionAccent(dc, y, w, L"RENDERER IN");
     {
-        // pull the rendererIn: line from the ML stats blurb (fmt WxH ics=)
-        const wchar_t* rin = L"\u2014";
+        // rendererIn line: "fmt=<fmt> <W>x<H>  ics=<name>" \u2014 split into
+        // Format / Resolution / Colour space.
+        const wchar_t* fmt  = L"\u2014";
+        const wchar_t* res  = L"\u2014";
+        const wchar_t* ics  = L"\u2014";
+        wchar_t* resm = nullptr;   // mutable view for the double-space trim
         if (!g_mlStats.empty()) {
             const std::wstring::size_type at = g_mlStats.find(L"rendererIn:");
             if (at != std::wstring::npos) {
                 const wchar_t* p = g_mlStats.c_str() + at + 11;
-                wchar_t tmp[160] = {};
+                wchar_t tmp[192] = {};
                 wcsncpy_s(tmp, p, _TRUNCATE);
                 wchar_t* nl = wcschr(tmp, L'\n');
                 if (nl) *nl = 0;
-                rin = tmp;
+                // "fmt=UYVY 1920x1080  ics=709"
+                wchar_t* fmtv = wcsstr(tmp, L"fmt=");
+                wchar_t* icsv = wcsstr(tmp, L"ics=");
+                wchar_t* sp = nullptr;
+                if (fmtv) {
+                    fmtv += 4;
+                    sp = wcschr(fmtv, L' ');
+                    if (sp) { *sp = 0; resm = sp + 1; res = resm; }
+                    fmt = fmtv;
+                }
+                if (resm && *resm) {
+                    sp = wcsstr(resm, L"  ");      // double space before ics
+                    if (sp) *sp = 0;
+                }
+                if (icsv) { icsv += 4; ics = icsv; }
             }
         }
-        PaintRow(dc, y, 110, L"Input", rin, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Format", fmt, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Resolution", res, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Colour space", ics, COL_TEXT); y += kRowH;
         y += 6;
     }
 
-    y = PaintSection(dc, y, w, L"ZION ML");
+    y = PaintSectionAccent(dc, y, w, L"RENDERER OUT");
+    {
+        const wchar_t* trc  = g_targetTrc.empty()  ? L"\u2014" : g_targetTrc.c_str();
+        const wchar_t* cs   = g_targetCs.empty()   ? L"\u2014" : g_targetCs.c_str();
+        const wchar_t* prim = g_targetPrim.empty() ? L"\u2014" : g_targetPrim.c_str();
+        PaintRow(dc, y, 110, w, L"Target TRC", trc, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Target Cs", cs, COL_TEXT); y += kRowH;
+        PaintRow(dc, y, 110, w, L"Target Prim", prim, COL_TEXT); y += kRowH;
+        y += 6;
+    }
+
+    y = PaintSectionAccent(dc, y, w, L"ZION ML");
     if (!g_mlStats.empty()) {
         HFONT fz = (HFONT)SelectObject(dc, g_fStatus);
         SetTextColor(dc, COL_MID);
@@ -1919,6 +1991,71 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 } else {
                     g_modeLine.clear();
                 }
+
+                // PERFORMANCE — renderer frame accounting (frames/dropped/skip/fail).
+                MpcPlayer::RenderStats rs;
+                const bool haveRs = (g_player && SUCCEEDED(g_player->GetRendererStats(rs)));
+                if (haveRs) {
+                    wchar_t dl[96] = {}, ld[96] = {};
+                    // Dropped = receive-side drop; Missed = render failures + skips.
+                    swprintf_s(dl, L"%u dropped · %u missed", rs.dropped, rs.failed + rs.skipped);
+                    g_droppedLine = dl;
+                    swprintf_s(ld, L"%u delayed", rs.skipped);
+                    g_delayedLine = ld;
+
+                    // Render telemetry (every ~5 s): source vs render cadence
+                    // + drop counters — tells us if the source is bursty or the
+                    // renderer is dropping/underflowing.
+                    static unsigned s_lastRecv = 0;
+                    static int s_diagN = 0;
+                    if (++s_diagN % 10 == 0) {
+                        const unsigned drecv = rs.framesReceived - s_lastRecv;
+                        DiagLog("[RENDER] recv=%-6u (+%-4u/5s) drawFps=%.2f | drop=%-3u skip=%-3u fail=%-3u",
+                                rs.framesReceived, drecv, rs.drawFps,
+                                rs.dropped, rs.skipped, rs.failed);
+                        s_lastRecv = rs.framesReceived;
+                    }
+                } else {
+                    g_droppedLine.clear();
+                    g_delayedLine.clear();
+                }
+
+                // RENDERER OUT — display target derived from HDR/OUT settings.
+                {
+                    MpcPlayer::HdrSettings hdr{};
+                    MpcPlayer::OutSettings out{};
+                    const bool hOk = (g_player && SUCCEEDED(g_player->GetHdrSettings(hdr)));
+                    const bool oOk = (g_player && SUCCEEDED(g_player->GetOutSettings(out)));
+                    wchar_t tb[96] = {};
+                    // Target TRC: converted-to-SDR vs native display.
+                    if (hOk) {
+                        if (hdr.convertToSdr) {
+                            swprintf_s(tb, L"SDR (BT.1886, %d nits)", hdr.sdrDisplayNits);
+                        } else if (hdr.toneMapCurve >= 1 && hdr.toneMapCurve <= 6) {
+                            const wchar_t* tm = L"BT.2390";
+                            switch (hdr.toneMapCurve) {
+                            case 1: tm = L"ACES"; break;
+                            case 2: tm = L"Reinhard"; break;
+                            case 3: tm = L"Hable"; break;
+                            case 4: tm = L"Möbius"; break;
+                            case 5: tm = L"BT.2390"; break;
+                            case 6: tm = L"ST 2094-10"; break;
+                            }
+                            swprintf_s(tb, L"PQ → %s (%d nits)", tm, hdr.displayMaxNits);
+                        } else {
+                            wcscpy_s(tb, L"PQ (HDR passthrough)");
+                        }
+                        g_targetTrc = tb;
+                        g_targetPrim = L"BT.2020 (display)";   // HDR target primaries
+                        g_targetCs   = (hdr.convertToSdr ? L"Rec.709 (SDR)" : L"Rec.2020 (HDR)");
+                    } else {
+                        g_targetTrc.clear();
+                        g_targetCs.clear();
+                        g_targetPrim.clear();
+                    }
+                    // Fall back to renderer existence only if HDR settings missing.
+                    if (g_targetTrc.empty() && oOk) { g_targetTrc = L"—"; }
+                }
             }
             InvalidateRect(g_hLeft, nullptr, FALSE);
             return 0;
@@ -1967,7 +2104,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const HRESULT hrD = g_player->SetDecklinkCapture(g_decklinkDevice);
                 DiagLog("[DECKLINK][shell] SetDecklinkCapture hr=0x%08X", (unsigned)hrD);
                 std::wstring probeUrl = L"decklink://" + g_decklinkDevice +
-                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=uyvy422";
+                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M";
                 const HRESULT hrO = g_player->Open(probeUrl);
                 const HRESULT hrP = g_player->Play();
                 DiagLog("[DECKLINK][shell] VP Open hr=0x%08X Play hr=0x%08X", (unsigned)hrO, (unsigned)hrP);
@@ -2190,7 +2327,7 @@ int wmain(int argc, wchar_t* argv[]) {
             }
             if (g_openFile.empty()) {
                 std::wstring probeUrl = L"decklink://" + g_decklinkDevice +
-                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=uyvy422";
+                    L"?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M";
                 DiagLog("[DECKLINK][shell] probe open url='%S'", probeUrl.c_str());
                 const HRESULT hrO = player.Open(probeUrl);
                 const HRESULT hrP = player.Play();
