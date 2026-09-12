@@ -30,6 +30,8 @@
 #include <cstdarg>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
+#include <direct.h>
 
 // ── diagnostic log ──────────────────────────────────────────────────────────
 namespace {
@@ -212,7 +214,55 @@ void UpdateGates() {
     }
 }
 
-// Real MPCVR dialog inventory \u2192 rows.
+// -- settings persistence ----------------------------------------------------
+// One file next to the exe (fallback %APPDATA%\S3HTPC if that folder isn't
+// writable). Saved on change (debounced) + on exit; loaded at startup after
+// BuildRows(). Unrecognized/missing keys are ignored, so adding controls later
+// keeps old config files valid (they just fall back to schema defaults).
+// NOTE: everything below lives in the anonymous namespace enclosing BuildRows
+// (line ~432+), so main() reaches these via the namespace's using-directive.
+
+const wchar_t* g_cfgFileName() { return L"s3_shell.ini"; }
+const UINT_PTR  kTimerSaveCfg = 22;   // free timer id (11 is the ML poller)
+bool            g_configDirty = false;
+
+void ConfigDirty() {
+    if (g_configDirty || !g_hwnd) return;
+    g_configDirty = true;
+    SetTimer(g_hwnd, kTimerSaveCfg, 400, nullptr);
+}
+
+// Audio state staged at load time (the player object doesn't exist yet), then
+// pushed to the engine once g_player is up and again after every graph build.
+struct CfgAudio {
+    bool has = false;          // mode was in the file
+    bool bsAny = false;        // at least one codec row was in the file
+    bool enabledSet = false;
+    bool devSet = false;
+    MpcPlayer::AudioMode mode = MpcPlayer::AudioMode::Bitstream;
+    MpcPlayer::BitstreamConfig bs{};   // BitstreamConfig defaults = all HD codecs on
+    bool enabled = true;
+    std::wstring devId, devName;
+};
+CfgAudio g_cfgAudio;
+
+std::wstring ConfigFilePath() {
+    wchar_t exe[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+        std::wstring p = exe;
+        size_t slash = p.find_last_of(L'\\');
+        if (slash != std::wstring::npos) p = p.substr(0, slash + 1);
+        p += g_cfgFileName();
+        if (FILE* t = _wfopen(p.c_str(), L"a")) { fclose(t); return p; }   // writable next to the exe
+    }
+    const wchar_t* app = _wgetenv(L"APPDATA");
+    if (app && *app) {
+        std::wstring q = std::wstring(app) + L"\\S3HTPC";
+        _wmkdir(q.c_str());
+        return q + L"\\" + g_cfgFileName();
+    }
+    return std::wstring(L"s3_shell.ini");   // last resort: cwd
+}
 
 void BuildRows() {
     if (!g_rows.empty()) return;
@@ -449,8 +499,9 @@ bool IsCollapsed(const wchar_t* sec) {
 }
 void ToggleCollapsed(const wchar_t* sec) {
     for (auto it = g_collapsed.begin(); it != g_collapsed.end(); ++it)
-        if (wcscmp(it->c_str(), sec) == 0) { g_collapsed.erase(it); return; }
+        if (wcscmp(it->c_str(), sec) == 0) { g_collapsed.erase(it); ConfigDirty(); return; }
     g_collapsed.emplace_back(sec);
+    ConfigDirty();
 }
 
 // Rebuild the group's vertical layout: section headers + rows.
@@ -590,6 +641,7 @@ void ApplyRow(int i) {
             g_player->Seek(sn.position);
         }
     }
+    ConfigDirty();
 }
 
 // ── live bridge: rows ⇄ MPCVR (via MpcPlayer::MlSettings) ─────────────────────
@@ -884,7 +936,139 @@ void ToggleAudio() {
     if (!g_player) return;
     g_audioOn = !g_audioOn;
     g_player->SetAudioEnabled(g_audioOn);
+    ConfigDirty();
     InvalidateRect(g_hBottom, nullptr, FALSE);
+}
+
+// ── config store: save / load ───────────────────────────────────────────────
+// File format (narrow UTF-8 for the device name; every key/number is ASCII),
+// one entry per line:
+//   <row key>=<on>|<opt>|<val>|<enabledFlag>      — every row, keyed by config stub
+//   audio.mode=<0|1>        audio.ac3=.. eac3/trueHd/dts/dtsHd/dtsHdFraming
+//   audio.enabled=<0|1>     audio.device=<endpoint id>   audio.deviceName=<name>
+//   ui.tab=<0|1> ui.group=<idx> ui.collapsed=<sec1>|<sec2>
+
+void SaveConfig() {
+    g_configDirty = false;
+    KillTimer(g_hwnd, kTimerSaveCfg);
+    FILE* f = _wfopen(ConfigFilePath().c_str(), L"w");
+    if (!f) return;
+    char buf[1024];   // UTF-8 scratch for the wide strings
+    for (auto& r : g_rows) {
+        fprintf(f, "%s=%d|%d|%g|%d\n", r.key, r.on ? 1 : 0, r.opt, r.val, r.enabledFlag ? 1 : 0);
+    }
+    if (g_player) {
+        MpcPlayer::AudioMode am = MpcPlayer::AudioMode::PCM;
+        MpcPlayer::BitstreamConfig bs{};
+        g_player->GetAudioMode(am);
+        g_player->GetBitstreamConfig(bs);
+        fprintf(f, "audio.mode=%d\n", (int)am);
+        fprintf(f, "audio.ac3=%d\n", bs.ac3 ? 1 : 0);
+        fprintf(f, "audio.eac3=%d\n", bs.eac3 ? 1 : 0);
+        fprintf(f, "audio.trueHd=%d\n", bs.trueHd ? 1 : 0);
+        fprintf(f, "audio.dts=%d\n", bs.dts ? 1 : 0);
+        fprintf(f, "audio.dtsHd=%d\n", bs.dtsHd ? 1 : 0);
+        fprintf(f, "audio.dtsHdFraming=%d\n", bs.dtsHdFraming ? 1 : 0);
+        bool en = true;
+        if (SUCCEEDED(g_player->GetAudioEnabled(en))) fprintf(f, "audio.enabled=%d\n", en ? 1 : 0);
+        std::wstring did, dnm;
+        if (SUCCEEDED(g_player->GetAudioDevice(did, dnm)) && !did.empty()) {
+            if (WideCharToMultiByte(CP_UTF8, 0, did.c_str(), -1, buf, sizeof(buf), nullptr, nullptr) > 0)
+                fprintf(f, "audio.device=%s\n", buf);
+            if (!dnm.empty() && WideCharToMultiByte(CP_UTF8, 0, dnm.c_str(), -1, buf, sizeof(buf), nullptr, nullptr) > 0)
+                fprintf(f, "audio.deviceName=%s\n", buf);
+        }
+    }
+    fprintf(f, "ui.tab=%d\n", (int)g_railTab);
+    fprintf(f, "ui.group=%d\n", g_sysGroup);
+    if (!g_collapsed.empty()) {
+        fprintf(f, "ui.collapsed=");
+        for (size_t i = 0; i < g_collapsed.size(); ++i) {
+            if (i) fputc('|', f);
+            if (WideCharToMultiByte(CP_UTF8, 0, g_collapsed[i].c_str(), -1, buf, sizeof(buf), nullptr, nullptr) > 0)
+                fputs(buf, f);
+        }
+        fprintf(f, "\n");
+    }
+    fclose(f);
+    DiagLog("[CONFIG] saved %s", "s3_shell.ini");
+}
+
+void ApplyAudioCfgToEngine() {
+    if (!g_player) return;
+    if (g_cfgAudio.has)         g_player->SetAudioMode(g_cfgAudio.mode);
+    if (g_cfgAudio.bsAny)       g_player->SetBitstreamConfig(g_cfgAudio.bs);
+    if (g_cfgAudio.enabledSet)  { g_audioOn = g_cfgAudio.enabled; g_player->SetAudioEnabled(g_cfgAudio.enabled); }
+    if (g_cfgAudio.devSet)      g_player->SetAudioDevice(g_cfgAudio.devId, g_cfgAudio.devName);
+}
+
+void ApplySettingsToRenderer() {
+    PushMlToRenderer();
+    PushHdrToRenderer();
+    PushOutToRenderer();
+    ApplyAudioCfgToEngine();
+}
+
+void LoadConfig() {
+    FILE* f = _wfopen(ConfigFilePath().c_str(), L"r");
+    if (!f) return;
+    g_cfgAudio = CfgAudio{};              // fresh defaults (bitstream all-on)
+    char line[4096];
+    wchar_t wb[1024];                     // wide scratch for the UTF-8 strings
+    while (fgets(line, sizeof(line), f)) {
+        size_t ln = strlen(line);
+        while (ln && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char* key = line;
+        const char* val = eq + 1;
+        if (strncmp(key, "audio.", 6) == 0) {
+            const int iv = atoi(val);
+            if      (!strcmp(key, "audio.mode"))          { g_cfgAudio.mode = (MpcPlayer::AudioMode)iv;             g_cfgAudio.has = true; }
+            else if (!strcmp(key, "audio.ac3"))           { g_cfgAudio.bs.ac3 = iv != 0;                            g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.eac3"))          { g_cfgAudio.bs.eac3 = iv != 0;                           g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.trueHd"))        { g_cfgAudio.bs.trueHd = iv != 0;                         g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.dts"))           { g_cfgAudio.bs.dts = iv != 0;                            g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.dtsHd"))         { g_cfgAudio.bs.dtsHd = iv != 0;                          g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.dtsHdFraming"))  { g_cfgAudio.bs.dtsHdFraming = iv != 0;                   g_cfgAudio.bsAny = true; }
+            else if (!strcmp(key, "audio.enabled"))       { g_cfgAudio.enabled = iv != 0;                           g_cfgAudio.enabledSet = true; }
+            else if (!strcmp(key, "audio.device"))        { if (MultiByteToWideChar(CP_UTF8, 0, val, -1, wb, 1024) > 0) g_cfgAudio.devId = wb; g_cfgAudio.devSet = true; }
+            else if (!strcmp(key, "audio.deviceName"))    { if (MultiByteToWideChar(CP_UTF8, 0, val, -1, wb, 1024) > 0) g_cfgAudio.devName = wb; }
+            continue;
+        }
+        if      (!strcmp(key, "ui.tab"))      { g_railTab = (atoi(val) == 0) ? RailTab::Playback : RailTab::System; continue; }
+        else if (!strcmp(key, "ui.group"))    { int g = atoi(val); if (g >= 0 && g < kSysGroupCount) g_sysGroup = g; continue; }
+        else if (!strcmp(key, "ui.collapsed")) {
+            g_collapsed.clear();
+            const char* p = val;
+            while (*p) {
+                const char* sep = strchr(p, '|');
+                char buf[256];
+                size_t sub = sep ? (size_t)(sep - p) : strlen(p);
+                if (sub >= sizeof(buf)) sub = sizeof(buf) - 1;
+                memcpy(buf, p, sub); buf[sub] = 0;
+                if (sub && MultiByteToWideChar(CP_UTF8, 0, buf, -1, wb, 1024) > 0)
+                    g_collapsed.push_back(wb);
+                if (!sep) break;
+                p = sep + 1;
+            }
+            continue;
+        }
+        // Row key: the file keys are the narrow row keys verbatim (all ASCII).
+        int on = 0, opt = 0, flag = 1;
+        double dv = 0;
+        if (sscanf(val, "%d|%d|%lf|%d", &on, &opt, &dv, &flag) == 4) {
+            for (auto& r : g_rows) {
+                if (strcmp(r.key, key) == 0) {
+                    r.on = on != 0; r.opt = opt; r.val = (float)dv; r.enabledFlag = flag != 0;
+                    break;
+                }
+            }
+        }
+    }
+    fclose(f);
+    DiagLog("[CONFIG] loaded %d rows, audio has=%d bsAny=%d", (int)g_rows.size(), g_cfgAudio.has, g_cfgAudio.bsAny);
 }
 
 // Compact numeric readout: whole numbers print without decimals (10000, 400).
@@ -1391,12 +1575,14 @@ LRESULT CALLBACK VideoWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 void HandleSysClick(const POINT& p, int panelW, int panelH) {
     if (p.y < kTabH) {
         g_railTab = (p.x < panelW / 2) ? RailTab::Playback : RailTab::System;
+        ConfigDirty();
         return;
     }
     if (p.x < kRailW) {
         int idx = (p.y - kTabH) / kIconStep;
         if (idx >= 0 && idx < kSysGroupCount) {
             g_sysGroup = idx;
+            ConfigDirty();
             RebuildLayout();
         }
         return;
@@ -1546,6 +1732,7 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 // Tabs first — never swallow the Playback/System switcher.
                 if (p.y < kTabH) {
                     g_railTab = (p.x < rc.right / 2) ? RailTab::Playback : RailTab::System;
+                    ConfigDirty();
                     InvalidateRect(h, nullptr, FALSE);
                     return 0;
                 }
@@ -1568,6 +1755,7 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                 size_t at = g_selAudioDeviceName.find(L"  (default)");
                                 if (at != std::wstring::npos) g_selAudioDeviceName.erase(at);
                                 g_player->SetAudioDevice(r.id, g_selAudioDeviceName);
+                                ConfigDirty();
                                 for (auto& x : g_playRows) if (x.kind == PlayRowKind::AudioDevice) x.active = false;
                                 r.active = true;
                                 std::wcout << L"[AUDIO] routed to device: " << g_selAudioDeviceName << L"\n";
@@ -1596,6 +1784,7 @@ LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                             g_player->SetBitstreamConfig(bs);
                             std::wcout << L"[AUDIO] bitstream " << r.label << L"\n";
                         }
+                        ConfigDirty();
                         InvalidateRect(h, nullptr, FALSE);
                         return 0;
                     }
@@ -1734,6 +1923,10 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             InvalidateRect(g_hLeft, nullptr, FALSE);
             return 0;
         }
+        if (w == kTimerSaveCfg) {
+            KillTimer(h, kTimerSaveCfg);
+            SaveConfig();
+        }
         break;
     case WM_APP: {
         if (w == kCmdOpen) {
@@ -1747,11 +1940,12 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_player->Stop();
                 g_player->Open(g_openFile);
                 g_player->Play();
+                ApplySettingsToRenderer();   // re-assert persisted settings on the new graph
                 PullMlFromRenderer();
                 PullHdrFromRenderer();
                 PullOutFromRenderer();
                 RebuildLayout();
-                DiagLog("[OPEN] pulled settings from MPCVR after file picker");
+                DiagLog("[OPEN] reapplied + pulled settings from MPCVR after file picker");
             }
         } else if (w == kCmdPlayPause && g_player) {
             MpcPlayer::Snapshot sn; g_player->GetSnapshot(sn);
@@ -1778,6 +1972,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const HRESULT hrP = g_player->Play();
                 DiagLog("[DECKLINK][shell] VP Open hr=0x%08X Play hr=0x%08X", (unsigned)hrO, (unsigned)hrP);
                 g_openFile.clear();
+                ApplySettingsToRenderer();
                 PullMlFromRenderer();
                 PullHdrFromRenderer();
                 PullOutFromRenderer();
@@ -1801,6 +1996,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_openFile = file;
                 g_player->Open(g_openFile);
                 g_player->Play();
+                ApplySettingsToRenderer();
                 PullMlFromRenderer();
                 PullHdrFromRenderer();
                 PullOutFromRenderer();
@@ -1827,6 +2023,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_openFile = url;
             const HRESULT hrO = g_player->Open(url);
             const HRESULT hrP = g_player->Play();
+            ApplySettingsToRenderer();
             RebuildLayout();
             DiagLog("[DECKLINK][shell] restart done: Open hr=0x%08X Play hr=0x%08X",
                 (unsigned)hrO, (unsigned)hrP);
@@ -1861,7 +2058,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         EndPaint(h, &ps); return 0;
     }
     case WM_ERASEBKGND: return 1;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY: SaveConfig(); PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -1916,6 +2113,10 @@ int wmain(int argc, wchar_t* argv[]) {
     LoadInterFonts();
     InitFonts();
     BuildRows();
+    LoadConfig();   // overlay the persisted settings on the row model (defaults remain if absent)
+    for (auto& r : g_rows)
+        if (!strcmp(r.key, "zion.enabled")) { g_mlMasterEnable = r.on; break; }
+    UpdateGates();
 
     WNDCLASSEXW mainWc = {sizeof(mainWc)};
     mainWc.lpfnWndProc = MainWndProc;
@@ -1952,6 +2153,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
         MpcPlayer player;
         g_player = &player;
+        ApplyAudioCfgToEngine();   // staged audio config → engine (before first graph)
         player.SetLogSink([](const char* msg) {
             DiagLog("%s", msg);               // engine+monitor telemetry into s3_shell_diag.log
             OutputDebugStringA(msg);
@@ -1996,6 +2198,7 @@ int wmain(int argc, wchar_t* argv[]) {
                           << " Play hr=0x" << (unsigned long)hrP << std::dec << "\n";
                 DiagLog("[DECKLINK][shell] probe Open hr=0x%08X Play hr=0x%08X",
                     (unsigned)hrO, (unsigned)hrP);
+                ApplySettingsToRenderer();
                 PullMlFromRenderer();
                 PullHdrFromRenderer();
                 PullOutFromRenderer();
@@ -2008,6 +2211,7 @@ int wmain(int argc, wchar_t* argv[]) {
             const HRESULT hrP = player.Play();
             std::cout << "[INIT] Open hr=0x" << std::hex << (unsigned long)hrO
                       << " Play hr=0x" << (unsigned long)hrP << std::dec << "\n";
+            ApplySettingsToRenderer();
             PullMlFromRenderer();
             PullHdrFromRenderer();
             PullOutFromRenderer();
@@ -2034,6 +2238,7 @@ int wmain(int argc, wchar_t* argv[]) {
             DispatchMessageW(&msg);
         }
 
+        SaveConfig();   // flush any pending debounced write on exit
         player.Stop();
         g_player = nullptr;
     }
