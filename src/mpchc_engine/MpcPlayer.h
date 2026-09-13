@@ -255,6 +255,10 @@ public:
     HRESULT StopDecklinkCapture();                              // stops the monitor thread
     HRESULT SetDecklinkInputColor(int ics);                     // push ICS override to the renderer
     void SetDecklinkDevice(const std::wstring& deviceName) { decklinkDevice_ = deviceName; }
+    // List DeckLink capture devices the monitor DLL can see (UTF-8 names, one
+    // per HDMI input). Used to wire VP -> HDMI when no device was passed on the
+    // CLI. Returns dev count, -1 if the monitor isn't loadable.
+    int  GetDecklinkDevices(std::vector<std::string>& names) const;
     const DecklinkSettings& GetDecklinkSettings() const { return decklinkSettings_; }
     // Latest DeckLink signal snapshot (CAPTURE INPUT / LIVE panel). Returns
     // false when the monitor DLL is unavailable or no card present.

@@ -2091,16 +2091,26 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         } else if (w == kCmdStop && g_player) {
             g_player->Stop();
         } else if (w == kCmdModeVP && g_player) {
-            // Switch to DeckLink video-processor capture.
+            // Switch to DeckLink video-processor capture. If no device was
+            // passed on the CLI, enumerate the capture card's HDMI inputs and
+            // pick the first — VP->HDMI must work without a startup flag.
             DiagLog("[DECKLINK][shell] kCmdModeVP — switching to VP capture");
             if (!g_vpMode) {
+                if (g_decklinkDevice.empty()) {
+                    std::vector<std::string> devs;
+                    const int n = g_player->GetDecklinkDevices(devs);
+                    DiagLog("[DECKLINK][shell] VP: no --decklink-device; enumerated %d device(s)", n);
+                    if (n > 0 && !devs.empty()) {
+                        g_decklinkDevice.assign(devs[0].begin(), devs[0].end());
+                        DiagLog("[DECKLINK][shell] VP: auto-selected device '%s'", devs[0].c_str());
+                    } else {
+                        DiagLog("[DECKLINK][shell] VP: no DeckLink device found (monitor dll unavailable?)");
+                        InvalidateRect(h, nullptr, FALSE);
+                        return 0;
+                    }
+                }
                 g_vpMode = true;
                 g_player->Stop();
-                if (g_decklinkDevice.empty()) {
-                    DiagLog("[DECKLINK][shell] VP: no --decklink-device configured; open setup");
-                    InvalidateRect(h, nullptr, FALSE);
-                    return 0;
-                }
                 const HRESULT hrD = g_player->SetDecklinkCapture(g_decklinkDevice);
                 DiagLog("[DECKLINK][shell] SetDecklinkCapture hr=0x%08X", (unsigned)hrD);
                 std::wstring probeUrl = L"decklink://" + g_decklinkDevice +

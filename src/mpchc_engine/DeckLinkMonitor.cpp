@@ -49,11 +49,32 @@ bool DeckLinkMonitor::EnsureLoaded()
     fnSignalInfo_ = (FnSignalInfo)GetProcAddress(dll_, "vf_dl_get_signal_info");
     fnBuildUrl_   = (FnBuildUrl)GetProcAddress(dll_, "vf_dl_build_url");
     fnClose_      = (FnClose)GetProcAddress(dll_, "vf_dl_close");
-    Log("[DECKLINK][monitor] loaded dll=%p open=%p signal=%p buildUrl=%p close=%p",
-        (void*)dll_, (void*)fnOpen_, (void*)fnSignalInfo_, (void*)fnBuildUrl_, (void*)fnClose_);
+    fnEnum_       = (FnEnumDevices)GetProcAddress(dll_, "vf_dl_enumerate_devices");
+    Log("[DECKLINK][monitor] loaded dll=%p open=%p signal=%p buildUrl=%p close=%p enum=%p",
+        (void*)dll_, (void*)fnOpen_, (void*)fnSignalInfo_, (void*)fnBuildUrl_, (void*)fnClose_, (void*)fnEnum_);
 
     dllLoaded_ = fnOpen_ && fnBuildUrl_;   // close/signal can be null-tolerant
     return dllLoaded_;
+}
+
+int DeckLinkMonitor::EnumerateDevices(std::vector<std::string>& out)
+{
+    out.clear();
+    if (!EnsureLoaded() || !fnEnum_) {
+        Log("[DECKLINK][monitor] EnumerateDevices: enum export unavailable");
+        return -1;
+    }
+    constexpr int kMaxDevs = 16;
+    char names[kMaxDevs][64] = {};
+    int  ports[kMaxDevs] = {};
+    int  n = fnEnum_(names, ports, kMaxDevs);
+    if (n < 0) { Log("[DECKLINK][monitor] EnumerateDevices failed rc=%d", n); return n; }
+    for (int i = 0; i < n && i < kMaxDevs; ++i) {
+        out.emplace_back(names[i]);   // one entry per HDMI input port
+        Log("[DECKLINK][monitor] EnumerateDevices[%d]='%s' ports=%d", i, names[i], ports[i]);
+    }
+    Log("[DECKLINK][monitor] EnumerateDevices found %d device(s)", n);
+    return n;
 }
 
 bool DeckLinkMonitor::Start(const std::string& deviceName, int pollMs)

@@ -1222,6 +1222,19 @@ bool MpcPlayer::GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamic
     return true;
 }
 
+int MpcPlayer::GetDecklinkDevices(std::vector<std::string>& names) const
+{
+    // Enumerate without requiring an active capture session: create a monitor
+    // if none exists so the enumeration (monitor dll load) still works.
+    if (!decklinkMonitor_) {
+        auto* m = new DeckLinkMonitor();      // may fail EnsureLoaded inside
+        return m->EnumerateDevices(names) >= 0
+            ? (const_cast<MpcPlayer*>(this)->decklinkMonitor_.reset(m), (int)names.size())
+            : (delete m, -1);
+    }
+    return decklinkMonitor_->EnumerateDevices(names);
+}
+
 HRESULT MpcPlayer::SetDecklinkInputColor(int ics)
 {
     decklinkSettings_.inputColorSpace = ics;

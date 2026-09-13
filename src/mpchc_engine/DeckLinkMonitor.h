@@ -49,6 +49,11 @@ public:
     bool Start(const std::string& deviceName, int pollMs = 500);
     void Stop();
 
+    // Enumerate DeckLink devices the monitor dll can see (used to wire
+    // VP -> HDMI when no --decklink-device was passed on the CLI). Returns
+    // device display names (UTF-8), generally one per HDMI input port.
+    int EnumerateDevices(std::vector<std::string>& out);
+
     void SetRestartCallback(RestartCallback cb) { restartCb_ = std::move(cb); }
     bool IsRunning() const { return running_; }
     // Latest signal snapshot read by the poll thread (LIVE panel). Copy under
@@ -70,10 +75,12 @@ private:
     using FnSignalInfo = int(__cdecl*)(int*);   // VFSignalInfo fields
     using FnBuildUrl = int(__cdecl*)(const char*, char*, size_t);
     using FnClose = void(__cdecl*)();
+    using FnEnumDevices = int(__cdecl*)(char(*)[64], int*, int); // names, ports[], max
     FnOpen      fnOpen_ = nullptr;
     FnSignalInfo fnSignalInfo_ = nullptr;
     FnBuildUrl  fnBuildUrl_ = nullptr;
     FnClose     fnClose_ = nullptr;
+    FnEnumDevices fnEnum_ = nullptr;
     HMODULE     dll_ = nullptr;
     bool        dllLoaded_ = false;
 
