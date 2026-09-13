@@ -370,6 +370,7 @@ void BuildRows() {
     add(L"Wait for VBlank", RowType::Toggle, kGroupOutput, "out.vBlank", true, L"OUTPUT");
     add(L"Adjust present time", RowType::Toggle, kGroupOutput, "out.adjustPresent", true, L"OUTPUT");
     add(L"Reinit on display change", RowType::Toggle, kGroupOutput, "out.reinitDisplay", true, L"OUTPUT");
+    add(L"24p cadence auto-refresh", RowType::Toggle, kGroupOutput, "out.refreshSwitch24p", true, L"OUTPUT");
     add(L"Show statistics", RowType::Toggle, kGroupOutput, "out.showStats", true, L"OUTPUT");
     // -- SYSTEM / App --
     add(L"Tray icon", RowType::Toggle, kGroupSystem, "sys.trayIcon", true, L"APP");
@@ -893,6 +894,7 @@ MpcPlayer::OutSettings BuildOutFromRows() {
     o.swapEffect = RowOpt("out.swapEffect");
     o.exclusiveFS = RowOn("out.exclusiveFS"); o.vBlank = RowOn("out.vBlank");
     o.adjustPresent = RowOn("out.adjustPresent"); o.reinitDisplay = RowOn("out.reinitDisplay");
+    o.refreshSwitch24p = RowOn("out.refreshSwitch24p");
     o.showStats = RowOn("out.showStats");
     o.trayIcon = RowOn("sys.trayIcon");
     return o;
@@ -922,6 +924,7 @@ void ApplyOutToRows(const MpcPlayer::OutSettings& o) {
         else if (!strcmp(r.key, "out.vBlank"))      { r.on = o.vBlank; }
         else if (!strcmp(r.key, "out.adjustPresent")) { r.on = o.adjustPresent; }
         else if (!strcmp(r.key, "out.reinitDisplay")) { r.on = o.reinitDisplay; }
+        else if (!strcmp(r.key, "out.refreshSwitch24p")) { r.on = !!o.refreshSwitch24p; }
         else if (!strcmp(r.key, "out.showStats"))   { r.on = o.showStats; }
         else if (!strcmp(r.key, "sys.trayIcon"))    { r.on = o.trayIcon; }
     }

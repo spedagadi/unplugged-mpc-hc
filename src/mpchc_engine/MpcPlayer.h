@@ -158,6 +158,9 @@ public:
         bool vBlank = false;
         bool adjustPresent = true;
         bool reinitDisplay = false;
+        int  refreshSwitch24p = 1;   // HTPC cadence: auto-switch display refresh to a clean
+                             // multiple of 23.976/24p (48/96/120Hz); fall back to the display's
+                             // configured refresh when unsupported; restore on stop/teardown
         bool showStats = false;
         bool trayIcon = true;
     };

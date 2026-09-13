@@ -1042,6 +1042,7 @@ void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)
     s.bVBlankBeforePresent = o.vBlank;
     s.bAdjustPresentTime = o.adjustPresent;
     s.bReinitByDisplay = o.reinitDisplay;
+    s.iRefreshSwitch24p = o.refreshSwitch24p;
     s.bShowStats = o.showStats;
     s.bTrayIcon = o.trayIcon;
 }
@@ -1070,6 +1071,7 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
     o.vBlank = s.bVBlankBeforePresent;
     o.adjustPresent = s.bAdjustPresentTime;
     o.reinitDisplay = s.bReinitByDisplay;
+    o.refreshSwitch24p = s.iRefreshSwitch24p;
     o.showStats = s.bShowStats;
     o.trayIcon = s.bTrayIcon;
 }
