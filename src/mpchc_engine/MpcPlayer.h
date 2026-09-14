@@ -1,15 +1,18 @@
 #pragma once
 
+#include <atomic>
 #include <atlbase.h>
 #include <dshow.h>
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 
-class DeckLinkMonitor;
+#include "DeckLinkSourceControl.h"
+#include "DeckLinkMonitor.h"   // signal monitor — the ingest-change MASTER (DESIGN.md)
 
 class MpcPlayer final {
 public:
@@ -158,9 +161,6 @@ public:
         bool vBlank = false;
         bool adjustPresent = true;
         bool reinitDisplay = false;
-        int  refreshSwitch24p = 1;   // HTPC cadence: auto-switch display refresh to a clean
-                             // multiple of 23.976/24p (48/96/120Hz); fall back to the display's
-                             // configured refresh when unsupported; restore on stop/teardown
         bool showStats = false;
         bool trayIcon = true;
     };
@@ -230,6 +230,7 @@ public:
         unsigned skipped = 0;          // double-rate skip path
         unsigned failed = 0;           // render failures
         double   drawFps = 0.0;        // presented frames per second (measured)
+        double   presentLatencyMs = 0; // on-screen frame's lag vs capture time
     };
     HRESULT GetRendererStats(RenderStats&) const;
 
@@ -241,9 +242,10 @@ public:
         int  avgTimePerFrame100ns = 0;                 // 100 ns units; 0 = unknown
         int  pixelFormat = 0;                          // 0=UYVY 1=v210 2=NV12 3=other
         bool interlaced = false;
-        int  transferFunction = 0;                     // DXVA2_ExtendedFormat transfer (0=Unknown, 12=PQ/2084, ...)
+        int  transferFunction = 0;                     // DXVA2_ExtendedFormat transfer (0=Unknown, 15=PQ/2084, 16=HLG, ...)
+        int  colorspace = 0;                           // 0=unknown 1=BT.601 2=BT.709 3=BT.2020 (primaries)
         bool hdr = false;                              // transfer is PQ(2084)/HLG → HDR source
-        std::wstring subtypeName;                      // e.g. "UYVY", "v210"
+        std::wstring subtypeName;                      // e.g. "UYVY", "P010"
     };
 
     struct DecklinkSettings {
@@ -254,23 +256,24 @@ public:
         int  lastDynamicRange = -1; // 0=SDR 1=PQ 2=HLG
         bool signalLocked = false;
     };
-    HRESULT SetDecklinkCapture(const std::wstring& deviceName); // starts the monitor thread
-    HRESULT StopDecklinkCapture();                              // stops the monitor thread
+    HRESULT SetDecklinkCapture(const std::wstring& deviceName); // start the signal monitor (MASTER)
+    HRESULT StopDecklinkCapture();                              // stop the signal monitor
     HRESULT SetDecklinkInputColor(int ics);                     // push ICS override to the renderer
     void SetDecklinkDevice(const std::wstring& deviceName) { decklinkDevice_ = deviceName; }
-    // List DeckLink capture devices the monitor DLL can see (UTF-8 names, one
-    // per HDMI input). Used to wire VP -> HDMI when no device was passed on the
-    // CLI. Returns dev count, -1 if the monitor isn't loadable.
+    // List DeckLink capture devices (UTF-8 names, one per HDMI input), used to
+    // wire VP -> HDMI when no device was passed on the CLI.
     int  GetDecklinkDevices(std::vector<std::string>& names) const;
-    const DecklinkSettings& GetDecklinkSettings() const { return decklinkSettings_; }
-    // Latest DeckLink signal snapshot (CAPTURE INPUT / LIVE panel). Returns
-    // false when the monitor DLL is unavailable or no card present.
+    // Latest signal snapshot (CAPTURE INPUT / LIVE panel) from the monitor.
     bool GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamicRange,
                                int& depth, int& chroma, int& w, int& h,
                                int& fpsNum, int& fpsDen, int& interlace) const;
+    const std::wstring& DecklinkUrlForRestart() const { return pendingDecklinkUrl_; }
+    const DecklinkSettings& GetDecklinkSettings() const { return decklinkSettings_; }
     const VideoStreamInfo& GetVideoStreamInfo() const { return videoStreamInfo_; }
     DecklinkSettings& DecklinkState() { return decklinkSettings_; }
-    const std::wstring& DecklinkUrlForRestart() const { return pendingDecklinkUrl_; }
+    // Live ingest snapshot from the direct DeckLinkSource filter (LIVE panel).
+    // False when no direct capture session is attached (e.g. LAV fallback).
+    bool GetDeckLinkSourceStats(DeckLinkSourceStats& out) const;
 
     // Snapshot / events
     HRESULT PumpEvents();
@@ -293,6 +296,10 @@ private:
     HRESULT SelectStream(TrackKind kind, int posIndex);
     HRESULT Notify(std::string_view eventName);
     HRESULT UpdateSnapshot() const;
+    static void __cdecl DeckLinkSourceLogBridge(void* ctx, const char* line);
+    static void __cdecl DeckLinkRestartBridge(void* ctx);
+    void RequestDecklinkRestart();   // filter format-change → guarded graceful rebuild
+    void UpdateIcsFromFilter();      // filter cs/eotf → ICS override state (pre-connect)
 
     CComPtr<IGraphBuilder> graph_;
     CComPtr<IMediaControl> mediaControl_;
@@ -315,8 +322,16 @@ private:
     std::wstring decklinkDevice_;
     DecklinkSettings decklinkSettings_;
     VideoStreamInfo videoStreamInfo_;        // captured at graph connect (DEMUXER → REC)
-    std::wstring pendingDecklinkUrl_;        // latest monitor-requested URL (UI thread consumes)
-    std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;
+    CComPtr<IDeckLinkSourceControl> decklinkControl_;  // current direct filter (retired on rebuild)
+    std::wstring decklinkUrl_;               // source the decklink graph was opened with
+    std::wstring pendingDecklinkUrl_;        // latest monitor-advised URL (shell → restart)
+    std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;   // the signal MASTER
+    // Serializes every graph-mutating call (Open/Stop/Play/Seek + the restart
+    // worker) so no two threads touch the graph — the minimal-threading rule.
+    // Recursive: the restart worker calls the public API under the same lock.
+    std::recursive_mutex m_graphMtx;
+    std::atomic<bool> m_restartPending { false };   // one restart at a time
+    unsigned long long m_lastDlvSnapshot = 0;       // delivered counter at last restart decision
     LogSink logSink_;
     void Log(const char* fmt, ...);          // routes to logSink_
     mutable Snapshot snapshot_;

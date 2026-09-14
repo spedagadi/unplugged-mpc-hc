@@ -218,11 +218,29 @@ void DeckLinkMonitor::Loop()
         if (si.dynamic_range != lastDynamicRange_) { changed = true; lastDynamicRange_ = si.dynamic_range; }
 
         if (changed) {
-            Log("[DECKLINK][monitor] CHANGE detected (locked=%d cs=%d dr=%d) — building restart request",
+            Log("[DECKLINK][monitor] CHANGE detected (locked=%d cs=%d dr=%d) — arming 1 s stability gate",
                 si.locked, si.colorspace, si.dynamic_range);
         }
 
-        if (changed && restartCb_) {
+        // Stability gate (DESIGN.md): a state is armed as a candidate and only
+        // becomes a command once it has been observed continuously for >=
+        // kSustainMs AND it differs from the last commanded state. HDMI
+        // detection can flicker (menu↔movie flapping); a state that flaps and
+        // returns to the already-commanded one must NOT command again — only a
+        // genuinely different state that holds 1 s commands. This keeps an
+        // unstable wire from repeatedly tearing down a running graph.
+        const int key = (si.locked << 16) | ((si.colorspace & 0xff) << 8) | (si.dynamic_range & 0xff);
+        if (key != lastSeenKey_) {                 // the wire changed since the last poll
+            lastSeenKey_ = key;
+            if (key != lastCmdKey_) candidateSince_ = GetTickCount();  // new state → arm window
+            else candidateSince_ = MAXDWORD;                           // back to committed state → pin
+        }
+        if (key != lastCmdKey_ && restartCb_ &&
+            (GetTickCount() - candidateSince_) >= kSustainMs) {
+            lastCmdKey_ = key;                     // command this state out — no repeat until a different one
+            lastSeenKey_ = key;
+            candidateSince_ = MAXDWORD;
+            Log("[DECKLINK][monitor] state confirmed (held >= %u ms) → command", (unsigned)kSustainMs);
             RestartRequest req;
             req.signalLost = !si.locked;
             req.ics = MapIcs(si);

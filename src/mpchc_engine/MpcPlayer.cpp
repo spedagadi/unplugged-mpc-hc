@@ -16,15 +16,19 @@
 #include <LAVSplitterSettings.h>
 #include <atlstr.h>
 #include "MpcAudioRenderer/IMpcAudioRenderer.h"
-#include "DeckLinkMonitor.h"
+#include "DeckLinkSourceControl.h"
+#include "DeckLinkAPI_h.h"   // device enumeration (vendored C++ SDK) — no monitor DLL
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <sstream>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -36,10 +40,18 @@ const CLSID CLSID_LAVSplitterSource = {0xB98D13E7, 0x55DB, 0x4385, {0xA3, 0x3D, 
 const CLSID CLSID_LAVVideo = {0xEE30215D, 0x164F, 0x4A92, {0xA4, 0xEB, 0x9D, 0x4C, 0x13, 0x39, 0x0F, 0x9F}};
 const CLSID CLSID_LAVAudio = {0xE8E73B6B, 0x4CB3, 0x44A4, {0xBE, 0x99, 0x4F, 0x7B, 0xCB, 0x96, 0xE4, 0x91}};
 const CLSID CLSID_MpcAudioRenderer = {0x601d2a2b, 0x9cde, 0x40bd, {0x86, 0x50, 0x04, 0x85, 0xe3, 0x52, 0x27, 0x27}};
+const CLSID CLSID_DeckLinkSource = {0x8c2f2a32, 0x27b1, 0x4e61, {0xA1, 0xBE, 0x78, 0x84, 0xF2, 0x41, 0x0E, 0x7A}};  // src/thirdparty/DeckLinkSource
+// DeckLink SDK GUIDs the engine needs for device enumeration. The vendored
+// header DECLARES the canonical EXTERN_C names (defined in the filter's own
+// module, not linked here), so these local copies use distinct identifiers.
+const GUID g_clsidDeckLinkIterator = {0xba6c6f44, 0x6da5, 0x4dce, {0x94, 0xaa, 0xee, 0x2d, 0x13, 0x72, 0xa6, 0x76}};
+const GUID g_iidDeckLink           = {0xc418fbdd, 0x0587, 0x48ed, {0x8f, 0xe5, 0x64, 0x0f, 0x0a, 0x14, 0xaf, 0x91}};
 
 // MEDIASUBTYPE_v210 — 'v210' 4CC GUID. Defined in wmcodecdsp.h/axextend but
-// not pulled by dshow.h alone; declare the well-known bytes here.
-static const GUID MEDIASUBTYPE_v210_GUID = {0x38303176, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+// not pulled by dshow.h alone; declare the well-known bytes here. (FOURCC
+// 'v210' = 0x30313276; the previous 0x38303176 spelling was 'v108'.)
+static const GUID MEDIASUBTYPE_v210_GUID = {0x30313276, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+static const GUID MEDIASUBTYPE_P010_GUID = {0x30313050, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};  // DeckLinkSource direct output
 
 CComPtr<IPin> FindPin(const CComPtr<IBaseFilter>& filter, PIN_DIRECTION dir)
 {
@@ -129,7 +141,6 @@ MpcPlayer::MpcPlayer() = default;
 
 MpcPlayer::~MpcPlayer()
 {
-    StopDecklinkCapture();
     if (mediaControl_) mediaControl_->Stop();
     if (renderer_) {
         if (CComQIPtr<IVideoWindow> pVW = renderer_) {
@@ -160,6 +171,10 @@ HRESULT MpcPlayer::SetRenderer(Renderer r)
 
 HRESULT MpcPlayer::Open(std::wstring_view source)
 {
+    // The graph is single-owner: every thread that mutates it (UI calls, the
+    // filter-driven restart worker) goes through this lock.
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+
     if (source.empty()) return E_INVALIDARG;
 
     if (mediaControl_) mediaControl_->Stop();
@@ -200,6 +215,7 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
 
 HRESULT MpcPlayer::Play()
 {
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
     if (!mediaControl_) return VFW_E_NOT_FOUND;
     const HRESULT hr = mediaControl_->Run();
     if (SUCCEEDED(hr)) {
@@ -212,6 +228,7 @@ HRESULT MpcPlayer::Play()
 
 HRESULT MpcPlayer::Pause()
 {
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
     if (!mediaControl_) return VFW_E_NOT_FOUND;
     const HRESULT hr = mediaControl_->Pause();
     if (SUCCEEDED(hr)) {
@@ -224,6 +241,7 @@ HRESULT MpcPlayer::Pause()
 
 HRESULT MpcPlayer::Stop()
 {
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
     if (!mediaControl_) return VFW_E_NOT_FOUND;
     const HRESULT hr = mediaControl_->Stop();
     if (SUCCEEDED(hr)) {
@@ -236,6 +254,7 @@ HRESULT MpcPlayer::Stop()
 
 HRESULT MpcPlayer::Seek(LONGLONG position)
 {
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
     if (!mediaSeeking_) return VFW_E_NOT_FOUND;
     position = std::max<LONGLONG>(0, position);
     const HRESULT hr = mediaSeeking_->SetPositions(&position, AM_SEEKING_AbsolutePositioning, nullptr, AM_SEEKING_NoPositioning);
@@ -528,35 +547,118 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     HRESULT hr = graph_.CoCreateInstance(CLSID_FilterGraph);
     if (FAILED(hr)) return hr;
 
+    // Retire the previous direct filter OFF the UI thread: its destructor joins
+    // the SDK worker, whose StopStreams can block while the HDMI source is
+    // mid-signal-change (UB820 stop→menu freeze observed). The retired reference
+    // is dropped by a background cleanup thread; the UI thread proceeds without
+    // ever waiting on the old card's SDK teardown.
+    static std::mutex                        s_retireMtx;
+    static std::vector<CComPtr<IDeckLinkSourceControl>> s_retired;
+    if (decklinkControl_) {
+        {
+            std::lock_guard<std::mutex> lk(s_retireMtx);
+            s_retired.push_back(std::move(decklinkControl_));
+        }
+        static bool s_retireThreadStarted = false;
+        if (!s_retireThreadStarted) {
+            s_retireThreadStarted = true;
+            std::thread([]() {
+                for (;;) {
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                    std::vector<CComPtr<IDeckLinkSourceControl>> gone;
+                    {
+                        std::lock_guard<std::mutex> lk(s_retireMtx);
+                        gone.swap(s_retired);
+                    }
+                    if (gone.empty()) continue;
+                    for (auto& p : gone) p.Release();   // destructor (worker join) runs here
+                    gone.clear();
+                    if (s_retired.empty()) {
+                        // Nothing left to retire for a long while; loop forever is fine
+                        // (one lazy thread per process, ~free).
+                    }
+                }
+            }).detach();
+        }
+    }
+
     // DeckLink HDMI capture: LAVSplitterSource demuxes the decklink:// URL
     // itself (video-only — no_audio). No separate splitter, no audio path.
     const bool bDeckLink = (_wcsnicmp(source.data(), L"decklink://", 11) == 0);
     Log("[DECKLINK][engine] BuildGraph bDeckLink=%d source='%.*S'", (int)bDeckLink, 140, source.data());
+    if (bDeckLink) decklinkUrl_ = std::wstring(source);   // the filter-driven restart re-opens this
 
     CComPtr<IBaseFilter> sourceFilter;
     CComPtr<IBaseFilter> splitter;
+    bool bDeckLinkDirect = false;
     if (bDeckLink) {
-        Log("[DECKLINK][engine] CoCreateInstance(CLSID_LAVSplitterSource)...");
-        hr = sourceFilter.CoCreateInstance(CLSID_LAVSplitterSource);
-        if (FAILED(hr)) {
-            Log("[DECKLINK][engine] CoCreate LAVSplitterSource FAILED hr=0x%08X", (unsigned)hr);
-            return hr;
+        // Direct ingest (phase 3): our DeckLinkSource filter CoCreates when it
+        // is registered — v210 output pin → MPCVR directly, no ffmpeg/LAV in the
+        // path. Falls back to the LAV URL chain when the filter is absent.
+        hr = sourceFilter.CoCreateInstance(CLSID_DeckLinkSource);
+        if (SUCCEEDED(hr)) {
+            bDeckLinkDirect = true;
+            Log("[DECKLINK][engine] direct DeckLinkSource filter");
+            hr = graph_->AddFilter(sourceFilter, L"DeckLink Source (direct)");
+            if (FAILED(hr)) {
+                Log("[DECKLINK][engine] AddFilter(direct source) FAILED hr=0x%08X", (unsigned)hr);
+                return hr;
+            }
+            // Device name rides the URL: decklink://<device>?opts...
+            std::wstring dev;
+            if (source.size() > 11) {
+                std::wstring_view rest = source.substr(11);
+                const size_t q = rest.find(L'?');
+                dev.assign(rest.substr(0, q));
+            }
+            CComQIPtr<IDeckLinkSourceControl> ctl = sourceFilter;
+            if (!ctl) {
+                Log("[DECKLINK][engine] QI IDeckLinkSourceControl FAILED");
+                return E_NOINTERFACE;
+            }
+            // Filter telemetry → engine Log → shell diag log (chain observability).
+            ctl->SetLogSink(this, &MpcPlayer::DeckLinkSourceLogBridge);
+            // The MONITOR advises the signal meta (master); bake it into the
+            // media type so the first connect is already correct.
+            {
+                int sl = -1, scs = -1, sdr = -1, sd = 0, sch = -1,
+                    sw = 0, sh = 0, sfn = 0, sfd = 0, sitl = 2;
+                if (GetDecklinkSignalInfo(sl, scs, sdr, sd, sch, sw, sh, sfn, sfd, sitl) && sl == 1) {
+                    ctl->SetSignalMeta((scs == 2) ? 3 : (scs == 0) ? 1 : (scs == 1) ? 2 : 0,
+                                       (sdr == 1) ? 2 : (sdr == 2) ? 3 : 0);
+                    Log("[DECKLINK][engine] monitor meta → SetSignalMeta cs=%d dr=%d", scs, sdr);
+                }
+            }
+            CComBSTR b(dev.c_str());
+            hr = ctl->StartCapture(b);
+            Log("[DECKLINK][engine] StartCapture('%S') hr=0x%08X (bounded wait for first format)",
+                dev.c_str(), (unsigned)hr);
+            if (FAILED(hr)) return hr;
+            decklinkControl_ = ctl;   // retain for GetDeckLinkSourceStats (retired on rebuild)
+        } else {
+            Log("[DECKLINK][engine] direct DeckLinkSource unavailable (hr=0x%08X) — LAV fallback", (unsigned)hr);
+            Log("[DECKLINK][engine] CoCreateInstance(CLSID_LAVSplitterSource)...");
+            hr = sourceFilter.CoCreateInstance(CLSID_LAVSplitterSource);
+            if (FAILED(hr)) {
+                Log("[DECKLINK][engine] CoCreate LAVSplitterSource FAILED hr=0x%08X", (unsigned)hr);
+                return hr;
+            }
+            hr = graph_->AddFilter(sourceFilter, L"DeckLink Source (LAV)");
+            if (FAILED(hr)) {
+                Log("[DECKLINK][engine] AddFilter(source) FAILED hr=0x%08X", (unsigned)hr);
+                return hr;
+            }
+            CComQIPtr<IFileSourceFilter> pFS = sourceFilter;
+            if (!pFS) {
+                Log("[DECKLINK][engine] QI IFileSourceFilter FAILED");
+                return E_POINTER;
+            }
+            Log("[DECKLINK][engine] IFileSourceFilter::Load(url)...");
+            hr = pFS->Load(std::wstring(source).c_str(), nullptr);
+            Log("[DECKLINK][engine] Load hr=0x%08X", (unsigned)hr);
+            if (FAILED(hr)) return hr;
+            splitter = sourceFilter;   // acts as the demuxer/splitter in one
         }
-        hr = graph_->AddFilter(sourceFilter, L"DeckLink Source (LAV)");
-        if (FAILED(hr)) {
-            Log("[DECKLINK][engine] AddFilter(source) FAILED hr=0x%08X", (unsigned)hr);
-            return hr;
-        }
-        CComQIPtr<IFileSourceFilter> pFS = sourceFilter;
-        if (!pFS) {
-            Log("[DECKLINK][engine] QI IFileSourceFilter FAILED");
-            return E_POINTER;
-        }
-        Log("[DECKLINK][engine] IFileSourceFilter::Load(url)...");
-        hr = pFS->Load(std::wstring(source).c_str(), nullptr);
-        Log("[DECKLINK][engine] Load hr=0x%08X", (unsigned)hr);
-        if (FAILED(hr)) return hr;
-        splitter = sourceFilter;   // acts as the demuxer/splitter in one
     } else {
         hr = graph_->AddSourceFilter(std::wstring(source).c_str(), L"source", &sourceFilter);
         if (FAILED(hr)) return hr;
@@ -567,10 +669,12 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     }
 
     CComPtr<IBaseFilter> decoder;
-    hr = decoder.CoCreateInstance(CLSID_LAVVideo);
-    if (FAILED(hr)) return hr;
-    hr = graph_->AddFilter(decoder, L"LAV Video");
-    if (FAILED(hr)) return hr;
+    if (!bDeckLinkDirect) {
+        hr = decoder.CoCreateInstance(CLSID_LAVVideo);
+        if (FAILED(hr)) return hr;
+        hr = graph_->AddFilter(decoder, L"LAV Video");
+        if (FAILED(hr)) return hr;
+    }
 
     hr = AddRenderer(renderer_);
     if (FAILED(hr) || !renderer_) return FAILED(hr) ? hr : E_FAIL;
@@ -579,7 +683,19 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
 
     if (renderTarget_) ConfigureRendererWindow();
 
-    if (bDeckLink) {
+    if (bDeckLinkDirect) {
+        // v210 out → MPCVR input, straight. The direct source captures WITHOUT
+        // LAVVideo, so record its negotiated type for the LIVE panel here.
+        ApplyDecklinkColorToRenderer();   // pre-connect ICS (monitor-advised)
+        CComPtr<IPin> rndIn = FindPin(renderer_, PINDIR_INPUT);
+        CComPtr<IPin> srcOut = FindPin(sourceFilter, PINDIR_OUTPUT);
+        if (!rndIn || !srcOut) return E_POINTER;
+        Log("[DECKLINK][engine] direct connect v210 -> MPCVR input...");
+        hr = graph_->Connect(srcOut, rndIn);
+        Log("[DECKLINK][engine] direct renderer connect hr=0x%08X", (unsigned)hr);
+        if (FAILED(hr)) return hr;
+        CaptureSourceMediaType(srcOut);   // DEMUXER → REC (LIVE panel)
+    } else if (bDeckLink) {
         // Push the forced input colour space BEFORE pin negotiation so the very
         // first media type/ICS override application uses it.
         ApplyDecklinkColorToRenderer();
@@ -606,15 +722,17 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         if (FAILED(hr)) return hr;
     }
 
-    CComPtr<IPin> decOut = FindPin(decoder, PINDIR_OUTPUT);
-    CComPtr<IPin> rndIn = FindPin(renderer_, PINDIR_INPUT);
-    if (!decOut || !rndIn) return E_POINTER;
-    hr = graph_->Connect(decOut, rndIn);
-    if (FAILED(hr)) return hr;
-    if (!bDeckLink) {
-        // Record the decoder->renderer media type (LIVE panel DEMUXER->REC and
-        // the HDR color/transfer source for ApplyMediaColorToRenderer).
-        CaptureSourceMediaType(decOut);
+    if (!bDeckLinkDirect) {
+        CComPtr<IPin> decOut = FindPin(decoder, PINDIR_OUTPUT);
+        CComPtr<IPin> rndIn = FindPin(renderer_, PINDIR_INPUT);
+        if (!decOut || !rndIn) return E_POINTER;
+        hr = graph_->Connect(decOut, rndIn);
+        if (FAILED(hr)) return hr;
+        if (!bDeckLink) {
+            // Record the decoder->renderer media type (LIVE panel DEMUXER->REC and
+            // the HDR color/transfer source for ApplyMediaColorToRenderer).
+            CaptureSourceMediaType(decOut);
+        }
     }
 
     hr = graph_.QueryInterface(&mediaControl_);
@@ -624,14 +742,17 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     graph_.QueryInterface(&mediaEvent_);
 
     splitter_ = splitter;
-    if (bDeckLink) {
+    if (bDeckLinkDirect) {
+        // Direct ingest: no LAV splitter queue to tune (phase-2b bounded queue
+        // replaces it later).
+    } else if (bDeckLink) {
         ApplyDecklinkLowLatency(splitter);   // shrink LAV output queue: live capture
     } else {
         // HDR media file: the decoder passes PQ/HLG in the media type, but
         // MPCVR's auto-ICS can resolve it to SDR (G22P709) depending on the
         // graph handoff. Force the ICS to match the decoded transfer so the ML
         // grade + tone-map see the real HDR signal (mirrors the decklink path).
-        ApplyMediaColorToRenderer(decOut);
+        ApplyMediaColorToRenderer(FindPin(decoder, PINDIR_OUTPUT));
     }
     if (!bDeckLink) {
         ConnectAudio(splitter);
@@ -643,6 +764,12 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         ResizeVideo();
     }
     return S_OK;
+}
+
+// DeckLinkSource.ax telemetry (SetLogSink) → engine Log → shell diag log.
+void __cdecl MpcPlayer::DeckLinkSourceLogBridge(void* ctx, const char* line)
+{
+    static_cast<MpcPlayer*>(ctx)->Log("%s", line);
 }
 
 // Try-connect the source's output pins to the decoder input. With no_audio (the
@@ -698,11 +825,13 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
     if (mt.subtype == MEDIASUBTYPE_UYVY) { videoStreamInfo_.pixelFormat = 0; videoStreamInfo_.subtypeName = L"UYVY"; }
     else if (mt.subtype == MEDIASUBTYPE_v210_GUID) { videoStreamInfo_.pixelFormat = 1; videoStreamInfo_.subtypeName = L"v210"; }
     else if (mt.subtype == MEDIASUBTYPE_NV12) { videoStreamInfo_.pixelFormat = 2; videoStreamInfo_.subtypeName = L"NV12"; }
+    else if (mt.subtype == MEDIASUBTYPE_P010_GUID) { videoStreamInfo_.pixelFormat = 4; videoStreamInfo_.subtypeName = L"P010"; }
     else {
         videoStreamInfo_.pixelFormat = 3;
         videoStreamInfo_.subtypeName = L"(raw)";
     }
-    // Transfer function: read the extended format from dwControlFlags (PQ/HLG → HDR).
+    // Transfer function + primaries: read the extended format from dwControlFlags
+    // (PQ/HLG → HDR; primaries → colorspace for the LIVE panel).
     if (mt.formattype == FORMAT_VideoInfo2 && mt.pbFormat) {
         const VIDEOINFOHEADER2* vih2 = reinterpret_cast<const VIDEOINFOHEADER2*>(mt.pbFormat);
         if (vih2->dwControlFlags & AMCONTROL_COLORINFO_PRESENT) {
@@ -711,6 +840,10 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
             videoStreamInfo_.transferFunction = (int)xf.VideoTransferFunction;
             videoStreamInfo_.hdr = (xf.VideoTransferFunction == MFVideoTransFunc_2084 ||
                                     xf.VideoTransferFunction == MFVideoTransFunc_HLG);
+            // MF/DXVA2 extension values (BT2020 primaries = 9; BT709 = 2).
+            videoStreamInfo_.colorspace =
+                (xf.VideoPrimaries == 9) ? 3 :
+                (xf.VideoPrimaries == 2) ? 2 : 1;
         }
     }
     Log("[ENGINE] source media type: %dx%d itl=%d avg=%d fmt=%d tf=%d hdr=%d",
@@ -1042,7 +1175,6 @@ void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)
     s.bVBlankBeforePresent = o.vBlank;
     s.bAdjustPresentTime = o.adjustPresent;
     s.bReinitByDisplay = o.reinitDisplay;
-    s.iRefreshSwitch24p = o.refreshSwitch24p;
     s.bShowStats = o.showStats;
     s.bTrayIcon = o.trayIcon;
 }
@@ -1071,7 +1203,6 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
     o.vBlank = s.bVBlankBeforePresent;
     o.adjustPresent = s.bAdjustPresentTime;
     o.reinitDisplay = s.bReinitByDisplay;
-    o.refreshSwitch24p = s.iRefreshSwitch24p;
     o.showStats = s.bShowStats;
     o.trayIcon = s.bTrayIcon;
 }
@@ -1165,15 +1296,13 @@ HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
 
     decklinkMonitor_ = std::make_unique<DeckLinkMonitor>();
     decklinkMonitor_->SetLogSink(logSink_);
-    // The monitor only detects + requests; callers marshal to their UI thread
-    // via the event callback / message loop.
+    // Master contract (DESIGN.md): the monitor observes the signal; on a
+    // CONFIRMED stable change it advises the engine, which relays to the UI.
     decklinkMonitor_->SetRestartCallback([this](const DeckLinkMonitor::RestartRequest& req) {
         decklinkSettings_.signalLocked = !req.signalLost;
-        Log("[DECKLINK][engine] restart request: signalLost=%d ics=%d url='%s'",
+        Log("[DECKLINK][engine] monitor advised: signalLost=%d ics=%d url='%s'",
             req.signalLost, req.ics, req.url.c_str());
         if (!req.url.empty()) {
-            // Store the new URL + colour space so the caller can rebuild the
-            // graph with them; notify consumers to act.
             pendingDecklinkUrl_.assign(req.url.begin(), req.url.end());
             decklinkSettings_.inputColorSpace = req.ics;
             Notify("decklink:signal");
@@ -1224,17 +1353,89 @@ bool MpcPlayer::GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamic
     return true;
 }
 
+bool MpcPlayer::GetDeckLinkSourceStats(DeckLinkSourceStats& out) const
+{
+    out = {};
+    if (!decklinkControl_) return false;
+    return SUCCEEDED(decklinkControl_->GetStats(&out));
+}
+
 int MpcPlayer::GetDecklinkDevices(std::vector<std::string>& names) const
 {
-    // Enumerate without requiring an active capture session: create a monitor
-    // if none exists so the enumeration (monitor dll load) still works.
-    if (!decklinkMonitor_) {
-        auto* m = new DeckLinkMonitor();      // may fail EnsureLoaded inside
-        return m->EnumerateDevices(names) >= 0
-            ? (const_cast<MpcPlayer*>(this)->decklinkMonitor_.reset(m), (int)names.size())
-            : (delete m, -1);
+    // Direct SDK enumeration (no monitor DLL): safe, bounded, on the caller.
+    names.clear();
+    CComPtr<IDeckLinkIterator> it;
+    if (FAILED(it.CoCreateInstance(g_clsidDeckLinkIterator, NULL, CLSCTX_ALL)) || !it)
+        return -1;
+    CComPtr<IDeckLink> dev;
+    while (it->Next(&dev) == S_OK) {
+        CComBSTR bname;
+        if (SUCCEEDED(dev->GetDisplayName(&bname)) && bname && *bname) {
+            char nm[384] = {};
+            WideCharToMultiByte(CP_UTF8, 0, bname, -1, nm, sizeof(nm), NULL, NULL);
+            if (nm[0]) names.emplace_back(nm);
+        }
+        dev.Release();
     }
-    return decklinkMonitor_->EnumerateDevices(names);
+    return (int)names.size();
+}
+
+// Filter's reported cs/eotf → the MPCVR input-colour-space override (pre-connect).
+void MpcPlayer::UpdateIcsFromFilter()
+{
+    DeckLinkSourceStats ds;
+    if (!GetDeckLinkSourceStats(ds)) return;
+    int ics = 0;
+    if      (ds.colorspace == 3 && ds.eotf == 2) ics = ICS_BT2020_PQ;
+    else if (ds.colorspace == 3 && ds.eotf == 3) ics = ICS_BT2020_HLG;
+    else if (ds.colorspace == 3)                  ics = ICS_BT2020_SDR;
+    else if (ds.colorspace == 2)                  ics = ICS_BT709;
+    else if (ds.colorspace == 1)                  ics = ICS_BT601;
+    decklinkSettings_.inputColorSpace = ics;
+    Log("[DECKLINK][engine] filter meta (cs=%d eotf=%d) → ICS %d", ds.colorspace, ds.eotf, ics);
+}
+
+// The FILTER is the format-change authority now (its SDK event, raised on its
+// worker). We rebuild gracefully — off the UI thread, serialized by the graph
+// lock so no two threads ever touch the graph together.
+void __cdecl MpcPlayer::DeckLinkRestartBridge(void* ctx)
+{
+    static_cast<MpcPlayer*>(ctx)->RequestDecklinkRestart();
+}
+
+void MpcPlayer::RequestDecklinkRestart()
+{
+    // Skip a rebuild only when the graph is ACTUALLY SHOWING video (delivered
+    // advanced since the last decision — e.g. the format echo right after an
+    // open). If the graph is black/gate-dropping (delivered stagnant), ALWAYS
+    // rebuild: that is the self-heal path for a stale media type.
+    DeckLinkSourceStats ds;
+    const bool showing = GetDeckLinkSourceStats(ds) && ds.framesDelivered > m_lastDlvSnapshot;
+    m_lastDlvSnapshot = ds.framesDelivered;
+    if (showing) {
+        Log("[DECKLINK][engine] restart requested while video is flowing — skipped");
+        return;
+    }
+    if (m_restartPending.exchange(true)) {
+        Log("[DECKLINK][engine] restart requested while one is pending — skipped");
+        return;
+    }
+    Log("[DECKLINK][engine] rebuild requested (gate-drop/format change) — graceful rebuild on worker");
+    std::thread([this]() {
+        UpdateIcsFromFilter();
+        {
+            std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+            if (!decklinkUrl_.empty()) {
+                const std::wstring url = decklinkUrl_;
+                const HRESULT hrO = Open(url);
+                const HRESULT hrP = Play();
+                Log("[DECKLINK][engine] rebuild done: Open hr=0x%08X Play hr=0x%08X",
+                    (unsigned)hrO, (unsigned)hrP);
+            }
+        }
+        m_restartPending = false;
+        Notify("opened");
+    }).detach();
 }
 
 HRESULT MpcPlayer::SetDecklinkInputColor(int ics)
@@ -1294,6 +1495,7 @@ HRESULT MpcPlayer::GetRendererStats(RenderStats& stats) const
     stats.skipped        = r.skipped;
     stats.failed         = r.failed;
     stats.drawFps        = r.drawFps;
+    stats.presentLatencyMs = r.presentLatencyMs;
     return S_OK;
 }
 

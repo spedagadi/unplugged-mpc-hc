@@ -103,4 +103,12 @@ private:
     int lastMode_ = -1;
     int lastColorSpace_ = -1;
     int lastDynamicRange_ = -1;
+    // 1-second stability gate (DESIGN.md): armed when the wire state CHANGES
+    // (lastSeenKey_) to something different from the last commanded state
+    // (lastCmdKey_); a command fires once that state holds for kSustainMs. A
+    // state returning to the already-committed one never re-fires.
+    static constexpr DWORD kSustainMs = 1000;
+    int   lastSeenKey_ = -999;
+    int   lastCmdKey_ = -999;
+    DWORD candidateSince_ = MAXDWORD;
 };
