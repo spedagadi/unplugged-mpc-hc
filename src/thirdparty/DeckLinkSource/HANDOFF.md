@@ -243,3 +243,32 @@ DeckLinkSource.ax (v210 pin)  ->  MPCVR          (direct, no LAVVideo)
 - LAV/ffmpeg fork: `LAVFilters` — `_rebuild_ffmpeg.sh`; filters land in
   `LAVFilters/bin_x64` (registered path for LAVSplitter/LAVVideo).
 - Git: commits are NOT pushed (use GitHub Desktop); mpc-hc branch zion-s3-shell.
+## 8. HDR/DV bench verdict (2026-09-14, Dune DV disc, HDFury Integral 2 in chain)
+
+Chain: UB820 (DV) -> Integral 2 -> DeckLink Quad HDMI Recorder, mpchc_engine + DeckLinkSource.ax + s3_shell.
+
+Probe data (one-shot [PROBE]/[12bit] logs in the filter):
+- DV fingerprint: BT.2020 (bmdColorspaceRec2020) + dsdr=0 (no PQ/HLG static flag)
+  = the player has replaced the HDR10 InfoFrame with Dolby's VSIF. Filter maps
+  this to eotf=4 ("DV, PQ-coded") so the media type stays 2084 and MPCVR tone
+  maps; panel shows "DolbyVision". Committed b7c87aea4.
+- IDeckLinkVideoFrameMetadataExtensions: interface QIs fine, EVERY GetInt is
+  <unsupported> on HDMI. ST 2086 (MaxCLL/MaxFALL/primaries) NEVER populates on
+  this card's HDMI path (SDI-ANC only). Tone-map anchors must come from
+  bdinfo/sidecar, never from the card.
+- 12-bit capture: EnableVideoInput(bmdFormat12BitRGB):
+    * at 1080p50 mode: ACCEPTED (hr 0) but streams ALL-ZERO R12B frames
+      (rowbytes=8640 = 1920x4.5B/px — the hardware YUV->RGB12 conversion IS
+      real at that resolution)
+    * at the actual 2160p23.98 mode (0x346b3233): REFUSED, E_ACCESSDENIED
+      (0x80070005) — 4K RGB444 12-bit needs ~26 Gbps, past HDMI 2.0's 18 Gbps.
+  => 4K 12-bit DV cannot reach the pipeline on this card, period. The captured
+     DV-FEL-fused 10-bit v210 is the ceiling. The 12-bit probes must be gated
+     on the real detected mode (modeApplied) and run OUTSIDE the state CS
+     (StopStreams waits on the callback; holding the CS across the stream
+     window deadlocks — first probe run hung s3_shell exactly this way).
+- EDID readback via bmdDeckLinkStatusReceivedEDID GetBytes() = E_NOTIMPL on
+  this driver; use Desktop Video / HDFury client for EDID inspection instead.
+
+Todo: strip the one-shot [12bit]/[PROBE] code once the sidecar-anchor design
+(this is the only real metadata route) is signed off.

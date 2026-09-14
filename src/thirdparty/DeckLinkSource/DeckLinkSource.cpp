@@ -85,6 +85,9 @@ struct CaptureState {
     HANDLE restartEvent = nullptr;
     HANDLE firstDataEvent = nullptr;   // auto-reset: first format/frame detected
     LONG   metaProbe = 0;              // one-shot: dump SDK signal/metadata on frame 1
+    LONG   twelve = 0;                 // 1 while the 12-bit probe stream is the active capture
+    LONG   twelveProbe = 0;            // one-shot per session: ask for a 12-bit capture, measure, revert
+    LONG   modeApplied = 0;            // detected display mode has been applied once
     void* logCtx = nullptr;            // engine log sink (SetLogSink); OutputDebugStringA fallback
     DeckLinkSourceLogFn logFn = nullptr;
     void* restartCtx = nullptr;            // engine restart notification (fires on the worker)
@@ -639,6 +642,46 @@ void CDeckLinkOutputPin::WorkerLoop()
                 modeDiff = true;
                 m_st.mode = m_st.pendingMode;
             }
+            m_st.modeApplied = 1;      // real detected mode is now in m_st.mode
+            StateLog(&m_st, "[DECKLINK][src] applied detected mode=%#x (pre-connect)", (unsigned)m_st.mode);
+        }
+
+        // 12-bit capture probe — ONE shot per session. Runs AFTER the mode apply
+        // above so the request uses the REAL detected mode (the earlier probe
+        // runs used the pre-detection default Hp50 → bogus 1080p50/black 12-bit
+        // stream, and after detection locked 4K the card REFUSED that mode with
+        // E_ACCESSDENIED). Does the driver accept bmdFormat12BitRGB at the real
+        // mode? If yes, the card's color processor converts wire YUV→R12B and we
+        // measure the true bit depth (callback logs low-nibble entropy), then
+        // revert to v210 so real delivery is untouched.
+        if (m_st.twelveProbe == 0 && !m_st.quit && m_input && m_st.modeApplied) {
+            m_st.twelveProbe = 1;
+            // Run the whole probe OUTSIDE the CS (we hold it at this point).
+            // StopStreams/DisableVideoInput wait for an in-flight SDK callback
+            // to return; if the callback is parked at the CS (as it is whenever
+            // we hold it across the stream window) that is a hard deadlock —
+            // observed this exact way on the first probe run (s3_shell hang).
+            m_st.Unlock();
+            const BMDDisplayMode pMode = (BMDDisplayMode)m_st.mode;
+            const HRESULT hrP = m_input->EnableVideoInput(pMode,
+                bmdFormat12BitRGB, bmdVideoInputEnableFormatDetection);
+            StateLog(&m_st, "[12bit] EnableVideoInput(12BitRGB mode=%#x) hr=0x%08X%s",
+                pMode, (unsigned)hrP,
+                SUCCEEDED(hrP) ? " — ACCEPTED" : " — refused (10-bit front-end)");
+            if (SUCCEEDED(hrP)) {
+                m_st.Lock();
+                m_st.twelve = 1;
+                m_st.Unlock();
+                const HRESULT hrS = m_input->StartStreams();
+                StateLog(&m_st, "[12bit] StartStreams hr=0x%08X — capturing probe frames for LSB analysis", (unsigned)hrS);
+                Sleep(1500);            // callbacks run their LSB/byte dump meanwhile
+                if (m_input) { m_input->StopStreams(); m_input->DisableVideoInput(); }
+                m_st.Lock();
+                m_st.twelve = 0;
+                m_st.Unlock();
+                StateLog(&m_st, "[12bit] stopped probe, reverted to the v210 path");
+            }
+            m_st.Lock();                 // re-acquire — the normal path below continues
         }
 
         bool notifyRestart = false;    // format changed → engine should gracefully rebuild
@@ -862,7 +905,8 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
     // overrun the shared allocator buffer. Mismatch = a format change is pending
     // (the monitor rebuild resyncs); counted as skipped.
     const bool deliver = (m_st->active != 0) && (m_st->stopPending == 0) &&
-                         (connW > 0) && (realW == connW) && (realH == connH);
+                         (connW > 0) && (realW == connW) && (realH == connH) &&
+                         (m_st->twelve == 0);          // R12B probe frames never reach the v210 path
     const LONG stride = videoFrame->GetRowBytes();
     const LONG fpsNum = m_st->fpsNum;
     const LONG fpsDen = m_st->fpsDen;
@@ -920,6 +964,27 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
     m_st->Unlock();
     if (rbFn) rbFn(rbCtx);      // gate-throttled rebuild request (non-blocking)
 
+    // 12-bit probe frames (R12B): log the layout + a bit-depth signature. Real
+    // 12-bit data from the card's converter has entropy in every byte's low
+    // nibble; 10-bit sampled-then-padded data has near-zero low-nibble entropy
+    // (the LSB padding bits stay 0). Raw bytes are dumped too so the layout
+    // can be read offline.
+    if (m_st->twelve == 1) {
+        void* src = nullptr;
+        if (videoFrame->GetBytes(&src) == S_OK && src) {
+            const BYTE* p = (const BYTE*)src;
+            const LONG rb = videoFrame->GetRowBytes();
+            const long cap = std::min<long>(rb * realH, 256L * 1024);
+            long nz = 0;
+            for (long i = 0; i < cap; ++i) if (p[i] & 0x0F) nz++;
+            char hex[96] = {};
+            for (int i = 0; i < 32 && i < rb; ++i) sprintf_s(hex + i * 2, sizeof(hex) - i * 2, "%02X", p[i]);
+            StateLog(m_st, "[12bit] frame %lld %ldx%ld rowbytes=%ld | lowNibbleNz=%ld/%ld (%.2f%%) head8=%s",
+                (long long)m_st->frames, (long)realW, (long)realH, (long)rb,
+                nz, cap, cap ? (100.0 * nz / cap) : 0.0, hex);
+        }
+    }
+
     // HDR-signal probe — ONE frame per session: dump everything the SDK will
     // tell us about this input, raw. Bench question: does the card parse HDMI
     // InfoFrame colorimetry + ST 2086 (Dune DV disc) or not? Nothing user-visible;
@@ -936,6 +1001,24 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
             if (SUCCEEDED(st->GetInt(bmdDeckLinkStatusCurrentVideoInputPixelFormat, &v)))
                 StateLog(m_st, "[PROBE] cvip (pix fmt)    = 0x%llX  (%u-bit YUV/RGB payload)",
                     (unsigned long long)v, (v == 0x76323130ull) ? 10 : (v == 0x52313242ull || v == 0x5231324cull) ? 12 : (v == 0x72323130ull) ? 10 : (v == 0x32767579ull) ? 8 : 0);
+            // EDID the card PRESENTS to the source (the Integral): its max color
+            // depth + any Dolby VSVDB decide what the Integral is even allowed
+            // to send. 12-bit on the wire REQUIRES the EDID to claim it.
+            BYTE edid[256] = {};
+            unsigned int esz = sizeof(edid);
+            const HRESULT hrE = st->GetBytes(bmdDeckLinkStatusReceivedEDID, edid, &esz);
+            if (SUCCEEDED(hrE)) {
+                StateLog(m_st, "[PROBE] receivedEDID bytes=%u extBlocks=%u", esz, (unsigned)edid[126]);
+                char hex[70] = {};
+                for (int b = 0; b < 256; b += 16) {
+                    int n = 0;
+                    for (int i = 0; i < 16 && (b + i) < (int)esz; ++i)
+                        n += sprintf_s(hex + n, sizeof(hex) - n, "%02X ", edid[b + i]);
+                    StateLog(m_st, "[PROBE]  EDID[%03d] %s", b, hex);
+                }
+            } else {
+                StateLog(m_st, "[PROBE] receivedEDID GetBytes FAILED (hr=0x%08X)", (unsigned)hrE);
+            }
         }
         CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
         if (videoFrame && SUCCEEDED(videoFrame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta))) {
