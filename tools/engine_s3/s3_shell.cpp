@@ -2074,6 +2074,34 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_TIMER:
         if (w == 11) {
+            // UI heartbeat (diagnostic): batched every 2 s, logs a boundary
+            // before/after each renderer/engine read. If the UI ever hangs, the
+            // log shows the LAST completed call — the exact culprit, no guessing.
+            if (g_player) {
+                static int s_hb = 0;
+                if ((++s_hb & 3) == 0) {
+                    DiagLog("[HB] tick %d begin", s_hb);
+                    std::wstring ml;
+                    DiagLog("[HB]   GetMlStats %s", g_player->GetLiveMlStats(ml) ? "ok" : "fail");
+                    MpcPlayer::HdrSettings hd;
+                    DiagLog("[HB]   GetHdrSettings %s", g_player->GetLiveHdrSettings(hd) ? "ok" : "fail");
+                    MpcPlayer::RenderStats rs2;
+                    // WARNING: never read rs2 fields inside this call — argument
+                    // evaluation order is unspecified (MSVC x64 = right-to-left) so
+                    // the read can precede the getter's write. Get first, print after.
+                    const bool haveRs2 = g_player->GetLiveRendererStats(rs2);
+                    DiagLog("[HB]   GetRendererStats %s recv=%u draw=%.1f lag=%.0fms", haveRs2 ? "ok" : "fail", rs2.framesReceived, rs2.drawFps, rs2.presentLatencyMs);
+                    DeckLinkSourceStats ds2;
+                    if (g_player->GetLiveDeckLinkSourceStats(ds2))
+                        DiagLog("[HB]   GetDeckLinkSourceStats ok stream=%d ref=%llu frames=%llu dlv=%llu qDrop=%llu",
+                            ds2.streaming, (unsigned long long)ds2.lastRefUs, ds2.framesArrived,
+                            ds2.framesDelivered, ds2.droppedQueue);
+                    MpcPlayer::Snapshot sn2;
+                    g_player->GetSnapshot(sn2);
+                    DiagLog("[HB] tick %d end", s_hb);
+                }
+            }
+
             // Auto-hide the cursor when playing and idle (>3 s since the last
             // mouse/key event); any activity re-shows it instantly (the
             // WM_MOUSEMOVE/WM_KEYDOWN hooks ResetCursorIdle). Hide over the
@@ -2094,7 +2122,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
 
             std::wstring raw;
-            if (g_player && SUCCEEDED(g_player->GetMlStats(raw))) {
+            if (g_player && g_player->GetLiveMlStats(raw)) {
                 g_mlStats = raw;
                 ParseMlStatsForPanel();
                 MpcPlayer::MlSettings ms;
@@ -2116,7 +2144,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 wchar_t mode[160] = L"—";
                 wchar_t fmt[160] = L"—";
                 DeckLinkSourceStats ds;
-                if (g_player->GetDeckLinkSourceStats(ds)) {
+                if (g_player->GetLiveDeckLinkSourceStats(ds)) {
                     // "Signal" = the filter is streaming and frames have arrived.
                     g_signalLocked = (ds.streaming && ds.framesArrived > 0) ? 1 : 0;
                     const wchar_t* csN = ds.colorspace == 3 ? L"BT.2020"
@@ -2173,7 +2201,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
                 // PERFORMANCE — renderer frame accounting (frames/dropped/skip/fail).
                 MpcPlayer::RenderStats rs;
-                const bool haveRs = (g_player && SUCCEEDED(g_player->GetRendererStats(rs)));
+                const bool haveRs = (g_player && g_player->GetLiveRendererStats(rs));
                 if (haveRs) {
                     wchar_t dl[96] = {}, ld[96] = {};
                     // PERFORMANCE rows (receive-side accounting, split per row).
@@ -2201,22 +2229,33 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     // aligned capture clock) on first sighting; drift = (Δcapture
                     // clock − Δwall) while running.
                     {
-                        static unsigned long long s_refAnchorUs = 0;
-                        static long long s_wallAnchorMs = 0;
+                        // Drift is measured only across CACHE-CHANGE boundaries:
+                        // lastRefUs updates once per second (the engine snapshot),
+                        // while nowMs ticks every 0.5 s — subtracting them at
+                        // different cadences fabricated the ±300 ms "drift".
+                        // Accumulate (Δcapture − Δwall) per fresh sample pair only.
+                        static unsigned long long s_baseRefUs = 0;   // stream-time anchor
+                        static unsigned long long s_prevRefUs = 0;   // last applied hwRef
+                        static long long s_prevWallMs = 0;
+                        static long long s_driftAccumMs = 0;
                         DeckLinkSourceStats ds;
-                        if (g_player->GetDeckLinkSourceStats(ds) && ds.streaming) {
+                        if (g_player->GetLiveDeckLinkSourceStats(ds) && ds.streaming) {
                             const long long nowMs = GetTickCount64();
-                            if (s_refAnchorUs == 0) { s_refAnchorUs = ds.lastRefUs; s_wallAnchorMs = nowMs; }
-                            const bool haveWall = (ds.lastRefUs > 0);
-                            if (haveWall) {
-                                const double streamSec = (double)(ds.lastRefUs - s_refAnchorUs) / 1e6;
+                            if (s_baseRefUs == 0) s_baseRefUs = ds.lastRefUs;
+                            if (ds.lastRefUs != s_prevRefUs) {
+                                if (s_prevRefUs != 0)
+                                    s_driftAccumMs += (long long)((ds.lastRefUs - s_prevRefUs) / 1000)
+                                                   - (nowMs - s_prevWallMs);
+                                s_prevRefUs = ds.lastRefUs;
+                                s_prevWallMs = nowMs;
+                            }
+                            if (ds.lastRefUs > 0) {
+                                const double streamSec = (double)(ds.lastRefUs - s_baseRefUs) / 1e6;
                                 swprintf_s(dl, L"%.3f s", streamSec);
                                 g_streamTimeLine = dl;
-                                const long long driftMs =
-                                    (long long)((ds.lastRefUs - s_refAnchorUs) / 1000) - (nowMs - s_wallAnchorMs);
-                                swprintf_s(dl, L"%+lld ms", driftMs);
+                                swprintf_s(dl, L"%+lld ms", s_driftAccumMs);
                                 g_driftLine = dl;
-                                g_driftHigh = (driftMs > 100 || driftMs < -100);
+                                g_driftHigh = (s_driftAccumMs > 100 || s_driftAccumMs < -100);
                             }
                             // Backlog: filter-delivered minus renderer-received.
                             const long long backlog = (long long)(ds.framesDelivered > rs.framesReceived
@@ -2247,7 +2286,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                 g_bitrateLine = dl;
                             }
                         } else {
-                            s_refAnchorUs = 0;   // session gone / not streaming → re-anchor next time
+                            s_baseRefUs = 0; s_prevRefUs = 0; s_prevWallMs = 0; s_driftAccumMs = 0;
                             g_streamTimeLine.clear(); g_driftLine.clear();
                             g_backlogLine.clear(); g_renegLine.clear();
                             g_filterModeLine.clear(); g_filterFramesLine.clear();
@@ -2280,8 +2319,8 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 {
                     MpcPlayer::HdrSettings hdr{};
                     MpcPlayer::OutSettings out{};
-                    const bool hOk = (g_player && SUCCEEDED(g_player->GetHdrSettings(hdr)));
-                    const bool oOk = (g_player && SUCCEEDED(g_player->GetOutSettings(out)));
+                    const bool hOk = (g_player && g_player->GetLiveHdrSettings(hdr));
+                    const bool oOk = (g_player && g_player->GetLiveOutSettings(out));
                     wchar_t tb[96] = {};
                     // Target TRC: converted-to-SDR vs native display.
                     g_tmAlgorithm.clear();

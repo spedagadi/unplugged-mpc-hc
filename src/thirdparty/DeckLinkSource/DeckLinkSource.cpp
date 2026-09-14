@@ -64,6 +64,7 @@ struct CaptureState {
     CRITICAL_SECTION lock;
     LONG   active = 0;        // pin active (deliver allowed)
     LONG   stopPending = 0;    // teardown: capture callbacks bail out without AcquireSample
+    LONG   enableRetry = 0;    // Enable failed — worker re-tries every 500 ms until the card accepts
     LONG   started = 0;       // card is streaming
     LONG   enabled = 0;       // EnableVideoInput succeeded (avoids re-enable w/o stop)
     LONG   everStarted = 0;   // capture has been started once (pre-connect start allowed)
@@ -78,7 +79,7 @@ struct CaptureState {
     LONG   colorspace = 0;    // 0=unk 1=601 2=709 3=bt2020
     LONG   eotf = 0;          // 0=unk 1=gamma 2=PQ 3=HLG
     unsigned long long frames = 0, skipped = 0, delivered = 0;
-    unsigned long long gateDropped = 0, renegotiations = 0, formatEvents = 0;
+    unsigned long long gateDropped = 0, renegotiations = 0, formatEvents = 0, droppedQueue = 0;
     LONG64 prevRefUs = 0;     // last hwRef (µs); fallback for a failed/zero read
     LONG64 rtBaseUs = 0;      // hwRef anchor → graph-relative sample times
     HANDLE restartEvent = nullptr;
@@ -192,11 +193,23 @@ public:
         return GetDeliveryBuffer(ppSample, nullptr, nullptr, 0);
     }
 
+    // Bounded forwarder queue (Phase-2b): the SDK callback NEVER blocks on the
+    // renderer. It enqueues the sample here; ForwardLoop (its own thread)
+    // Delivers it. If the renderer is slow the queue fills and the callback
+    // drops the NEWEST frame — the card is never stuck behind MPCVR.
+    bool EnqueueSample(IMediaSample* s);    // true = enqueued (ownership moves)
+
 private:
     CaptureState m_st;
     LONG m_connWidth = 0;       // negotiated media type dims (delivery size gate)
     LONG m_connHeight = 0;
+    enum { kQDepth = 3 };
+    IMediaSample* m_q[kQDepth] = {};
+    int m_qHead = 0, m_qTail = 0;
+    HANDLE m_dataEvent = nullptr;
+    std::thread m_forwarder;
     void WorkerLoop();          // negotiate + start/stop (never in callback)
+    void ForwardLoop();         // pop + Deliver + Release (never in callback)
 };
 
 // ---------------------------------------------------------------------------
@@ -430,6 +443,7 @@ void CDeckLinkOutputPin::GetStats(DeckLinkSourceStats& out)
     out.framesArrived  = m_st.frames;
     out.framesDelivered = m_st.delivered;
     out.framesSkipped  = m_st.skipped;
+    out.droppedQueue   = m_st.droppedQueue;
     out.gateDropped    = m_st.gateDropped;
     out.renegotiations = m_st.renegotiations;
     out.formatEvents   = m_st.formatEvents;
@@ -504,11 +518,15 @@ HRESULT CDeckLinkOutputPin::StartCaptureSession(const wchar_t* deviceName)
     m_cb->Release();
     m_cb = nullptr;              // SDK owns it now; never deref here
 
-    // Do the discovery/format in the capture start, then park.
+    // Boot the session + forwarder threads. The forwarder owns Deliver; the
+    // callback enqueues (bounded) and never blocks on the renderer.
     ResetEvent(m_st.firstDataEvent);
     InterlockedExchange(&m_st.quit, 0);
+    if (!m_dataEvent) m_dataEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!m_worker.joinable())
         m_worker = std::thread(&CDeckLinkOutputPin::WorkerLoop, this);
+    if (!m_forwarder.joinable() && m_dataEvent)
+        m_forwarder = std::thread(&CDeckLinkOutputPin::ForwardLoop, this);
     SetEvent(m_st.restartEvent);               // worker: enable + start
 
     // Block (bounded) until the first detected format or frame is known, so the
@@ -550,11 +568,15 @@ void CDeckLinkOutputPin::StopCaptureSession()
     InterlockedExchange(&m_st.active, 0);
     SetEvent(m_st.restartEvent);
 
-    // 2. Join the worker: its quit path stops the streams + disables the input,
-    //    then drops the SDK objects. This order gives the worker's m_input
-    //    reads a happens-before (join), and SetCallback(null) happens only
-    //    after the worker can no longer be inside the SDK.
+    // 2. Join the forwarder (drains the queue; Deliver stops once inactive),
+    //    then the worker (its quit path stops streams + disables input), then
+    //    drop the SDK objects. This order gives the worker's m_input reads a
+    //    happens-before (join), and SetCallback(null) happens only after no
+    //    thread can be inside the SDK.
+    if (m_dataEvent) { SetEvent(m_dataEvent); }   // wake the forwarder to exit
+    if (m_forwarder.joinable()) m_forwarder.join();
     if (m_worker.joinable()) m_worker.join();
+    if (m_dataEvent) { CloseHandle(m_dataEvent); m_dataEvent = nullptr; }
     if (m_input) { m_input->SetCallback(nullptr); }
     if (m_input) { m_input->Release(); m_input = nullptr; }
     if (m_dev)   { m_dev->Release();   m_dev = nullptr; }
@@ -572,14 +594,23 @@ void CDeckLinkOutputPin::WorkerLoop()
     StateLog(&m_st, "[DECKLINK][src] worker entered");
 
     for (;;) {
-        WaitForSingleObject(m_st.restartEvent, INFINITE);   // parked = idle
-        ResetEvent(m_st.restartEvent);
+        // Park until an event OR — when an Enable retry is pending — wake every
+        // 500 ms to try again. This is the convergence rule: the monitor's
+        // command stands; the capture keeps trying until the card accepts it
+        // (an Enable that fails because the HDMI is mid-renegotiation must NOT
+        // park forever, or the relaunched graph stays black).
+        m_st.Lock();
+        const bool retryPending = (m_st.enableRetry != 0);
+        m_st.Unlock();
+        const DWORD waitMs = retryPending ? 500 : INFINITE;
+        const DWORD wr = WaitForSingleObject(m_st.restartEvent, waitMs);
+        if (wr != WAIT_TIMEOUT) ResetEvent(m_st.restartEvent);
 
         m_st.Lock();
         if (m_st.quit) { StateLog(&m_st, "[DECKLINK][src] worker quit"); m_st.Unlock(); break; }
         if (!m_input)  { m_st.Unlock(); continue; }   // only between spawn+set
-        StateLog(&m_st, "[DECKLINK][src] worker woke: active=%d stop=%d started=%d",
-            m_st.active, m_st.stopPending, m_st.started);
+        StateLog(&m_st, "[DECKLINK][src] worker woke: active=%d stop=%d started=%d retry=%d",
+            m_st.active, m_st.stopPending, m_st.started, m_st.enableRetry);
 
         // Asynchronous teardown: the graph thread must never block on
         // StopStreams (an in-flight Deliver against the renderer being stopped
@@ -654,17 +685,23 @@ void CDeckLinkOutputPin::WorkerLoop()
                 const HRESULT hrE = m_input->EnableVideoInput(m_st.mode,
                     bmdFormat10BitYUV, bmdVideoInputEnableFormatDetection);
                 if (FAILED(hrE)) {
-                    StateLog(&m_st, "[DECKLINK][src] EnableVideoInput FAILED hr=0x%08X (parking; Active wakes retry)",
+                    // Card busy / signal mid-renegotiation. Do NOT give up: arm
+                    // the 500 ms retry so the capture converges to the monitor's
+                    // command the moment the card accepts (otherwise a relaunch
+                    // landing during the flip stays black forever).
+                    m_st.enableRetry = 1;
+                    StateLog(&m_st, "[DECKLINK][src] EnableVideoInput FAILED hr=0x%08X — retrying in 500 ms",
                         (unsigned)hrE);
                     m_input->DisableVideoInput(); m_st.enabled = 0;
                 } else {
+                    m_st.enableRetry = 0;
                     StateLog(&m_st, "[DECKLINK][src] EnableVideoInput OK mode=%#x fmt=v210 det=on",
                         (unsigned)m_st.mode);
                     m_st.enabled = 1;
                 }
                 if (!m_st.enabled) {
-                    // Enable failed (no signal/device busy): park — no hot retry;
-                    // the next Active()/restart-event wake is what retries.
+                    // Park briefly: the 500 ms wait at the top of the loop wakes
+                    // us to re-attempt Enable. No active/event dependency.
                     m_st.everStarted = 1;
                     m_st.Unlock();
                     continue;
@@ -687,10 +724,55 @@ void CDeckLinkOutputPin::WorkerLoop()
     // Quit path: stop the card if the engine teardown did not already, and
     // disable the input (resets driver state for the next session).
     m_st.Lock();
+    m_st.enableRetry = 0;
     if (m_st.started)                { m_input->StopStreams();  m_st.started = 0; }
     if (m_st.enabled)                { m_input->DisableVideoInput(); m_st.enabled = 0; }
     m_st.Unlock();
     CoUninitialize();
+}
+
+// ---------------------------------------------------------------------------
+// Bounded forwarder queue (Phase-2b). The SDK callback never delivers — it
+// enqueues; ForwardLoop delivers on its own thread. Bounded to 3 in-flight
+// samples: if the renderer stalls, the queue fills and the callback drops the
+// NEWEST frame, so the card is never the one blocking.
+// ---------------------------------------------------------------------------
+bool CDeckLinkOutputPin::EnqueueSample(IMediaSample* s)
+{
+    m_st.Lock();
+    const int next = (m_qTail + 1) % kQDepth;
+    if (next == m_qHead) {                 // full → drop the newest (bounded)
+        m_st.droppedQueue++;
+        StateLog(&m_st, "[DECKLINK][src] forwarder queue FULL — dropped newest (#%llu)", m_st.droppedQueue);
+        m_st.Unlock();
+        return false;
+    }
+    m_q[m_qTail] = s;
+    m_qTail = next;
+    SetEvent(m_dataEvent);
+    m_st.Unlock();
+    return true;
+}
+
+void CDeckLinkOutputPin::ForwardLoop()
+{
+    for (;;) {
+        WaitForSingleObject(m_dataEvent, INFINITE);
+        IMediaSample* s = nullptr;
+        m_st.Lock();
+        const bool quit = (m_st.quit != 0);
+        if (m_qHead != m_qTail) { s = m_q[m_qHead]; m_qHead = (m_qHead + 1) % kQDepth; }
+        const bool active = (m_st.active != 0);
+        const bool empty = (m_qHead == m_qTail);
+        if (!empty) SetEvent(m_dataEvent);      // more work queued — keep the wake hot
+        else if (quit) { m_st.Unlock(); break; }
+        m_st.Unlock();
+        if (s) {
+            if (active) Deliver(s);             // may block on the renderer — never the card
+            s->Release();
+        }
+    }
+    StateLog(&m_st, "[DECKLINK][src] forwarder exited");
 }
 
 // ---------------------------------------------------------------------------
@@ -865,8 +947,8 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
             StateLog(m_st, "[DECKLINK][src] FIRST FRAME DELIVERED (rtStart=%lld us)",
                 (long long)refTime);
         m_st->Unlock();
-        hr = m_pin->Deliver(pSample);
-        pSample->Release();
+        // Hand off to the forwarder — the SDK thread never blocks on Deliver.
+        if (!m_pin->EnqueueSample(pSample)) pSample->Release();
     }
     return S_OK;
 }

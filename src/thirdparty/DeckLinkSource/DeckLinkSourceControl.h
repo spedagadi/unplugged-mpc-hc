@@ -21,6 +21,7 @@ struct DeckLinkSourceStats {
     unsigned long long framesArrived = 0;    // SDK frames seen
     unsigned long long framesDelivered = 0;  // frames pushed to the renderer
     unsigned long long framesSkipped = 0;    // not delivered (inactive or gate)
+    unsigned long long droppedQueue = 0;     // forwarder queue full → dropped the newest
     unsigned long long gateDropped = 0;      // skipped: dims != connected media type
     unsigned long long renegotiations = 0;   // worker restarts on a real mode change
     unsigned long long formatEvents = 0;     // VideoInputFormatChanged calls

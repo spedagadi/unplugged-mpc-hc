@@ -275,6 +275,17 @@ public:
     // False when no direct capture session is attached (e.g. LAV fallback).
     bool GetDeckLinkSourceStats(DeckLinkSourceStats& out) const;
 
+    // Live telemetry cache (LIVE panel). A dedicated refresh worker (engine
+    // thread, ~1 s cadence) snapshots the renderer/filter stats — the UI must
+    // NEVER read the renderer itself: a read landing on the UI tick during an
+    // HDMI blip freezes the app (observed). UI uses only these cache getters.
+    void RefreshLive();
+    bool GetLiveRendererStats(RenderStats& o) const;
+    bool GetLiveMlStats(std::wstring& o) const;
+    bool GetLiveHdrSettings(HdrSettings& o) const;
+    bool GetLiveOutSettings(OutSettings& o) const;
+    bool GetLiveDeckLinkSourceStats(DeckLinkSourceStats& o) const;
+
     // Snapshot / events
     HRESULT PumpEvents();
     HRESULT GetSnapshot(Snapshot&) const;
@@ -332,6 +343,16 @@ private:
     std::recursive_mutex m_graphMtx;
     std::atomic<bool> m_restartPending { false };   // one restart at a time
     unsigned long long m_lastDlvSnapshot = 0;       // delivered counter at last restart decision
+    // Live telemetry cache + its refresh worker (UI must not touch the renderer).
+    mutable std::mutex m_liveMtx;
+    RenderStats           m_liveRender{};
+    std::wstring          m_liveMl;
+    HdrSettings           m_liveHdr{};
+    OutSettings           m_liveOut{};
+    DeckLinkSourceStats   m_liveDl{};
+    std::atomic<bool>     m_liveStop{ false };
+    std::atomic<bool>     m_liveReady{ false };   // graph exists — safe to touch the renderer
+    std::thread           m_liveThread;
     LogSink logSink_;
     void Log(const char* fmt, ...);          // routes to logSink_
     mutable Snapshot snapshot_;

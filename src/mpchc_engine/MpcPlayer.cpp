@@ -137,10 +137,23 @@ void MpcPlayer::Log(const char* fmt, ...)
     logSink_(buf);
 }
 
-MpcPlayer::MpcPlayer() = default;
+MpcPlayer::MpcPlayer()
+{
+    // Live-telemetry refresh worker: snapshots renderer/filter stats off the
+    // UI thread (~1 s cadence). The UI reads only the cache — it must never
+    // touch the renderer/card directly (see GetLive* docs).
+    m_liveThread = std::thread([this]() {
+        while (!m_liveStop) {
+            RefreshLive();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+    });
+}
 
 MpcPlayer::~MpcPlayer()
 {
+    m_liveStop = true;
+    if (m_liveThread.joinable()) m_liveThread.join();
     if (mediaControl_) mediaControl_->Stop();
     if (renderer_) {
         if (CComQIPtr<IVideoWindow> pVW = renderer_) {
@@ -175,6 +188,7 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     // filter-driven restart worker) goes through this lock.
     std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
 
+    m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
     if (source.empty()) return E_INVALIDARG;
 
     if (mediaControl_) mediaControl_->Stop();
@@ -210,6 +224,7 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     snapshot_.state = State::Paused;
     UpdateSnapshot();
     Notify("opened");
+    m_liveReady = true;   // graph + renderer fully wired — live cache may touch them now
     return S_OK;
 }
 
@@ -1350,6 +1365,68 @@ bool MpcPlayer::GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamic
     fpsNum        = si.frame_rate_num;
     fpsDen        = si.frame_rate_den;
     interlace     = si.interlace;
+    return true;
+}
+
+void MpcPlayer::RefreshLive()
+{
+    // Runs on the DEDICATED refresh thread — never the UI. NO renderer/graph
+    // access until the graph exists: the worker can race the UI's renderer_
+    // assignment at init (a CComPtr read + AddRef on a mid-create object AVs).
+    if (!m_liveReady) return;
+    // Reads may block on the renderer during a signal blip; that cost belongs
+    // here, not the UI.
+    RenderStats         r;
+    std::wstring        ml;
+    HdrSettings         hd{};
+    OutSettings         ou{};
+    DeckLinkSourceStats dl{};
+    GetRendererStats(r);
+    GetMlStats(ml);
+    GetHdrSettings(hd);
+    GetOutSettings(ou);
+    GetDeckLinkSourceStats(dl);
+    static int s_dbgn = 0;
+    if ((++s_dbgn % 5) == 0)
+        Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d", r.framesReceived, r.drawFps, r.presentLatencyMs, renderer_ != nullptr);
+    {
+        std::lock_guard<std::mutex> lk(m_liveMtx);
+        m_liveRender = r;
+        m_liveMl = std::move(ml);
+        m_liveHdr = hd;
+        m_liveOut = ou;
+        m_liveDl = dl;
+    }
+}
+
+bool MpcPlayer::GetLiveRendererStats(RenderStats& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveRender;
+    return true;
+}
+bool MpcPlayer::GetLiveMlStats(std::wstring& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveMl;
+    return true;
+}
+bool MpcPlayer::GetLiveHdrSettings(HdrSettings& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveHdr;
+    return true;
+}
+bool MpcPlayer::GetLiveOutSettings(OutSettings& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveOut;
+    return true;
+}
+bool MpcPlayer::GetLiveDeckLinkSourceStats(DeckLinkSourceStats& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveDl;
     return true;
 }
 
