@@ -84,6 +84,7 @@ struct CaptureState {
     LONG64 rtBaseUs = 0;      // hwRef anchor → graph-relative sample times
     HANDLE restartEvent = nullptr;
     HANDLE firstDataEvent = nullptr;   // auto-reset: first format/frame detected
+    LONG   metaProbe = 0;              // one-shot: dump SDK signal/metadata on frame 1
     void* logCtx = nullptr;            // engine log sink (SetLogSink); OutputDebugStringA fallback
     DeckLinkSourceLogFn logFn = nullptr;
     void* restartCtx = nullptr;            // engine restart notification (fires on the worker)
@@ -315,7 +316,7 @@ static void FillP010MediaType(CMediaType* pmt, const CaptureState& s)
                             : DXVA2_VideoTransferMatrix_BT709;
     ef.VideoPrimaries = (s.colorspace == 3) ? DXVA2_VideoPrimaries_BT2020
                        : DXVA2_VideoPrimaries_BT709;
-    ef.VideoTransferFunction = (s.eotf == 2) ? DXVA2_VideoTransFunc_2084
+    ef.VideoTransferFunction = (s.eotf == 2 || s.eotf == 4) ? DXVA2_VideoTransFunc_2084   // 4 = DV, PQ-coded
                              : (s.eotf == 3) ? DXVA2_VideoTransFunc_HLG
                              : DXVA2_VideoTransFunc_709;
     vih->dwControlFlags = ef.value | AMCONTROL_USED | AMCONTROL_COLORINFO_PRESENT;
@@ -663,6 +664,14 @@ void CDeckLinkOutputPin::WorkerLoop()
                     if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputDynamicRange, &v))) {
                         if (v & bmdDynamicRangeHDRStaticHLG)      m_st.eotf = 3;
                         else if (v & bmdDynamicRangeHDRStaticPQ)  m_st.eotf = 2;
+                        // DV fingerprint (probed 2026-09-14, Dune DV disc):
+                        // player sends BT.2020 but REPLACES the HDR10 static
+                        // InfoFrame with Dolby's own → dsdr reads SDR. The
+                        // pixels are PQ-coded DV (FEL-fused). eotf=4 (DV) keeps
+                        // the media type PQ (2084) so a rebuild landing on this
+                        // state still builds HDR, while the panel can still
+                        // say "Dolby Vision" instead of collapsing to HDR10.
+                        else if (m_st.colorspace == 3) m_st.eotf = 4;
                     }
                     StateLog(&m_st, "[DECKLINK][src] format change: status cs=%d eotf=%d — engine rebuild requested",
                         m_st.colorspace, m_st.eotf);
@@ -910,6 +919,55 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
         ? (refTime - m_st->rtBaseUs) : 0;
     m_st->Unlock();
     if (rbFn) rbFn(rbCtx);      // gate-throttled rebuild request (non-blocking)
+
+    // HDR-signal probe — ONE frame per session: dump everything the SDK will
+    // tell us about this input, raw. Bench question: does the card parse HDMI
+    // InfoFrame colorimetry + ST 2086 (Dune DV disc) or not? Nothing user-visible;
+    // this block is deleted once the answers are in.
+    if (m_st->metaProbe == 0) {
+        m_st->metaProbe = 1;
+        CComPtr<IDeckLinkStatus> st;
+        if (m_input && SUCCEEDED(m_input->QueryInterface(IID_IDeckLinkStatus, (void**)&st))) {
+            LONGLONG v = 0;
+            if (SUCCEEDED(st->GetInt(bmdDeckLinkStatusDetectedVideoInputColorspace, &v)))
+                StateLog(m_st, "[PROBE] dscl (colorspace) = 0x%llX", (unsigned long long)v);
+            if (SUCCEEDED(st->GetInt(bmdDeckLinkStatusDetectedVideoInputDynamicRange, &v)))
+                StateLog(m_st, "[PROBE] dsdr (dyn. range) = 0x%llX", (unsigned long long)v);
+            if (SUCCEEDED(st->GetInt(bmdDeckLinkStatusCurrentVideoInputPixelFormat, &v)))
+                StateLog(m_st, "[PROBE] cvip (pix fmt)    = 0x%llX  (%u-bit YUV/RGB payload)",
+                    (unsigned long long)v, (v == 0x76323130ull) ? 10 : (v == 0x52313242ull || v == 0x5231324cull) ? 12 : (v == 0x72323130ull) ? 10 : (v == 0x32767579ull) ? 8 : 0);
+        }
+        CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
+        if (videoFrame && SUCCEEDED(videoFrame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta))) {
+            LONGLONG v = 0;
+            StateLog(m_st, "[PROBE] IDeckLinkVideoFrameMetadataExtensions available — ST 2086:");
+            const struct { BMDDeckLinkFrameMetadataID id; const char* name; } ids[] = {
+                { bmdDeckLinkFrameMetadataColorspace,                         "colorspace   " },
+                { bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc,      "EOTF         " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedX,            "primRx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedY,            "primRy       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenX,          "primGx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenY,          "primGy       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueX,           "primBx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueY,           "primBy       " },
+                { bmdDeckLinkFrameMetadataHDRWhitePointX,                     "whiteptX     " },
+                { bmdDeckLinkFrameMetadataHDRWhitePointY,                     "whiteptY     " },
+                { bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance,    "maxMLL(+1)   " },
+                { bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance,    "minMLL(x.0001)" },
+                { bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel,        "MaxCLL       " },
+                { bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel,   "MaxFALL      " },
+            };
+            for (const auto& e : ids) {
+                if (SUCCEEDED(meta->GetInt(e.id, &v)))
+                    StateLog(m_st, "[PROBE]   %s = %lld", e.name, (long long)v);
+                else
+                    StateLog(m_st, "[PROBE]   %s = <unsupported>", e.name);
+            }
+        } else {
+            StateLog(m_st, "[PROBE] IDeckLinkVideoFrameMetadataExtensions UNAVAILABLE on frame");
+        }
+    }
+
     if (!deliver) return S_OK;
 
     IMediaSample* pSample = nullptr;

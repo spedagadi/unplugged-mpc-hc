@@ -2150,7 +2150,7 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     const wchar_t* csN = ds.colorspace == 3 ? L"BT.2020"
                         : ds.colorspace == 1 ? L"BT.601"
                         : ds.colorspace == 2 ? L"BT.709" : L"—";
-                    const wchar_t* drN = ds.eotf == 2 ? L"HDR PQ" : ds.eotf == 3 ? L"HDR HLG"
+                    const wchar_t* drN = ds.eotf == 4 ? L"DolbyVision" : ds.eotf == 2 ? L"HDR PQ" : ds.eotf == 3 ? L"HDR HLG"
                         : (ds.colorspace == 3) ? L"DolbyVision" : L"SDR";
                     swprintf_s(fmt, L"%s · %s", csN, drN);
                     if (ds.width > 0 && ds.height > 0) {
@@ -2160,7 +2160,8 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     g_vsColorspace = ds.colorspace == 3 ? L"BT.2020"
                         : ds.colorspace == 1 ? L"BT.601"
                         : ds.colorspace == 2 ? L"BT.709" : L"auto";
-                    if (ds.eotf == 2)      { g_vsTransfer = L"PQ (BT.2084)"; g_vsHdr = L"HDR10 (PQ)"; }
+                    if (ds.eotf == 4)      { g_vsTransfer = L"PQ (BT.2084)"; g_vsHdr = L"DolbyVision"; }
+                    else if (ds.eotf == 2) { g_vsTransfer = L"PQ (BT.2084)"; g_vsHdr = L"HDR10 (PQ)"; }
                     else if (ds.eotf == 3) { g_vsTransfer = L"HLG";           g_vsHdr = L"HDR HLG"; }
                     else if (ds.colorspace == 3) { g_vsHdr = L"DolbyVision"; }
                     // HDR (PQ/HLG) is always BT.2020 in practice.

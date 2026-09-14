@@ -30,7 +30,7 @@ struct DeckLinkSourceStats {
     int  fpsNum = 50000;                     // rate = fpsNum/fpsDen (e.g. 24000/1001)
     int  fpsDen = 1000;
     int  colorspace = 0;                     // 0=unknown 1=BT.601 2=BT.709 3=BT.2020
-    int  eotf = 0;                           // 0=gamma 2=PQ 3=HLG
+    int  eotf = 0;                           // 0=gamma 2=PQ 3=HLG 4=DV(PQ-coded, no static HDR flag)
     int  streaming = 0;                      // card is streaming
     unsigned long long lastRefUs = 0;        // hwRef of last captured frame (wall-aligned µs)
 };

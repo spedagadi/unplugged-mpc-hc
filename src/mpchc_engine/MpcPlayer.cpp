@@ -1463,7 +1463,7 @@ void MpcPlayer::UpdateIcsFromFilter()
     DeckLinkSourceStats ds;
     if (!GetDeckLinkSourceStats(ds)) return;
     int ics = 0;
-    if      (ds.colorspace == 3 && ds.eotf == 2) ics = ICS_BT2020_PQ;
+    if      (ds.colorspace == 3 && (ds.eotf == 2 || ds.eotf == 4)) ics = ICS_BT2020_PQ;  // 4 = DV, PQ-coded
     else if (ds.colorspace == 3 && ds.eotf == 3) ics = ICS_BT2020_HLG;
     else if (ds.colorspace == 3)                  ics = ICS_BT2020_SDR;
     else if (ds.colorspace == 2)                  ics = ICS_BT709;
