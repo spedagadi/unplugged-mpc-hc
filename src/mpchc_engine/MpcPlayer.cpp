@@ -154,7 +154,7 @@ MpcPlayer::~MpcPlayer()
 {
     m_liveStop = true;
     if (m_liveThread.joinable()) m_liveThread.join();
-    if (mediaControl_) mediaControl_->Stop();
+    Shutdown();   // ordered card+graph teardown; idempotent
     if (renderer_) {
         if (CComQIPtr<IVideoWindow> pVW = renderer_) {
             pVW->put_Visible(OAFALSE);
@@ -190,6 +190,19 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
 
     m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
     if (source.empty()) return E_INVALIDARG;
+
+    // DeckLink ordered teardown (DESIGN.md): stop the feeder at the source,
+    // disconnect the renderer, THEN join the source's threads. Never drop a
+    // graph while the source's delivery thread can be inside the renderer —
+    // that join-into-live-receive is the movie→menu hang. Open runs on the
+    // ops-queue executor for the capture path (never the UI thread).
+    if (decklinkControl_) {
+        decklinkControl_->StopDelivery();     // SDK stops invoking — no new frames
+        DisconnectDecklinkPins();             // in-flight Deliver now returns fast
+        decklinkControl_->StopCapture();      // join worker+forwarder (safe now) + release SDK
+        // graph_.Release() below drops the filter object; its destructor's
+        // StopCaptureSession finds non-joinable threads — no wait.
+    }
 
     if (mediaControl_) mediaControl_->Stop();
     if (renderer_) {
@@ -265,6 +278,41 @@ HRESULT MpcPlayer::Stop()
         Notify("state");
     }
     return hr;
+}
+
+void MpcPlayer::Shutdown()
+{
+    Log("[DECKLINK][engine] Shutdown (ordered teardown)");
+    // Arm the executor stop FIRST so no new rebuild can start while we tear down.
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        m_gopStop = true;
+        m_gopQueued = false;
+    }
+    m_gopCv.notify_all();
+
+    {
+        // DESIGN.md order: STOP the feeder at the SDK, disconnect the renderer,
+        // join the source's threads — only THEN stop the graph. mediaControl_>
+        // Stop() waits on the renderer whose present thread is fed by our
+        // forwarder; without the ordered stop it never returns (observed: exit
+        // path zombie — window gone, capture still delivering).
+        std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+        if (decklinkControl_) {
+            decklinkControl_->StopDelivery();
+            DisconnectDecklinkPins();
+            decklinkControl_->StopCapture();
+        }
+        if (mediaControl_) mediaControl_->Stop();
+    }
+
+    if (m_gopThread.joinable()) m_gopThread.join();
+    if (decklinkMonitor_) {
+        decklinkMonitor_->Stop();
+        decklinkMonitor_.reset();
+    }
+    decklinkDevice_.clear();
+    pendingDecklinkUrl_.clear();
 }
 
 HRESULT MpcPlayer::Seek(LONGLONG position)
@@ -1320,12 +1368,26 @@ HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
         if (!req.url.empty()) {
             pendingDecklinkUrl_.assign(req.url.begin(), req.url.end());
             decklinkSettings_.inputColorSpace = req.ics;
+            // SELF-HEALING (WPF shell): the engine owns the whole transition.
+            // Posting the rebuild here (to OUR ops-queue executor) means the UI
+            // never has to react to signal changes — it only polls stats. The
+            // executor runs the ordered teardown + relaunch internally.
+            PostDecklinkRebuild();
             Notify("decklink:signal");
             return;
         }
         decklinkSettings_.signalLocked = false;
         Notify("decklink:lost");
     });
+
+    // The ops-queue executor — the ONLY thread that may mutate the capture
+    // card + graph (DESIGN.md). Started with the monitor, joined at stop.
+    if (!m_gopThread.joinable()) {
+        m_gopStop = false;
+        m_gopQueued = false;
+        m_gopThread = std::thread([this]() { DecklinkOpLoop(); });
+        Log("[DECKLINK][engine] ops-queue executor started");
+    }
 
     const std::string narrow(deviceName.begin(), deviceName.end());
     if (!decklinkMonitor_->Start(narrow)) {
@@ -1343,6 +1405,13 @@ HRESULT MpcPlayer::StopDecklinkCapture()
         decklinkMonitor_->Stop();
         decklinkMonitor_.reset();
     }
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        m_gopStop = true;
+        m_gopQueued = false;
+    }
+    m_gopCv.notify_all();
+    if (m_gopThread.joinable()) m_gopThread.join();
     decklinkDevice_.clear();
     pendingDecklinkUrl_.clear();
     return S_OK;
@@ -1430,6 +1499,49 @@ bool MpcPlayer::GetLiveDeckLinkSourceStats(DeckLinkSourceStats& o) const
     return true;
 }
 
+std::string MpcPlayer::GetUiStatusJson() const
+{
+    // Polling contract for the (PyQt) client UI. Everything read here goes
+    // through the engine's thread-safe/live cache — never the graph directly.
+    Snapshot sn{};          GetSnapshot(sn);
+    RenderStats rs{};       GetLiveRendererStats(rs);
+    DeckLinkSourceStats dl; GetLiveDeckLinkSourceStats(dl);
+    const auto& vs = GetVideoStreamInfo();
+    const auto& s = GetDecklinkSettings();
+    HdrSettings hdr{};      GetLiveHdrSettings(hdr);
+    int sigLocked = 0, sigCs = 0, sigDr = 0, sigDepth = 0, sigChroma = 0, sigW = 0, sigH = 0,
+        sigNum = 0, sigDen = 0, sigIl = 0;
+    GetDecklinkSignalInfo(sigLocked, sigCs, sigDr, sigDepth, sigChroma, sigW, sigH, sigNum, sigDen, sigIl);
+
+    const char* st = sn.state == State::Playing ? "playing"
+                   : sn.state == State::Paused   ? "paused"
+                   : sn.state == State::Stopped  ? "stopped"
+                   : sn.state == State::Error    ? "error" : "idle";
+
+    char buf[2048];
+    snprintf(buf, sizeof(buf),
+        "{\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
+        "\"render\":{\"recv\":%u,\"draw\":%.2f,\"lagMs\":%.1f,\"drop\":%u,\"skip\":%u,\"fail\":%u},"
+        "\"dl\":{\"stream\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"eotf\":%d,"
+        "\"arrived\":%llu,\"delv\":%llu,\"skip\":%llu,\"gate\":%llu,\"qdrop\":%llu,\"reneg\":%llu,\"refUs\":%llu},"
+        "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"il\":%d},"
+        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d},"
+        "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}}",
+        st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
+        rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
+        dl.streaming, dl.width, dl.height, dl.fpsNum, dl.fpsDen, dl.colorspace, dl.eotf,
+        (unsigned long long)dl.framesArrived, (unsigned long long)dl.framesDelivered,
+        (unsigned long long)dl.framesSkipped, (unsigned long long)dl.gateDropped,
+        (unsigned long long)dl.droppedQueue, (unsigned long long)dl.renegotiations,
+        (unsigned long long)dl.lastRefUs,
+        sigLocked, sigW, sigH, sigNum, sigDen, sigCs, sigDr, sigDepth, sigIl,
+        vs.valid ? 1 : 0, vs.width, vs.height,
+        vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
+        vs.subtypeName.c_str(), vs.hdr ? 1 : 0,
+        s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits);
+    return std::string(buf);
+}
+
 bool MpcPlayer::GetDeckLinkSourceStats(DeckLinkSourceStats& out) const
 {
     out = {};
@@ -1480,6 +1592,23 @@ void __cdecl MpcPlayer::DeckLinkRestartBridge(void* ctx)
     static_cast<MpcPlayer*>(ctx)->RequestDecklinkRestart();
 }
 
+// THE ops-queue entry point. Called from the filter's worker (restart
+// callback / gate-throttled self-heal) and from the shell (monitor command).
+// Non-blocking, coalescing — the EXECUTOR thread runs the rebuild, never this
+// caller.
+void MpcPlayer::PostDecklinkRebuild()
+{
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        // The op carries the target URL (monitor-advised). decklinkUrl_ is NOT
+        // usable here on the first launch — it is only set inside BuildGraph.
+        if (!pendingDecklinkUrl_.empty()) m_gopUrl = pendingDecklinkUrl_;
+        m_gopQueued = true;               // coalesce: a burst → one rebuild
+    }
+    Log("[DECKLINK][engine] rebuild POSTED to ops queue (executor)");
+    m_gopCv.notify_one();
+}
+
 void MpcPlayer::RequestDecklinkRestart()
 {
     // Skip a rebuild only when the graph is ACTUALLY SHOWING video (delivered
@@ -1493,26 +1622,64 @@ void MpcPlayer::RequestDecklinkRestart()
         Log("[DECKLINK][engine] restart requested while video is flowing — skipped");
         return;
     }
-    if (m_restartPending.exchange(true)) {
-        Log("[DECKLINK][engine] restart requested while one is pending — skipped");
-        return;
-    }
-    Log("[DECKLINK][engine] rebuild requested (gate-drop/format change) — graceful rebuild on worker");
-    std::thread([this]() {
-        UpdateIcsFromFilter();
+    PostDecklinkRebuild();
+}
+
+// The single executor: every rebuild/launch for the capture path runs here,
+// strictly ordered (DESIGN.md). The UI/monitor/filter only POST ops.
+void MpcPlayer::DecklinkOpLoop()
+{
+    for (;;) {
+        bool run = false;
         {
-            std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
-            if (!decklinkUrl_.empty()) {
-                const std::wstring url = decklinkUrl_;
-                const HRESULT hrO = Open(url);
-                const HRESULT hrP = Play();
-                Log("[DECKLINK][engine] rebuild done: Open hr=0x%08X Play hr=0x%08X",
-                    (unsigned)hrO, (unsigned)hrP);
-            }
+            std::unique_lock<std::mutex> lk(m_gopMtx);
+            m_gopCv.wait(lk, [this] { return m_gopStop || m_gopQueued; });
+            if (m_gopStop) break;
+            m_gopQueued = false;
+            run = true;
         }
-        m_restartPending = false;
-        Notify("opened");
-    }).detach();
+        if (run) RunDecklinkRebuild();
+    }
+}
+
+void MpcPlayer::RunDecklinkRebuild()
+{
+    std::wstring url;
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        url = m_gopUrl;
+        m_gopUrl.clear();
+    }
+    if (url.empty()) url = decklinkUrl_;
+    Log("[DECKLINK][engine] executor: rebuild (ordered teardown + relaunch) url='%s'",
+        url.empty() ? "<empty>" : "decklink://…");
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+    UpdateIcsFromFilter();
+    if (!url.empty()) {
+        // Open() embodies the ordered teardown (StopDelivery → disconnect →
+        // StopCapture) then builds the fresh graph on this thread.
+        const HRESULT hrO = Open(url);
+        const HRESULT hrP = Play();
+        Log("[DECKLINK][engine] executor rebuild done: Open hr=0x%08X Play hr=0x%08X",
+            (unsigned)hrO, (unsigned)hrP);
+    }
+    Notify("opened");
+}
+
+void MpcPlayer::DisconnectDecklinkPins()
+{
+    // Quiesce the renderer path BEFORE joining the source's threads: an
+    // in-flight Deliver that would otherwise block inside MPCVR now returns
+    // immediately. Called only from the executor under the graph lock, with
+    // decklinkControl_ still attached to the OLD graph.
+    if (!graph_) return;
+    if (decklinkControl_) {
+        CComQIPtr<IBaseFilter> sf = decklinkControl_;   // the decklink filter
+        CComPtr<IPin> srcOut = FindPin(sf, PINDIR_OUTPUT);
+        if (srcOut) graph_->Disconnect(srcOut);         // not-connected → HR ignored
+    }
+    CComPtr<IPin> rndIn = FindPin(renderer_, PINDIR_INPUT);
+    if (rndIn) graph_->Disconnect(rndIn);
 }
 
 HRESULT MpcPlayer::SetDecklinkInputColor(int ics)

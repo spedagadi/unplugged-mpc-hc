@@ -1,0 +1,537 @@
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] LoadLibraryA failed err=126
+[DECKLINK][monitor] Start FAILED — decklink_monitor.dll not loaded
+[DECKLINK][engine] monitor Start FAILED — resetting monitor
+[DECKLINK][monitor] Stop complete
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] loaded dll=00007FF936F80000 open=00007FF936F8165E signal=00007FF936F81EFE buildUrl=00007FF936F81E6C close=00007FF936F82137 enum=00007FF936F81C90
+[DECKLINK][monitor] Start OK — poll thread launched
+[DECKLINK][engine] SetDecklinkCapture OK
+[DECKLINK][monitor] vf_dl_open rc=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] CHANGE detected (locked=1 cs=2 dr=1) — arming 1 s stability gate
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] state confirmed (held >= 1000 ms) → command
+[DECKLINK][monitor] vf_dl_build_url n=142 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] monitor advised: signalLost=0 ics=4 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][monitor] Stop joining poll thread
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] loop exiting
+[DECKLINK][monitor] Stop complete
+[DECKLINK][monitor] Stop complete
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] loaded dll=00007FF93A9A0000 open=00007FF93A9A165E signal=00007FF93A9A1EFE buildUrl=00007FF93A9A1E6C close=00007FF93A9A2137 enum=00007FF93A9A1C90
+[DECKLINK][monitor] Start OK — poll thread launched
+[DECKLINK][engine] SetDecklinkCapture OK
+[DECKLINK][monitor] vf_dl_open rc=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] CHANGE detected (locked=1 cs=2 dr=1) — arming 1 s stability gate
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] state confirmed (held >= 1000 ms) → command
+[DECKLINK][monitor] vf_dl_build_url n=142 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] monitor advised: signalLost=0 ics=4 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] loaded dll=00007FF91B4A0000 open=00007FF91B4A165E signal=00007FF91B4A1EFE buildUrl=00007FF91B4A1E6C close=00007FF91B4A2137 enum=00007FF91B4A1C90
+[DECKLINK][monitor] Start OK — poll thread launched
+[DECKLINK][engine] SetDecklinkCapture OK
+[DECKLINK][monitor] vf_dl_open rc=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] CHANGE detected (locked=1 cs=2 dr=1) — arming 1 s stability gate
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] state confirmed (held >= 1000 ms) → command
+[DECKLINK][monitor] vf_dl_build_url n=142 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] monitor advised: signalLost=0 ics=4 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] rebuild POSTED to ops queue (executor)
+[DECKLINK][engine] executor: rebuild (ordered teardown + relaunch) url='decklink://…'
+[DECKLINK][engine] BuildGraph bDeckLink=1 source='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames'
+[DECKLINK][engine] direct DeckLinkSource filter
+[DECKLINK][engine] monitor meta → SetSignalMeta cs=2 dr=1
+[DECKLINK][src] StartCaptureSession device='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][src] SetCallback hr=0x00000000
+[DECKLINK][src] waiting up to 3s for the first format event...
+[DECKLINK][src] worker entered
+[DECKLINK][src] worker woke: active=0 stop=0 started=0 retry=0
+[DECKLINK][src] EnableVideoInput OK mode=0x48703530 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x48703530)
+[DECKLINK][src] frame 1: 1920x1080 @ 50000/1000 arrived=1 skip=1 dlv=0 active=0 conn=0x0
+[DECKLINK][src] first format wait=0 -> 1920x1080 @ 50000/1000 fps
+[DECKLINK][engine] StartCapture('DeckLink Quad HDMI Recorder (1)') hr=0x00000000 (bounded wait for first format)
+[PROBE] dsdr (dyn. range) = 0x20000000
+[PROBE] cvip (pix fmt)    = 0x76323130  (10-bit YUV/RGB payload)
+[PROBE] receivedEDID GetBytes FAILED (hr=0x80004001)
+[PROBE] IDeckLinkVideoFrameMetadataExtensions available — ST 2086:
+[PROBE]   colorspace    = <unsupported>
+[PROBE]   EOTF          = <unsupported>
+[PROBE]   primRx        = <unsupported>
+[PROBE]   primRy        = <unsupported>
+[PROBE]   primGx        = <unsupported>
+[PROBE]   primGy        = <unsupported>
+[PROBE]   primBx        = <unsupported>
+[PROBE]   primBy        = <unsupported>
+[PROBE]   whiteptX      = <unsupported>
+[PROBE]   whiteptY      = <unsupported>
+[PROBE]   maxMLL(+1)    = <unsupported>
+[PROBE]   minMLL(x.0001) = <unsupported>
+[PROBE]   MaxCLL        = <unsupported>
+[PROBE]   MaxFALL       = <unsupported>
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[12bit] EnableVideoInput(12BitRGB mode=0x346b3233) hr=0x80070005 — refused (10-bit front-end)
+[DECKLINK][src] mode change → restart (reneg #1)
+[DECKLINK][src] format change: status cs=3 eotf=2 — engine rebuild requested
+[DECKLINK][src] EnableVideoInput OK mode=0x346b3233 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x346b3233)
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 26: 3840x2160 @ 24000/1001 arrived=26 skip=26 dlv=0 active=0 conn=0x0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] pushing iInputColorSpace=4 to MPCVR
+[DECKLINK][engine] direct connect v210 -> MPCVR input...
+[DECKLINK][src] SetMediaType: 3840x2160 (state 3840x2160)
+[DECKLINK][src] DecideBufferSize: req 3840x2160->24883200 B  SetProperties hr=0x00000000 actual 24883200 B x3 (conn=3840x2160 state=3840x2160)
+[DECKLINK][engine] direct renderer connect hr=0x00000000
+[ENGINE] source media type: 3840x2160 itl=0 avg=417083 fmt=4 tf=15 hdr=1
+[DECKLINK][src] worker woke: active=1 stop=0 started=1 retry=0
+[DECKLINK][engine] executor rebuild done: Open hr=0x00000000 Play hr=0x00000001
+[DECKLINK][src] convert v210->P010: dst=0000022F82DF6000 src=0000022F18C22000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] FIRST FRAME DELIVERED (rtStart=5649741160 us)
+[DECKLINK][src] convert v210->P010: dst=0000022F82DF6000 src=0000022F1B2F2000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] frame 51: 3840x2160 @ 24000/1001 arrived=51 skip=48 dlv=2 active=1 conn=3840x2160
+[DECKLINK][src] convert v210->P010: dst=0000022F82DF6000 src=0000022F1D9C2000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 76: 3840x2160 @ 24000/1001 arrived=76 skip=48 dlv=27 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 101: 3840x2160 @ 24000/1001 arrived=101 skip=48 dlv=52 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 126: 3840x2160 @ 24000/1001 arrived=126 skip=48 dlv=77 active=1 conn=3840x2160
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] loaded dll=00007FF91FBF0000 open=00007FF91FBF165E signal=00007FF91FBF1EFE buildUrl=00007FF91FBF1E6C close=00007FF91FBF2137 enum=00007FF91FBF1C90
+[DECKLINK][monitor] Start OK — poll thread launched
+[DECKLINK][engine] SetDecklinkCapture OK
+[DECKLINK][monitor] vf_dl_open rc=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] CHANGE detected (locked=1 cs=2 dr=1) — arming 1 s stability gate
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] state confirmed (held >= 1000 ms) → command
+[DECKLINK][monitor] vf_dl_build_url n=142 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] monitor advised: signalLost=0 ics=4 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] rebuild POSTED to ops queue (executor)
+[DECKLINK][engine] executor: rebuild (ordered teardown + relaunch) url='decklink://…'
+[DECKLINK][engine] BuildGraph bDeckLink=1 source='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames'
+[DECKLINK][engine] direct DeckLinkSource filter
+[DECKLINK][engine] monitor meta → SetSignalMeta cs=2 dr=1
+[DECKLINK][src] StartCaptureSession device='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][src] SetCallback hr=0x00000000
+[DECKLINK][src] waiting up to 3s for the first format event...
+[DECKLINK][src] worker entered
+[DECKLINK][src] worker woke: active=0 stop=0 started=0 retry=0
+[DECKLINK][src] EnableVideoInput OK mode=0x48703530 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x48703530)
+[DECKLINK][src] frame 1: 1920x1080 @ 50000/1000 arrived=1 skip=1 dlv=0 active=0 conn=0x0
+[PROBE] dscl (colorspace) = 0x32303230
+920x1080 @ 50000/1000 fps
+[PROBE] dsdr (dyn. range) = 0x20000000
+[DECKLINK][engine] StartCapture('DeckLink Quad HDMI Recorder (1)') hr=0x00000000 (bounded wait for first format)
+[PROBE] cvip (pix fmt)    = 0x76323130  (10-bit YUV/RGB payload)
+[PROBE] receivedEDID GetBytes FAILED (hr=0x80004001)
+[PROBE] IDeckLinkVideoFrameMetadataExtensions available — ST 2086:
+[PROBE]   colorspace    = <unsupported>
+[PROBE]   EOTF          = <unsupported>
+[PROBE]   primRx        = <unsupported>
+[PROBE]   primRy        = <unsupported>
+[PROBE]   primGx        = <unsupported>
+[PROBE]   primGy        = <unsupported>
+[PROBE]   primBx        = <unsupported>
+[PROBE]   primBy        = <unsupported>
+[PROBE]   whiteptX      = <unsupported>
+[PROBE]   whiteptY      = <unsupported>
+[PROBE]   maxMLL(+1)    = <unsupported>
+[PROBE]   minMLL(x.0001) = <unsupported>
+[PROBE]   MaxCLL        = <unsupported>
+[PROBE]   MaxFALL       = <unsupported>
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[12bit] EnableVideoInput(12BitRGB mode=0x346b3233) hr=0x80070005 — refused (10-bit front-end)
+[DECKLINK][src] mode change → restart (reneg #1)
+[DECKLINK][src] format change: status cs=3 eotf=2 — engine rebuild requested
+[DECKLINK][src] EnableVideoInput OK mode=0x346b3233 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x346b3233)
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] pushing iInputColorSpace=4 to MPCVR
+[DECKLINK][engine] direct connect v210 -> MPCVR input...
+[DECKLINK][src] SetMediaType: 3840x2160 (state 3840x2160)
+[DECKLINK][src] DecideBufferSize: req 3840x2160->24883200 B  SetProperties hr=0x00000000 actual 24883200 B x3 (conn=3840x2160 state=3840x2160)
+[DECKLINK][engine] direct renderer connect hr=0x00000000
+[ENGINE] source media type: 3840x2160 itl=0 avg=417083 fmt=4 tf=15 hdr=1
+[DECKLINK][src] worker woke: active=1 stop=0 started=1 retry=0
+[DECKLINK][engine] executor rebuild done: Open hr=0x00000000 Play hr=0x00000001
+[DECKLINK][src] convert v210->P010: dst=000001F7827B6000 src=000001F76E172000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] FIRST FRAME DELIVERED (rtStart=5911912960 us)
+[DECKLINK][src] convert v210->P010: dst=000001F7827B6000 src=000001F770842000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] frame 26: 3840x2160 @ 24000/1001 arrived=26 skip=23 dlv=2 active=1 conn=3840x2160
+[DECKLINK][src] convert v210->P010: dst=000001F7827B6000 src=000001F772F12000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 51: 3840x2160 @ 24000/1001 arrived=51 skip=23 dlv=27 active=1 conn=3840x2160
+[live] recv=33 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 76: 3840x2160 @ 24000/1001 arrived=76 skip=23 dlv=52 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 101: 3840x2160 @ 24000/1001 arrived=101 skip=23 dlv=77 active=1 conn=3840x2160
+[live] recv=78 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 126: 3840x2160 @ 24000/1001 arrived=126 skip=23 dlv=102 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=117 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 151: 3840x2160 @ 24000/1001 arrived=151 skip=23 dlv=127 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 176: 3840x2160 @ 24000/1001 arrived=176 skip=23 dlv=152 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=155 draw=23.9 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 201: 3840x2160 @ 24000/1001 arrived=201 skip=23 dlv=177 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=201 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 226: 3840x2160 @ 24000/1001 arrived=226 skip=23 dlv=202 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 251: 3840x2160 @ 24000/1001 arrived=251 skip=23 dlv=227 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=242 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 276: 3840x2160 @ 24000/1001 arrived=276 skip=23 dlv=252 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 301: 3840x2160 @ 24000/1001 arrived=301 skip=23 dlv=277 active=1 conn=3840x2160
+[live] recv=280 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 326: 3840x2160 @ 24000/1001 arrived=326 skip=23 dlv=302 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=320 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 351: 3840x2160 @ 24000/1001 arrived=351 skip=23 dlv=327 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 376: 3840x2160 @ 24000/1001 arrived=376 skip=23 dlv=352 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=368 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 401: 3840x2160 @ 24000/1001 arrived=401 skip=23 dlv=377 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 426: 3840x2160 @ 24000/1001 arrived=426 skip=23 dlv=402 active=1 conn=3840x2160
+[live] recv=406 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][src] StopDelivery (streaming=1 in=1)
+[DECKLINK][src] worker quit
+[DECKLINK][src] forwarder exited
+[DECKLINK][src] StopDelivery (streaming=0 in=1)
+[DECKLINK][monitor] Stop joining poll thread
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] loop exiting
+[DECKLINK][monitor] Stop complete
+[DECKLINK][monitor] Stop complete
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][src] StopDelivery (streaming=0 in=0)
+[DECKLINK][src] StopDelivery (streaming=0 in=0)
+[DECKLINK][engine] SetDecklinkCapture begin deviceName='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][engine] ops-queue executor started
+[DECKLINK][monitor] Start device='DeckLink Quad HDMI Recorder (1)' pollMs=500
+[DECKLINK][monitor] EnsureLoaded begin (dllLoaded=0)
+[DECKLINK][monitor] loaded dll=00007FF937260000 open=00007FF93726165E signal=00007FF937261EFE buildUrl=00007FF937261E6C close=00007FF937262137 enum=00007FF937261C90
+[DECKLINK][monitor] Start OK — poll thread launched
+[DECKLINK][engine] SetDecklinkCapture OK
+[DECKLINK][monitor] vf_dl_open rc=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] CHANGE detected (locked=1 cs=2 dr=1) — arming 1 s stability gate
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] state confirmed (held >= 1000 ms) → command
+[DECKLINK][monitor] vf_dl_build_url n=142 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] monitor advised: signalLost=0 ics=4 url='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames=4'
+[DECKLINK][engine] rebuild POSTED to ops queue (executor)
+[DECKLINK][engine] executor: rebuild (ordered teardown + relaunch) url='decklink://…'
+[DECKLINK][engine] BuildGraph bDeckLink=1 source='decklink://DeckLink Quad HDMI Recorder (1)?video_input=hdmi&signal_loss_action=repeat&no_audio=1&raw_format=auto&queue_size=128M&live_frames'
+[DECKLINK][engine] direct DeckLinkSource filter
+[DECKLINK][engine] monitor meta → SetSignalMeta cs=2 dr=1
+[DECKLINK][src] StartCaptureSession device='DeckLink Quad HDMI Recorder (1)'
+[DECKLINK][src] SetCallback hr=0x00000000
+[DECKLINK][src] waiting up to 3s for the first format event...
+[DECKLINK][src] worker entered
+[DECKLINK][src] worker woke: active=0 stop=0 started=0 retry=0
+[DECKLINK][src] EnableVideoInput OK mode=0x48703530 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x48703530)
+[DECKLINK][src] frame 1: 1920x1080 @ 50000/1000 arrived=1 skip=1 dlv=0 active=0 conn=0x0
+[PROBE] dscl (colorspace) = 0x32303230
+920x1080 @ 50000/1000 fps
+[PROBE] dsdr (dyn. range) = 0x20000000
+[DECKLINK][engine] StartCapture('DeckLink Quad HDMI Recorder (1)') hr=0x00000000 (bounded wait for first format)
+[PROBE] cvip (pix fmt)    = 0x76323130  (10-bit YUV/RGB payload)
+[PROBE] receivedEDID GetBytes FAILED (hr=0x80004001)
+[PROBE] IDeckLinkVideoFrameMetadataExtensions available — ST 2086:
+[PROBE]   colorspace    = <unsupported>
+[PROBE]   EOTF          = <unsupported>
+[PROBE]   primRx        = <unsupported>
+[PROBE]   primRy        = <unsupported>
+[PROBE]   primGx        = <unsupported>
+[PROBE]   primGy        = <unsupported>
+[PROBE]   primBx        = <unsupported>
+[PROBE]   primBy        = <unsupported>
+[PROBE]   whiteptX      = <unsupported>
+[PROBE]   whiteptY      = <unsupported>
+[PROBE]   maxMLL(+1)    = <unsupported>
+[PROBE]   minMLL(x.0001) = <unsupported>
+[PROBE]   MaxCLL        = <unsupported>
+[PROBE]   MaxFALL       = <unsupported>
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[12bit] EnableVideoInput(12BitRGB mode=0x346b3233) hr=0x80070005 — refused (10-bit front-end)
+[DECKLINK][src] mode change → restart (reneg #1)
+[DECKLINK][src] format change: status cs=3 eotf=2 — engine rebuild requested
+[DECKLINK][src] EnableVideoInput OK mode=0x346b3233 fmt=v210 det=on
+[DECKLINK][src] StartStreams hr=0x00000000 (mode=0x346b3233)
+[DECKLINK][src] VideoInputFormatChanged mode=0x346b3233 3840x2160 @ 23.976 fps (24000/1001) flags=0x9
+[DECKLINK][src] worker woke: active=0 stop=0 started=1 retry=0
+[DECKLINK][src] applied detected mode=0x346b3233 (pre-connect)
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] pushing iInputColorSpace=4 to MPCVR
+[DECKLINK][engine] direct connect v210 -> MPCVR input...
+[DECKLINK][src] SetMediaType: 3840x2160 (state 3840x2160)
+[DECKLINK][src] DecideBufferSize: req 3840x2160->24883200 B  SetProperties hr=0x00000000 actual 24883200 B x3 (conn=3840x2160 state=3840x2160)
+[DECKLINK][engine] direct renderer connect hr=0x00000000
+[ENGINE] source media type: 3840x2160 itl=0 avg=417083 fmt=4 tf=15 hdr=1
+[DECKLINK][src] worker woke: active=1 stop=0 started=1 retry=0
+y hr=0x00000001
+[DECKLINK][src] convert v210->P010: dst=0000020102F66000 src=00000200C4B92000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] FIRST FRAME DELIVERED (rtStart=6082787580 us)
+[DECKLINK][src] convert v210->P010: dst=0000020102F66000 src=00000200C7262000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][src] frame 26: 3840x2160 @ 24000/1001 arrived=26 skip=23 dlv=2 active=1 conn=3840x2160
+[DECKLINK][src] convert v210->P010: dst=0000020102F66000 src=00000200C9932000 stride=10240 3840x2160 need=24883200 sampleBytes=24883200
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 51: 3840x2160 @ 24000/1001 arrived=51 skip=23 dlv=27 active=1 conn=3840x2160
+[live] recv=34 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 76: 3840x2160 @ 24000/1001 arrived=76 skip=23 dlv=52 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 101: 3840x2160 @ 24000/1001 arrived=101 skip=23 dlv=77 active=1 conn=3840x2160
+[live] recv=81 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 126: 3840x2160 @ 24000/1001 arrived=126 skip=23 dlv=102 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=118 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 151: 3840x2160 @ 24000/1001 arrived=151 skip=23 dlv=127 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 176: 3840x2160 @ 24000/1001 arrived=176 skip=23 dlv=152 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=156 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 201: 3840x2160 @ 24000/1001 arrived=201 skip=23 dlv=177 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=202 draw=24.0 lag=0ms renderer=1
+[DECKLINK][src] frame 226: 3840x2160 @ 24000/1001 arrived=226 skip=23 dlv=202 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 251: 3840x2160 @ 24000/1001 arrived=251 skip=23 dlv=227 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=244 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 276: 3840x2160 @ 24000/1001 arrived=276 skip=23 dlv=252 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 301: 3840x2160 @ 24000/1001 arrived=301 skip=23 dlv=277 active=1 conn=3840x2160
+[live] recv=281 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 326: 3840x2160 @ 24000/1001 arrived=326 skip=23 dlv=302 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=321 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 351: 3840x2160 @ 24000/1001 arrived=351 skip=23 dlv=327 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 376: 3840x2160 @ 24000/1001 arrived=376 skip=23 dlv=352 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[live] recv=369 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 401: 3840x2160 @ 24000/1001 arrived=401 skip=23 dlv=377 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 426: 3840x2160 @ 24000/1001 arrived=426 skip=23 dlv=402 active=1 conn=3840x2160
+[live] recv=407 draw=24.0 lag=0ms renderer=1
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][src] frame 451: 3840x2160 @ 24000/1001 arrived=451 skip=23 dlv=427 active=1 conn=3840x2160
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][src] StopDelivery (streaming=1 in=1)
+[DECKLINK][src] StopDelivery (streaming=1 in=1)
+[DECKLINK][src] worker quit
+[DECKLINK][src] forwarder exited
+[DECKLINK][monitor] Stop joining poll thread
+[DECKLINK][monitor] poll: locked=1 cs=2 dr=1 depth=12 chroma=0 | 0x0 0/0fps il=2 lockedSince=0
+[DECKLINK][monitor] loop exiting
+[DECKLINK][monitor] Stop complete
+[DECKLINK][monitor] Stop complete
+[DECKLINK][engine] Shutdown (ordered teardown)
+[DECKLINK][src] StopDelivery (streaming=0 in=0)
+[DECKLINK][src] StopDelivery (streaming=0 in=0)

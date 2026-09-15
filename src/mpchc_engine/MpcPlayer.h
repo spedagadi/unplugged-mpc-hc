@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <atlbase.h>
+#include <condition_variable>
 #include <dshow.h>
 
 #include <functional>
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "DeckLinkSourceControl.h"
@@ -189,6 +191,14 @@ public:
     HRESULT Seek(LONGLONG position);
     HRESULT ResizeVideo();
 
+    // Full teardown for app exit (DESIGN.md ordered script): stop the capture
+    // feeder at the SDK, disconnect, join the source threads, THEN stop the
+    // graph — otherwise mediaControl_->Stop() waits forever on a decklink
+    // source that keeps delivering into the renderer (observed: window closes
+    // but the process survives as a zombie, capture still running). Also stops
+    // the monitor and the ops-queue executor. Idempotent.
+    void Shutdown();
+
     // Audio / volume
     HRESULT SetVolume(int percent);
     HRESULT SetMuted(bool);
@@ -256,6 +266,10 @@ public:
         int  lastDynamicRange = -1; // 0=SDR 1=PQ 2=HLG
         bool signalLocked = false;
     };
+    // Post a DeckLink rebuild to the single ops-queue executor (non-blocking,
+    // coalescing). The monitor, the filter restart callback, and the shell call
+    // THIS instead of Open() — the executor is the only graph owner.
+    void PostDecklinkRebuild();
     HRESULT SetDecklinkCapture(const std::wstring& deviceName); // start the signal monitor (MASTER)
     HRESULT StopDecklinkCapture();                              // stop the signal monitor
     HRESULT SetDecklinkInputColor(int ics);                     // push ICS override to the renderer
@@ -291,8 +305,20 @@ public:
     HRESULT GetSnapshot(Snapshot&) const;
     std::string SnapshotJson() const;
 
+    // Compact JSON blob for the (PyQt) client UI: state + render + decklink +
+    // signal + media type + key settings, all from the thread-safe live cache.
+    // This is the polling contract for engine_bridge.py — the UI never talks
+    // direct COM/DS.
+    std::string GetUiStatusJson() const;
+
 private:
     HRESULT BuildGraph(std::wstring_view source);
+    // DeckLink lifecycle ops — ONE executor thread owns every card+graph
+    // mutation (DESIGN.md ordered teardown). All initiators post here; nothing
+    // else ever calls Open/Stop for the capture path.
+    void RunDecklinkRebuild();          // executor: ordered teardown + relaunch
+    void DecklinkOpLoop();              // executor thread body
+    void DisconnectDecklinkPins();      // source-out <-> renderer-in, before any join
     HRESULT AddRenderer(CComPtr<IBaseFilter>&);
     HRESULT ConfigureRendererWindow();
     HRESULT ConnectVideoPin(IBaseFilter* source, IPin* decIn); // try-connect over output pins
@@ -337,6 +363,13 @@ private:
     std::wstring decklinkUrl_;               // source the decklink graph was opened with
     std::wstring pendingDecklinkUrl_;        // latest monitor-advised URL (shell → restart)
     std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;   // the signal MASTER
+    // Ops queue (the executor): all rebuilds funnel through here.
+    std::mutex              m_gopMtx;
+    std::condition_variable m_gopCv;
+    std::wstring            m_gopUrl;      // target URL carried by the pending op
+    bool                    m_gopQueued = false;
+    bool                    m_gopStop = false;
+    std::thread             m_gopThread;
     // Serializes every graph-mutating call (Open/Stop/Play/Seek + the restart
     // worker) so no two threads touch the graph — the minimal-threading rule.
     // Recursive: the restart worker calls the public API under the same lock.
