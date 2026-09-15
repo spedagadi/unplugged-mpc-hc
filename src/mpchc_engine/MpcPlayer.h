@@ -296,6 +296,7 @@ public:
     void RefreshLive();
     bool GetLiveRendererStats(RenderStats& o) const;
     bool GetLiveMlStats(std::wstring& o) const;
+    bool GetLiveMlSettings(MlSettings& o) const;
     bool GetLiveHdrSettings(HdrSettings& o) const;
     bool GetLiveOutSettings(OutSettings& o) const;
     bool GetLiveDeckLinkSourceStats(DeckLinkSourceStats& o) const;
@@ -310,6 +311,13 @@ public:
     // This is the polling contract for engine_bridge.py — the UI never talks
     // direct COM/DS.
     std::string GetUiStatusJson() const;
+
+    // P2 settings protocol: apply "grp.name=value" pairs (semicolon-separated),
+    // e.g. "hdr.sdrNits=204;ml.gamma=1.1;out.dither=0". Groups: hdr / ml / out.
+    // Each value is parsed by the target field's type and written through to
+    // MPCVR live via the matching Set*Settings. Returns S_OK once all sets are
+    // applied (unknown names are skipped, never fatal).
+    HRESULT ApplySettingsFlat(const std::vector<std::string>& sets);
 
 private:
     HRESULT BuildGraph(std::wstring_view source);
@@ -380,6 +388,7 @@ private:
     mutable std::mutex m_liveMtx;
     RenderStats           m_liveRender{};
     std::wstring          m_liveMl;
+    MlSettings            m_liveMlS{};
     HdrSettings           m_liveHdr{};
     OutSettings           m_liveOut{};
     DeckLinkSourceStats   m_liveDl{};

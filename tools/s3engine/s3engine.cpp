@@ -107,6 +107,23 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
             return (int)g_player()->Seek(pos);   // pos in 100 ns units (JS seconds * 1e7)
         }
     }
+    if (s.find("\"set\"") != std::string::npos) {
+        // P2 settings: {"a":"set","sets":"hdr.sdrNits=204;ml.gamma=1.1;..."}
+        const size_t p = s.find("\"sets\":\"");
+        if (p != std::string::npos) {
+            std::vector<std::string> sets;
+            std::string body;
+            for (size_t i = p + 8; i < s.size() && s[i] != '"'; ++i) body += s[i];
+            size_t start = 0;
+            for (size_t i = 0; i <= body.size(); ++i) {
+                if (i == body.size() || body[i] == ';') {
+                    if (i > start) sets.push_back(body.substr(start, i - start));
+                    start = i + 1;
+                }
+            }
+            return (int)g_player()->ApplySettingsFlat(sets);
+        }
+    }
     return 0;
 }
 

@@ -1447,11 +1447,13 @@ void MpcPlayer::RefreshLive()
     // here, not the UI.
     RenderStats         r;
     std::wstring        ml;
+    MlSettings          mls{};
     HdrSettings         hd{};
     OutSettings         ou{};
     DeckLinkSourceStats dl{};
     GetRendererStats(r);
     GetMlStats(ml);
+    GetMlSettings(mls);
     GetHdrSettings(hd);
     GetOutSettings(ou);
     GetDeckLinkSourceStats(dl);
@@ -1462,6 +1464,7 @@ void MpcPlayer::RefreshLive()
         std::lock_guard<std::mutex> lk(m_liveMtx);
         m_liveRender = r;
         m_liveMl = std::move(ml);
+        m_liveMlS = mls;
         m_liveHdr = hd;
         m_liveOut = ou;
         m_liveDl = dl;
@@ -1478,6 +1481,12 @@ bool MpcPlayer::GetLiveMlStats(std::wstring& o) const
 {
     std::lock_guard<std::mutex> lk(m_liveMtx);
     o = m_liveMl;
+    return true;
+}
+bool MpcPlayer::GetLiveMlSettings(MlSettings& o) const
+{
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    o = m_liveMlS;
     return true;
 }
 bool MpcPlayer::GetLiveHdrSettings(HdrSettings& o) const
@@ -1518,15 +1527,18 @@ std::string MpcPlayer::GetUiStatusJson() const
                    : sn.state == State::Stopped  ? "stopped"
                    : sn.state == State::Error    ? "error" : "idle";
 
-    char buf[2048];
-    snprintf(buf, sizeof(buf),
+    MlSettings ml{};        GetLiveMlSettings(ml);
+    OutSettings out{};      GetLiveOutSettings(out);
+
+    char b1[2300];
+    snprintf(b1, sizeof(b1),
         "{\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
         "\"render\":{\"recv\":%u,\"draw\":%.2f,\"lagMs\":%.1f,\"drop\":%u,\"skip\":%u,\"fail\":%u},"
         "\"dl\":{\"stream\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"eotf\":%d,"
         "\"arrived\":%llu,\"delv\":%llu,\"skip\":%llu,\"gate\":%llu,\"qdrop\":%llu,\"reneg\":%llu,\"refUs\":%llu},"
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"il\":%d},"
         "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d},"
-        "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}}",
+        "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}",
         st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
         rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
         dl.streaming, dl.width, dl.height, dl.fpsNum, dl.fpsDen, dl.colorspace, dl.eotf,
@@ -1539,7 +1551,137 @@ std::string MpcPlayer::GetUiStatusJson() const
         vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
         vs.subtypeName.c_str(), vs.hdr ? 1 : 0,
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits);
-    return std::string(buf);
+
+    // P2 settings block — short keys matching the ApplySettingsFlat protocol.
+    char b2[3600];
+    snprintf(b2, sizeof(b2),
+        ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
+        "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d},"
+        "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
+        "\"highlight\":%.3f,\"hiRoll\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
+        "\"knee\":%.3f,\"skin\":%.3f,\"contrast\":%.3f,\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
+        "\"face\":%d,\"faceStr\":%.3f,\"sky\":%d,\"skyStr\":%.3f,"
+        "\"person\":%d,\"persStr\":%.3f,\"skinPres\":%.3f,\"bars\":%d,"
+        "\"shadowVis\":%d,\"contrastVis\":%d,\"faceVis\":%d,\"skyVis\":%d,\"personOv\":%d},"
+        "\"out\":{\"d3d11\":%d,\"tex\":%d,\"nv12\":%d,\"p010\":%d,\"yuy2\":%d,\"other\":%d,"
+        "\"deint\":%d,\"deintDb\":%d,\"deintBl\":%d,\"chroma\":%d,\"upsc\":%d,\"downsc\":%d,"
+        "\"superRes\":%d,\"dither\":%d,\"vblank\":%d,\"adjust\":%d,\"reinit\":%d,"
+        "\"showStats\":%d,\"tray\":%d}}",
+        hdr.preferDoVi ? 1 : 0, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits, hdr.displayMaxNits,
+        hdr.toneMapCurve, hdr.toggleDisplay, hdr.osdBrightness, hdr.hdrPassthroughRaw ? 1 : 0,
+        ml.enable ? 1 : 0, ml.mode,
+        ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl,
+        ml.hunt, ml.chNeutral, ml.chFire, ml.chKnee, ml.chSkin,
+        ml.contrast, ml.contrastZoneLo, ml.contrastRatioCap, ml.contrastSkinProtect,
+        ml.faceProtectEnabled ? 1 : 0, ml.faceStrength,
+        ml.skyEnabled ? 1 : 0, ml.skyStrength,
+        ml.personEnabled ? 1 : 0, ml.personStrength, ml.skinPreserve, ml.barsEnabled ? 1 : 0,
+        ml.shadowDebugVis ? 1 : 0, ml.contrastDebugVis ? 1 : 0, ml.faceDebugVis ? 1 : 0,
+        ml.skyDebugVis ? 1 : 0, ml.personOverlay ? 1 : 0,
+        out.useD3D11 ? 1 : 0, out.texFormat,
+        out.vpNV12 ? 1 : 0, out.vpP01x ? 1 : 0, out.vpYUY2 ? 1 : 0, out.vpOther ? 1 : 0,
+        out.deinterlace, out.deintDouble ? 1 : 0, out.deintBlend ? 1 : 0,
+        out.chromaScaling, out.upscaling, out.downscaling,
+        out.superRes, out.useDither ? 1 : 0, out.vBlank ? 1 : 0,
+        out.adjustPresent ? 1 : 0, out.reinitDisplay ? 1 : 0,
+        out.showStats ? 1 : 0, out.trayIcon ? 1 : 0);
+
+    return std::string(b1) + std::string(b2);
+}
+
+// P2: apply flat "grp.name=value" pairs. Groups hdr/ml/out map to the structs
+// above; unknown names are skipped. Read-modify-write each group once.
+HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
+{
+    HdrSettings hdr{};   bool hAny = false;
+    MlSettings  ml{};    bool mAny = false;
+    OutSettings out{};   bool oAny = false;
+    if (renderer_) { GetHdrSettings(hdr); GetMlSettings(ml); GetOutSettings(out); }
+
+    const auto vd = [](const std::string& v) { return atof(v.c_str()); };
+    const auto vb = [](const std::string& v) {
+        return v == "true" || v == "1" || atof(v.c_str()) > 0.0;
+    };
+
+    for (const auto& s : sets) {
+        const size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = s.substr(0, eq);
+        const std::string v   = s.substr(eq + 1);
+        const size_t dot = key.find('.');
+        if (dot == std::string::npos) continue;
+        const std::string grp  = key.substr(0, dot);
+        const std::string name = key.substr(dot + 1);
+
+        if (grp == "hdr") { hAny = true;
+            if      (name == "preferDoVi") hdr.preferDoVi = vb(v);
+            else if (name == "convSdr")    hdr.convertToSdr = vb(v);
+            else if (name == "sdrNits")    hdr.sdrDisplayNits = (int)vd(v);
+            else if (name == "dispNits")   hdr.displayMaxNits = (int)vd(v);
+            else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
+            else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
+            else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);
+            else if (name == "raw")        hdr.hdrPassthroughRaw = vb(v);
+            else hAny = false;
+        } else if (grp == "ml") { mAny = true;
+            if      (name == "enable")    ml.enable = vb(v);
+            else if (name == "mode")      ml.mode = (int)vd(v);
+            else if (name == "gamma")     ml.gamma = (float)vd(v);
+            else if (name == "shadow")    ml.shadow = (float)vd(v);
+            else if (name == "shDehaze")  ml.shadowDehaze = (float)vd(v);
+            else if (name == "highlight") ml.highlight = (float)vd(v);
+            else if (name == "hiRoll")    ml.highlightRolloffCtrl = (float)vd(v);
+            else if (name == "hunt")      ml.hunt = (float)vd(v);
+            else if (name == "chN")       ml.chNeutral = (float)vd(v);
+            else if (name == "chF")       ml.chFire = (float)vd(v);
+            else if (name == "knee")      ml.chKnee = (float)vd(v);
+            else if (name == "skin")      ml.chSkin = (float)vd(v);
+            else if (name == "contrast")  ml.contrast = (float)vd(v);
+            else if (name == "csZoneLo")  ml.contrastZoneLo = (float)vd(v);
+            else if (name == "csCap")     ml.contrastRatioCap = (float)vd(v);
+            else if (name == "csSkin")    ml.contrastSkinProtect = (float)vd(v);
+            else if (name == "face")      ml.faceProtectEnabled = vb(v);
+            else if (name == "faceStr")   ml.faceStrength = (float)vd(v);
+            else if (name == "sky")       ml.skyEnabled = vb(v);
+            else if (name == "skyStr")    ml.skyStrength = (float)vd(v);
+            else if (name == "person")    ml.personEnabled = vb(v);
+            else if (name == "persStr")   ml.personStrength = (float)vd(v);
+            else if (name == "skinPres")  ml.skinPreserve = (float)vd(v);
+            else if (name == "bars")      ml.barsEnabled = vb(v);
+            else if (name == "shadowVis") ml.shadowDebugVis = vb(v);
+            else if (name == "contrastVis") ml.contrastDebugVis = vb(v);
+            else if (name == "faceVis")   ml.faceDebugVis = vb(v);
+            else if (name == "skyVis")    ml.skyDebugVis = vb(v);
+            else if (name == "personOv")  ml.personOverlay = vb(v);
+            else mAny = false;
+        } else if (grp == "out") { oAny = true;
+            if      (name == "d3d11")    out.useD3D11 = vb(v);
+            else if (name == "tex")      out.texFormat = (int)vd(v);
+            else if (name == "nv12")     out.vpNV12 = vb(v);
+            else if (name == "p010")     out.vpP01x = vb(v);
+            else if (name == "yuy2")     out.vpYUY2 = vb(v);
+            else if (name == "other")    out.vpOther = vb(v);
+            else if (name == "deint")    out.deinterlace = (int)vd(v);
+            else if (name == "deintDb")  out.deintDouble = vb(v);
+            else if (name == "deintBl")  out.deintBlend = vb(v);
+            else if (name == "chroma")   out.chromaScaling = (int)vd(v);
+            else if (name == "upsc")     out.upscaling = (int)vd(v);
+            else if (name == "downsc")   out.downscaling = (int)vd(v);
+            else if (name == "superRes") out.superRes = (int)vd(v);
+            else if (name == "dither")   out.useDither = vb(v);
+            else if (name == "vblank")   out.vBlank = vb(v);
+            else if (name == "adjust")   out.adjustPresent = vb(v);
+            else if (name == "reinit")   out.reinitDisplay = vb(v);
+            else if (name == "showStats") out.showStats = vb(v);
+            else if (name == "tray")     out.trayIcon = vb(v);
+            else oAny = false;
+        }
+    }
+
+    if (hAny) SetHdrSettings(hdr);
+    if (mAny) SetMlSettings(ml);
+    if (oAny) SetOutSettings(out);
+    return S_OK;
 }
 
 bool MpcPlayer::GetDeckLinkSourceStats(DeckLinkSourceStats& out) const
