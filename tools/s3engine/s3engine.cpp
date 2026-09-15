@@ -18,13 +18,22 @@
 #include <windows.h>
 #include <ole2.h>
 
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 #include "MpcPlayer.h"
 
 // ---------------------------------------------------------------------------
+static void EngineLog(const char* line) {
+    if (FILE* f = _wfopen(L"s3engine.log", L"a")) { fputs(line, f); fputc('\n', f); fclose(f); }
+    OutputDebugStringA(line);
+    OutputDebugStringA("\n");
+}
 static MpcPlayer* g_player() {
     static MpcPlayer s_player;       // lazily constructed on first use
+    static bool s_logged = [] { s_player.SetLogSink(EngineLog); return true; }();
+    (void)s_logged;
     return &s_player;
 }
 static void EnsureCom() {
@@ -103,7 +112,21 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
 
 __declspec(dllexport) void s3_shutdown(void)
 {
-    g_player()->Shutdown();
+    // Bounded teardown: never block the caller forever. The engine's teardown
+    // can wait on the graph lock (a rebuild mid-flight on the ops-queue
+    // executor); running it on a detached worker and waiting at most 10 s
+    // means the UI thread can never freeze on shutdown (the adopt-or-abandon
+    // rule). Idempotent: a second call returns immediately.
+    static std::atomic<bool> s_shutting(false);
+    if (s_shutting.exchange(true)) return;
+    HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::thread t([done] {
+        g_player()->Shutdown();
+        if (done) SetEvent(done);
+    });
+    t.detach();
+    if (done) WaitForSingleObject(done, 10000);
+    if (done) CloseHandle(done);
 }
 
 __declspec(dllexport) int s3_version(char* buf, int cap)
