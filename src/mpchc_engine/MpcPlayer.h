@@ -87,6 +87,7 @@ public:
         float shadow = 2.0f;               // strength tier: 0=Off 1=Low 2=Med 3=High 4=VHi 5=Saturate
         float shadowDehaze = 0.0f;       // 0..1 scale-down of the model shadow-toe lift (lifted-black haze control)
         float highlightRolloffCtrl = 0.0f; // signed offset on the model's rolloff in Auto (rim highlight softening); 0 = model as-is
+        float gammaTopUp = 0.0f;           // signed offset ADDED to the model's gamma in Auto (midtone lift); 0 = model as-is
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;
@@ -135,9 +136,42 @@ public:
         int  sdrDisplayNits = 50;
         int  toggleDisplay = 0;            // HDRTD_Disabled..HDRTD_OnOff
         int  displayMaxNits = 1000;
+        // Display BLACK in nits (measured; e.g. 0.16 for a projector at bb1.0).
+        // The tone mapper builds its destination range as [min, max] — without
+        // this it assumes the display's black is absolute zero. 0.0 = previous
+        // behaviour. Float because sub-1-nit blacks are the norm.
+        float displayMinNits = 0.0f;
+        // Tone-mapped SDR output gamut: 0 = BT.709 (standard), 1 = keep BT.2020
+        // for a display whose gamut exceeds Rec.709.
+        int  outputGamut = 0;
+        // The CONTENT's peak luminance, nits — the top of the range the tone curves
+        // map FROM. Distinct from displayMaxNits, which is the DISPLAY's peak.
+        //
+        // Without it the scene-referred curves (ACES/Reinhard/Mobius/BT.2390)
+        // normalise by a fixed 1000-nit guess, and a range several times larger than
+        // the content makes those curves render far too dark.
+        //
+        // On the DeckLink capture path this is now driven by the SIGNAL. The card
+        // does report ST 2086 (MaxCLL) over HDMI — the old "unsupported" note was a
+        // bug in how we read it, not a limit of the card. RefreshLive pushes the
+        // card's MaxCLL here whenever one is present, so this default only applies
+        // before the first read, or on a signal carrying no static metadata at all
+        // (DV, SDR). The panel's Title peak row is the fallback for exactly those.
+        float titlePeakNits = 1000.0f;
+        // Hable knee: display-relative light below which Hable is replaced by
+        // identity. 0 = pure Hable (the previous behaviour, exactly).
+        float hableKnee = 0.0f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
+        // Experimental tone mapping (libplacebo port). A separate axis from the
+        // shipped tone mapping: 0 leaves every existing curve untouched, which is
+        // what makes it safe to A/B against the current picture on a calibrated
+        // display. 0 = off, 1 = libplacebo spline.
+        int   experimentalToneMapper = 0;
+        // pl_tone_map_spline "Contrast": higher is steeper (closer to clip).
+        // 0.00 .. 1.50, default 0.50.
+        float toneLutContrast = 0.50f;
     };
 
     struct OutSettings {
@@ -229,6 +263,39 @@ public:
     HRESULT SetOutSettings(const OutSettings&);
     HRESULT GetOutSettings(OutSettings&) const;
     HRESULT GetProcessorInfo(std::wstring&) const;
+
+    // Write the renderer's live settings back to MPCVR's own registry key
+    // (HKCU\Software\MPC-BE Filters\MPC Video Renderer).
+    //
+    // IVideoRenderer::SetSettings applies LIVE ONLY — it never persists. A graph
+    // rebuild (the decklink monitor self-heals on any signal change) constructs
+    // a fresh MPCVR whose constructor re-reads that key, so without this call
+    // every pushed setting is silently discarded and whatever was last stored
+    // there wins instead. That made the same toggle appear to work one day and
+    // do nothing the next.
+    HRESULT SaveRendererSettings();
+    // The user's settings INTENT, independent of whether a graph exists. A push
+    // that arrives before the renderer does is remembered here and applied when
+    // the graph is built, instead of being dropped (old behaviour: dropped, but the
+    // caller still got S_OK). Settings that shape media-type negotiation — above
+    // all bConvertToSdr, which picks which converter shader is built — must be in
+    // place BEFORE the pins connect, or they do not take until something else
+    // forces a rebuild, which reads as "the control works sometimes".
+    HdrSettings pendingHdr_{};
+    MlSettings  pendingMl_{};
+    OutSettings pendingOut_{};
+    bool hasHdr_ = false, hasMl_ = false, hasOut_ = false;
+    void ApplyPendingSettings();
+    // Write the frame the renderer is currently producing to a 32-bit BMP.
+    // Goes through the real pipeline, so an A/B of two settings is a byte
+    // comparison rather than a memory of what the picture looked like.
+    HRESULT GrabFrame(const std::string& utf8Path);
+
+    // Display calibration 3D LUT (.cube). An empty path unloads.
+    // Sent as an IExFilterConfig BIN command rather than a Settings_t field, so
+    // the struct never has to carry a path across the COM boundary.
+    // mode: 0 = off, 1 = gamma only, 2 = greyscale, 3 = full 3D (default).
+    HRESULT LoadCubeLut(const std::string& utf8Path, int mode = 3);
     HRESULT GetMlStats(std::wstring&) const;
 
     // Renderer frame accounting (LIVE panel / PERFORMANCE / RENDERER OUT):
@@ -272,7 +339,12 @@ public:
     void PostDecklinkRebuild();
     HRESULT SetDecklinkCapture(const std::wstring& deviceName); // start the signal monitor (MASTER)
     HRESULT StopDecklinkCapture();                              // stop the signal monitor
-    HRESULT SetDecklinkInputColor(int ics);                     // push ICS override to the renderer
+    HRESULT SetDecklinkInputColor(int ics);
+    // Derive the input colour space from the negotiated media type (authoritative)
+    // and push it. Called at the end of BuildGraph, once videoStreamInfo_ is
+    // populated, so it overrides the monitor's colours-space-first guess.
+    int  IcsFromMediaType() const;
+    void ApplyIcsFromMediaType();                     // push ICS override to the renderer
     void SetDecklinkDevice(const std::wstring& deviceName) { decklinkDevice_ = deviceName; }
     // List DeckLink capture devices (UTF-8 names, one per HDMI input), used to
     // wire VP -> HDMI when no device was passed on the CLI.
@@ -364,6 +436,10 @@ private:
     BitstreamConfig bitstream_;
     std::wstring audioDeviceId_, audioDeviceName_;
     bool audioRendererIsMpcAudio_ = false;   // true when MpcAudioRenderer won the CoCreate
+    // Bumped on every graph build. A new generation means a NEW MPCVR instance
+    // that re-read the registry, so the UI must re-push its settings — exposed
+    // as "gen" in GetUiStatusJson for exactly that.
+    uint32_t graphGen_ = 0;
     std::wstring decklinkDevice_;
     DecklinkSettings decklinkSettings_;
     VideoStreamInfo videoStreamInfo_;        // captured at graph connect (DEMUXER → REC)
@@ -384,6 +460,11 @@ private:
     std::recursive_mutex m_graphMtx;
     std::atomic<bool> m_restartPending { false };   // one restart at a time
     unsigned long long m_lastDlvSnapshot = 0;       // delivered counter at last restart decision
+    // Gate-dropped counter at the same decision. Drops mean the incoming frames do
+    // not match the connected media type — the one condition that makes the
+    // "video is flowing, skip the rebuild" shortcut wrong, since a stale media type
+    // keeps delivering frames it then discards. See RequestDecklinkRestart.
+    unsigned long long m_lastGateSnapshot = 0;
     // Live telemetry cache + its refresh worker (UI must not touch the renderer).
     mutable std::mutex m_liveMtx;
     RenderStats           m_liveRender{};

@@ -118,6 +118,7 @@ enum Cmd : int {
     kCmdModeVP, kCmdModeMedia,
     kCmdRepaint,
     kCmdDecklinkRestart,   // monitor detected a signal/format change — rebuild capture graph
+    kCmdDecklinkRebuilt,   // executor finished the rebuild — apply settings to the new renderer
 };
 }  // namespace
 
@@ -2063,6 +2064,18 @@ void LayoutOverlays(int cx, int cy) {
 
 LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+    case WM_ACTIVATE:
+    case WM_ACTIVATEAPP:
+        // Leaving the app (Alt+Tab / another window) must ALWAYS re-show the
+        // pointer — a hidden cursor across apps is how the "lost mouse" pain
+        // starts. Re-hide is gated on foreground in the timer, so this is safe.
+        if (w == WA_INACTIVE || m == WM_ACTIVATEAPP && w == FALSE) {
+            if (g_cursorHidden) { g_cursorHidden = false; ShowCursor(TRUE); }
+        }
+        break;
+    case WM_MOUSEMOVE:
+        ResetCursorIdle(true);   // moving anywhere over the shell re-shows the pointer
+        break;
     case WM_SIZE: {
         int cx = LOWORD(l), cy = HIWORD(l);
         if (cx < 100 || cy < 100) break;
@@ -2102,15 +2115,29 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
             }
 
-            // Auto-hide the cursor when playing and idle (>3 s since the last
-            // mouse/key event); any activity re-shows it instantly (the
-            // WM_MOUSEMOVE/WM_KEYDOWN hooks ResetCursorIdle). Hide over the
-            // whole window — idle over an overlay means the user is watching.
+            // Focus diagnostics: every ~5 s, who owns foreground vs the shell vs the
+            // keyboard focus — lets us SEE why a key "doesn't work" (it goes to
+            // whatever holds focus; if we're not foreground it never reaches us).
+            static int s_focusN = 0;
+            if ((++s_focusN % 10) == 0)
+                DiagLog("[FOCUS] fg=%p main=%p enabled=%d active=%d",
+                        (void*)GetForegroundWindow(), (void*)h, (int)IsWindowEnabled(h),
+                        (int)(GetActiveWindow() == h));
+
+            // Auto-hide the cursor when PLAYING + IDLE (>3 s since the last
+            // mouse/key event) AND the shell owns the foreground. Any activity
+            // re-shows it instantly (WM_MOUSEMOVE/WM_KEYDOWN hooks call
+            // ResetCursorIdle everywhere, including the main window, and
+            // WM_ACTIVATEAPP re-shows when we leave). If we are NOT the
+            // foreground app, never hide and always re-show — the pointer must
+            // stay visible across apps.
             {
+                const HWND fg = GetForegroundWindow();
+                const bool foreground = (fg == h) || (g_hVideo && fg == g_hVideo) || (IsWindow(h) && IsChild(h, fg));
                 MpcPlayer::Snapshot snC{};
                 if (g_player) g_player->GetSnapshot(snC);
                 const bool playing = snC.state == MpcPlayer::State::Playing;
-                if (playing) {
+                if (playing && foreground) {
                     if (!g_cursorHidden && (DWORD)(GetTickCount() - g_lastInputMs) > 3000) {
                         ShowCursor(FALSE);
                         g_cursorHidden = true;
@@ -2486,12 +2513,27 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return 0;
             }
             g_openFile = url;
-            const HRESULT hrO = g_player->Open(url);
-            const HRESULT hrP = g_player->Play();
+            // The ops-queue executor owns the rebuild (DESIGN.md ordered
+            // teardown). The UI never touches the graph here — a post, not an
+            // Open — so a teardown wait can never freeze the UI thread. Settings
+            // for the NEW renderer are (re)applied when the executor signals
+            // "opened" (kCmdDecklinkRebuilt).
+            g_player->PostDecklinkRebuild();
+            DiagLog("[DECKLINK][shell] rebuild POSTED to executor (url='%s')",
+                url.empty() ? "<empty>" : "decklink://…");
+            return 0;
+        } else if (w == kCmdDecklinkRebuilt && g_player && g_vpMode) {
+            // Executor finished the rebuild (engine Notify("opened") → this).
+            // The new renderer exists now; restage the shell-side settings it
+            // did not inherit from the old graph.
             ApplySettingsToRenderer();
             RebuildLayout();
-            DiagLog("[DECKLINK][shell] restart done: Open hr=0x%08X Play hr=0x%08X",
-                (unsigned)hrO, (unsigned)hrP);
+            // The fresh renderer/window may have stolen keyboard focus (or the
+            // rebuild happened during an Alt+Tab). If we own the foreground,
+            // put focus back on the shell so up-arrow (panel toggle) and other
+            // keys keep working without requiring a click first.
+            if (GetForegroundWindow() == g_hwnd) SetFocus(g_hwnd);
+            DiagLog("[DECKLINK][shell] settings reapplied after executor rebuild");
         }
         InvalidateRect(g_hLeft, nullptr, FALSE);
         InvalidateRect(g_hRight, nullptr, FALSE);
@@ -2500,6 +2542,13 @@ LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_KEYDOWN: {
+        ResetCursorIdle(true);   // ANY key re-shows the pointer — up-arrow is how
+                                 // panels are toggled; it must not also leave the
+                                 // cursor invisible (observed: panel toggled, mouse
+                                 // "gone" → user loses the ability to navigate).
+        DiagLog("[KEY] vk=%#X main=%p fg=%p focus=%p enabled=%d",
+                (unsigned)w, (void*)h, (void*)GetForegroundWindow(), (void*)GetFocus(),
+                (int)IsWindowEnabled(h));
         switch (w) {
         case VK_ESCAPE: PostMessageW(h, WM_CLOSE, 0, 0); break;
         case VK_SPACE:  PostMessageW(h, WM_APP, kCmdPlayPause, 0); break;
@@ -2630,6 +2679,12 @@ int wmain(int argc, wchar_t* argv[]) {
                 PostMessageW(g_hwnd, WM_APP, kCmdDecklinkRestart, 0);
                 return;
             }
+            if (eventName == "opened" && g_vpMode) {
+                // Executor finished a rebuild — the new renderer exists, so
+                // restage shell-side settings on the UI thread.
+                PostMessageW(g_hwnd, WM_APP, kCmdDecklinkRebuilt, 0);
+                return;
+            }
             PostMessageW(g_hwnd, WM_APP, kCmdRepaint, 0);
         });
         HRESULT hrA = player.AttachRenderTarget(g_hVideo);
@@ -2683,7 +2738,11 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         SaveConfig();   // flush any pending debounced write on exit
-        player.Stop();
+        // Ordered teardown (DESIGN.md): stop the capture feeder at the SDK,
+        // then the graph — NOT mediaControl_->Stop() first. Without this the
+        // renderer's Stop waits forever on the live decklink source and the
+        // process survives as a windowless zombie (observed 2026-09-15).
+        player.Shutdown();
         g_player = nullptr;
     }
 

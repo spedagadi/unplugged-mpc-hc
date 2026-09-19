@@ -33,6 +33,23 @@ struct DeckLinkSourceStats {
     int  eotf = 0;                           // 0=gamma 2=PQ 3=HLG 4=DV(PQ-coded, no static HDR flag)
     int  streaming = 0;                      // card is streaming
     unsigned long long lastRefUs = 0;        // hwRef of last captured frame (wall-aligned µs)
+
+    // HDR static metadata (ST 2086) the card parsed from the HDMI HDR InfoFrame.
+    //
+    // This DOES work over HDMI. The old "the card cannot supply ST 2086" note was
+    // wrong twice over: the twelve ST 2086 metadata IDs are FLOAT-typed and were
+    // being read with GetInt, and the probe that reported them ran once per session
+    // on frame 1 — before the signal settles, when every read returns E_UNEXPECTED.
+    // Measured 2026-09-18 on an HDR10 disc: MaxCLL 300, MaxFALL 237, mastering
+    // 1000 / 0.0001 nits, all S_OK, agreeing with the HDFury's own readout.
+    //
+    // hasHdrStaticMeta is plausibility-gated in GetStats, so a zero MaxCLL means
+    // "no usable reading yet" — never "this signal is SDR".
+    int   hasHdrStaticMeta = 0;
+    float hdrMaxCLL = 0.0f;                  // MaxCLL, nits
+    float hdrMaxFALL = 0.0f;                 // MaxFALL, nits
+    float hdrMasteringMaxNits = 0.0f;        // mastering display peak, nits
+    float hdrMasteringMinNits = 0.0f;        // mastering display black, nits
 };
 
 // Format-change notification (the SDK's VideoInputFormatChanged, propagated
@@ -52,8 +69,18 @@ IDeckLinkSourceControl : public IUnknown
     // StopCapture (or on a fresh filter instance).
     STDMETHOD(StartCapture(BSTR deviceName)) PURE;
 
-    // Tear down the capture session (stop card, join worker, release SDK
-    // interfaces). Idempotent.
+    // PHASE 1 of teardown (DESIGN.md ordered script): halt delivery at the
+    // SDK — SetCallback(nullptr) so no new frames can enter, then flags+wake so
+    // the forwarder drains/abandons and the worker runs its StopStreams path.
+    // NO joins, never waits on the renderer, safe from any thread. Must precede
+    // any graph teardown that drops this filter's last reference.
+    STDMETHOD(StopDelivery()) PURE;
+
+    // PHASE 2-3: complete teardown. Join the forwarder + worker (the caller
+    // must have run StopDelivery AND disconnected this source's output pin from
+    // the renderer first, so an in-flight Deliver returns immediately), then
+    // release the SDK objects. Idempotent; StopCapture() == StopDelivery() +
+    // Join... so calling this twice is safe.
     STDMETHOD(StopCapture()) PURE;
 
     // Route the filter's telemetry to the caller's logging (frames arrived /

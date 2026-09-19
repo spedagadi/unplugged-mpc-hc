@@ -1,4 +1,4 @@
-#include "MpcPlayer.h"
+﻿#include "MpcPlayer.h"
 
 #include <windows.h>
 #include <versionhelpers.h>
@@ -610,6 +610,11 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     HRESULT hr = graph_.CoCreateInstance(CLSID_FilterGraph);
     if (FAILED(hr)) return hr;
 
+    // New graph => new MPCVR => its constructor re-reads the registry, so the
+    // settings the UI pushed into the previous instance no longer apply. The
+    // counter lets the UI notice and re-push (see "gen" in GetUiStatusJson).
+    ++graphGen_;
+
     // Retire the previous direct filter OFF the UI thread: its destructor joins
     // the SDK worker, whose StopStreams can block while the HDMI source is
     // mid-signal-change (UB820 stop→menu freeze observed). The retired reference
@@ -744,6 +749,13 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     hr = graph_->AddFilter(renderer_, L"Video Renderer");
     if (FAILED(hr)) return hr;
 
+    // Apply the user's settings BEFORE the pins negotiate. Any setting that
+    // decides which shader gets built (bConvertToSdr, the VP formats, the input
+    // colour space) is consumed during negotiation, so pushing it afterwards only
+    // works if something forces a re-negotiation — which is how Convert to SDR
+    // ended up applying on some starts and not others.
+    ApplyPendingSettings();
+
     if (renderTarget_) ConfigureRendererWindow();
 
     if (bDeckLinkDirect) {
@@ -821,6 +833,15 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         ConnectAudio(splitter);
     }
     ApplyVolume();
+
+    // Last word on the input colour space, for every source kind. By here the graph
+    // has negotiated, so videoStreamInfo_ carries the transfer function the signal
+    // actually declares — which is what settles BT.2020 vs BT.709 (see
+    // ApplyIcsFromMediaType). Placed after the connects so it wins over the
+    // monitor's advice and the decoder-path guess above.
+    if (bDeckLinkDirect || bDeckLink) {
+        ApplyIcsFromMediaType();
+    }
 
     if (renderTarget_) {
         if (CComQIPtr<IVideoWindow> pVW = renderer_) pVW->put_Visible(OATRUE);
@@ -1081,6 +1102,7 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLShadow = m.shadow;
     s.fMLShadowDehaze = m.shadowDehaze;
     s.fMLHighlightRolloffCtrl = m.highlightRolloffCtrl;
+    s.fMLGammaTopUp = m.gammaTopUp;
     s.bMLHighlightEnabled = m.highlightEnabled;
     s.fMLHighlight = m.highlight;
     s.bMLChromaEnabled = m.chromaEnabled;
@@ -1148,6 +1170,7 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.shadow = s.fMLShadow;
     m.shadowDehaze = s.fMLShadowDehaze;
     m.highlightRolloffCtrl = s.fMLHighlightRolloffCtrl;
+    m.gammaTopUp = s.fMLGammaTopUp;
     m.highlightEnabled = s.bMLHighlightEnabled;
     m.highlight = s.fMLHighlight;
     m.chromaEnabled = s.bMLChromaEnabled;
@@ -1197,9 +1220,15 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.iSDRDisplayNits = h.sdrDisplayNits;
     s.iHdrToggleDisplay = h.toggleDisplay;
     s.iHdrDisplayMaxNits = h.displayMaxNits;
+    s.fHdrDisplayMinNits = h.displayMinNits;
+    s.iOutputGamut = h.outputGamut;
+    s.fHdrTitlePeakNits = h.titlePeakNits;
+    s.fHdrHableKnee = h.hableKnee;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
+    s.iExperimentalToneMapper = h.experimentalToneMapper;
+    s.fToneLutContrast = h.toneLutContrast;
 }
 
 void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
@@ -1209,9 +1238,15 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.sdrDisplayNits = s.iSDRDisplayNits;
     h.toggleDisplay = s.iHdrToggleDisplay;
     h.displayMaxNits = s.iHdrDisplayMaxNits;
+    h.displayMinNits = s.fHdrDisplayMinNits;
+    h.outputGamut = s.iOutputGamut;
+    h.titlePeakNits = s.fHdrTitlePeakNits;
+    h.hableKnee = s.fHdrHableKnee;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
+    h.experimentalToneMapper = s.iExperimentalToneMapper;
+    h.toneLutContrast = s.fToneLutContrast;
 }
 
 void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)
@@ -1275,25 +1310,99 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
 
 HRESULT MpcPlayer::SetMlSettings(const MlSettings& m)
 {
-    if (!renderer_) {
-        OutputDebugStringA("[ENGINE] SetMlSettings: renderer_ is null, returning S_FALSE\n");
-        return S_FALSE;
-    }
+    pendingMl_ = m;
+    hasMl_ = true;
+    ApplyPendingSettings();
+    return renderer_ ? S_OK : S_FALSE;
+}
+
+HRESULT MpcPlayer::SaveRendererSettings()
+{
+    if (!renderer_) return S_FALSE;
     CComQIPtr<IVideoRenderer> vr = renderer_;
-    if (!vr) {
-        OutputDebugStringA("[ENGINE] SetMlSettings: QI for IVideoRenderer failed, returning S_FALSE\n");
-        return S_FALSE;
+    if (!vr) return S_FALSE;
+    // Persist to HKCU\Software\MPC-BE Filters\MPC Video Renderer so a rebuilt
+    // graph comes back up with these values instead of a stale key.
+    return vr->SaveSettings();
+}
+
+// Grab the frame the renderer is CURRENTLY producing into a 32-bit BMP.
+//
+// This exists because "the picture did not change" is the hardest class of bug
+// in this pipeline to argue about: the setting is applied, the status echo
+// agrees, and the only remaining question — did it reach the pixels — has no
+// answer anywhere in the engine. GetCurrentImage runs the real pipeline (the
+// post-scale ring, so the tone-map correction is in it), which makes an A/B of
+// two settings a byte comparison instead of a memory of what it looked like.
+HRESULT MpcPlayer::GrabFrame(const std::string& utf8Path)
+{
+    if (!renderer_ || utf8Path.empty()) return S_FALSE;
+
+    CComQIPtr<IBasicVideo> bv = renderer_;
+    if (!bv) {
+        Log("[ENGINE] GrabFrame: the renderer exposes no IBasicVideo");
+        return E_NOINTERFACE;
     }
-    Settings_t s;
-    vr->GetSettings(s);
-    char buf[256];
-    snprintf(buf, sizeof(buf), "[ENGINE] SetMlSettings: configSeq=%u, pre-GetSettings sizeof=%zu\n",
-        m.configSeq, sizeof(Settings_t));
-    OutputDebugStringA(buf);
-    ApplyMlToSettings(m, s);
-    vr->SetSettings(s);
-    OutputDebugStringA("[ENGINE] SetMlSettings: vr->SetSettings() called, returning S_OK\n");
+
+    long size = 0;
+    HRESULT hr = bv->GetCurrentImage(&size, nullptr);   // ask for the size first
+    if (FAILED(hr) || size <= 0) {
+        Log("[ENGINE] GrabFrame: GetCurrentImage(size) hr=0x%08X size=%ld", (unsigned)hr, size);
+        return hr;
+    }
+
+    std::vector<BYTE> dib((size_t)size);
+    hr = bv->GetCurrentImage(&size, (long*)dib.data());
+    if (FAILED(hr)) {
+        Log("[ENGINE] GrabFrame: GetCurrentImage(data) hr=0x%08X", (unsigned)hr);
+        return hr;
+    }
+
+    wchar_t wpath[MAX_PATH] = {};
+    MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, wpath, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, wpath, L"wb") != 0 || !f) {
+        Log("[ENGINE] GrabFrame: cannot open the output file");
+        return E_FAIL;
+    }
+
+    // The buffer is a BITMAPINFOHEADER followed by top-down BGRX rows — that is
+    // the layout callers of IBasicVideo::GetCurrentImage expect, so it is written
+    // out as a self-describing .bmp with the 14-byte file header in front.
+    const BITMAPINFOHEADER* bih = (const BITMAPINFOHEADER*)dib.data();
+    const DWORD offBits = (DWORD)(sizeof(BITMAPFILEHEADER) + bih->biSize);
+    BITMAPFILEHEADER fh = {};
+    fh.bfType    = 0x4D42;   // 'BM'
+    fh.bfOffBits = offBits;
+    fh.bfSize    = offBits + bih->biSizeImage;
+    fwrite(&fh, sizeof(fh), 1, f);
+    fwrite(dib.data(), 1, (size_t)size, f);
+    fclose(f);
+
+    Log("[ENGINE] GrabFrame: wrote %ldx%ld to %s", (long)bih->biWidth, (long)bih->biHeight, utf8Path.c_str());
     return S_OK;
+}
+
+HRESULT MpcPlayer::LoadCubeLut(const std::string& utf8Path, int mode)
+{
+    if (!renderer_) return S_FALSE;
+    CComQIPtr<IExFilterConfig> cfg = renderer_;
+    if (!cfg) return S_FALSE;
+
+    // The filter's handler ignores a zero-size blob, so an unload is sent as a
+    // single NUL — which trims to the empty path that means "clear".
+    static const char kNul = '\0';
+    const bool unloading = utf8Path.empty();
+    LPVOID p = unloading ? (LPVOID)&kNul : (LPVOID)utf8Path.data();
+    const int n = unloading ? 1 : (int)utf8Path.size();
+    const HRESULT hr = cfg->Flt_SetBin("cmd_loadCubeLut", p, n);
+
+    // Mode is a separate command so A/B-ing modes never re-parses the file.
+    // Sent after the load, which leaves the mode untouched.
+    if (mode >= 0 && mode <= 3) {
+        cfg->Flt_SetInt("cubeLutMode", mode);
+    }
+    return hr;
 }
 
 HRESULT MpcPlayer::GetMlSettings(MlSettings& m) const
@@ -1309,14 +1418,61 @@ HRESULT MpcPlayer::GetMlSettings(MlSettings& m) const
 
 HRESULT MpcPlayer::SetHdrSettings(const HdrSettings& h)
 {
-    if (!renderer_) return S_FALSE;
+    // Remember first, always — the renderer may not exist yet.
+    pendingHdr_ = h;
+    hasHdr_ = true;
+    ApplyPendingSettings();
+    return renderer_ ? S_OK : S_FALSE;
+}
+
+// Push the remembered settings intent onto whatever renderer exists right now.
+//
+// The bug this closes: these pushes used to bail with S_FALSE whenever renderer_
+// was null — while ApplySettingsFlat still returned S_OK to the caller. Anything
+// the UI sent before the graph existed was therefore silently lost, and the
+// renderer came back up on Settings_t defaults. Settings consumed at media-type
+// negotiation — above all bConvertToSdr, which decides WHICH converter shader gets
+// built — then stayed wrong until some later graph rebuild happened to re-push,
+// which is exactly the "convert to SDR is intermittent" behaviour.
+//
+// Calling it from BuildGraph, before the pins connect, follows the rule
+// ApplyDecklinkColorToRenderer() already follows for the input colour space: a
+// setting that shapes negotiation has to be in place before negotiation happens.
+void MpcPlayer::ApplyPendingSettings()
+{
+    if (!renderer_) return;
     CComQIPtr<IVideoRenderer> vr = renderer_;
-    if (!vr) return S_FALSE;
+    if (!vr) return;
+
     Settings_t s;
     vr->GetSettings(s);
-    ApplyHdrToSettings(h, s);
+    if (hasHdr_) {
+        // The card's own ST 2086 MaxCLL is the real content peak, and it WINS over
+        // the panel's Title peak row — that row stays the fallback for signals with
+        // no static metadata (DV, SDR), which is why nothing is overridden when
+        // hasHdrStaticMeta is 0.
+        //
+        // Applied HERE, on the settings-apply path, and deliberately NOT in
+        // RefreshLive: that runs on the ~1 s snapshot worker, and writing to the
+        // renderer from there (which rebuilds the tone LUT) stalled the playback
+        // clock past the UI's 5 s signal-loss timeout, so capture restarted every
+        // 8 s and the acquiring overlay never cleared.
+        HdrSettings h = pendingHdr_;
+        DeckLinkSourceStats dl{};
+        if (GetLiveDeckLinkSourceStats(dl) && dl.hasHdrStaticMeta) {
+            if (h.titlePeakNits != dl.hdrMaxCLL) {
+                Log("[ENGINE] Title peak <- signal MaxCLL=%.0f (panel %.0f)  [ST 2086 from the card]",
+                    dl.hdrMaxCLL, h.titlePeakNits);
+            }
+            h.titlePeakNits = dl.hdrMaxCLL;
+        }
+        ApplyHdrToSettings(h, s);
+    }
+    if (hasMl_)  ApplyMlToSettings(pendingMl_, s);
+    if (hasOut_) ApplyOutToSettings(pendingOut_, s);
     vr->SetSettings(s);
-    return S_OK;
+    Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d pushed",
+        hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0);
 }
 
 HRESULT MpcPlayer::GetHdrSettings(HdrSettings& h) const
@@ -1332,14 +1488,10 @@ HRESULT MpcPlayer::GetHdrSettings(HdrSettings& h) const
 
 HRESULT MpcPlayer::SetOutSettings(const OutSettings& o)
 {
-    if (!renderer_) return S_FALSE;
-    CComQIPtr<IVideoRenderer> vr = renderer_;
-    if (!vr) return S_FALSE;
-    Settings_t s;
-    vr->GetSettings(s);
-    ApplyOutToSettings(o, s);
-    vr->SetSettings(s);
-    return S_OK;
+    pendingOut_ = o;
+    hasOut_ = true;
+    ApplyPendingSettings();
+    return renderer_ ? S_OK : S_FALSE;
 }
 
 HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
@@ -1368,6 +1520,15 @@ HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
         if (!req.url.empty()) {
             pendingDecklinkUrl_.assign(req.url.begin(), req.url.end());
             decklinkSettings_.inputColorSpace = req.ics;
+            // The monitor is the authority on WHETHER the signal changed; it is not
+            // the authority on the colour space. Its ICS is derived colours-space
+            // first, so a PQ signal flagged cs=2 comes back as BT.709 — and taking
+            // that verbatim is what put the renderer on the SDR BT.709 path, where
+            // the PQ->SDR converter is never built and "Convert to SDR" cannot do
+            // anything. Re-derive from the filter's own stats, which carry the
+            // transfer function, and keep the monitor's number only as the fallback
+            // for when those stats are unavailable.
+            UpdateIcsFromFilter();
             // SELF-HEALING (WPF shell): the engine owns the whole transition.
             // Posting the rebuild here (to OUR ops-queue executor) means the UI
             // never has to react to signal changes — it only polls stats. The
@@ -1457,9 +1618,46 @@ void MpcPlayer::RefreshLive()
     GetHdrSettings(hd);
     GetOutSettings(ou);
     GetDeckLinkSourceStats(dl);
+
+    // The signal-driven Title peak is applied in ApplyPendingSettings, NOT here.
+    //
+    // This function is a SNAPSHOT — see the contract in MpcPlayer.h. Writing to the
+    // renderer from it (GetSettings + SetSettings, which rebuilds the tone LUT) was
+    // tried and stalled the playback clock long enough that the UI's signal monitor
+    // declared NO_SIGNAL and restarted capture every 8 s (its 5 s loss timeout plus
+    // its 3 s cooldown), so the acquiring overlay re-appeared forever. Nothing in
+    // here may mutate the renderer.
     static int s_dbgn = 0;
-    if ((++s_dbgn % 5) == 0)
-        Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d", r.framesReceived, r.drawFps, r.presentLatencyMs, renderer_ != nullptr);
+    if ((++s_dbgn % 5) == 0) {
+        // Carry the renderer's own one-line account of which converter is live
+        // into the log. GetMLStats is the only channel that says what the
+        // renderer DID (MPCVR's DLog is a no-op in Release), and having it in the
+        // engine log means the state of a RUNNING app can be read from a file
+        // instead of needing a second engine instance — which cannot exist while
+        // the app holds the DeckLink.
+        //
+        // Without this, "the control did nothing" can only be argued from the
+        // code path; with it, the pipeline line says so outright.
+        auto Field = [&ml](const wchar_t* key) -> std::wstring {
+            const size_t at = ml.find(key);
+            if (at == std::wstring::npos) return L"?";
+            const size_t from = at + wcslen(key);
+            const size_t to = ml.find(L'\n', from);
+            return ml.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
+        };
+        const std::wstring pipe = Field(L"pipeline:");
+        Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d pipeline:%ls",
+            r.framesReceived, r.drawFps, r.presentLatencyMs, renderer_ != nullptr,
+            pipe.empty() ? L" ?" : pipe.c_str());
+        // The HDR block the engine is actually holding, next to the renderer's own
+        // account of what it built from it. These two are read back FROM the
+        // renderer (GetHdrSettings → GetSettings), so a value here that differs from
+        // the panel row is the divergence itself, visible without needing a second
+        // engine instance (impossible while the app holds the DeckLink).
+        Log("[live] hdr: sdrNits=%d blackNits=%.3f convSdr=%d gamut=%d expTm=%d tmContrast=%.2f dispNits=%d",
+            hd.sdrDisplayNits, hd.displayMinNits, hd.convertToSdr ? 1 : 0, hd.outputGamut,
+            hd.experimentalToneMapper, hd.toneLutContrast, hd.displayMaxNits);
+    }
     {
         std::lock_guard<std::mutex> lk(m_liveMtx);
         m_liveRender = r;
@@ -1532,13 +1730,20 @@ std::string MpcPlayer::GetUiStatusJson() const
 
     char b1[2300];
     snprintf(b1, sizeof(b1),
-        "{\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
+        "{\"gen\":%u,\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
         "\"render\":{\"recv\":%u,\"draw\":%.2f,\"lagMs\":%.1f,\"drop\":%u,\"skip\":%u,\"fail\":%u},"
         "\"dl\":{\"stream\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"eotf\":%d,"
-        "\"arrived\":%llu,\"delv\":%llu,\"skip\":%llu,\"gate\":%llu,\"qdrop\":%llu,\"reneg\":%llu,\"refUs\":%llu},"
+        "\"arrived\":%llu,\"delv\":%llu,\"skip\":%llu,\"gate\":%llu,\"qdrop\":%llu,\"reneg\":%llu,\"refUs\":%llu,"
+        // HDR static metadata the CARD parsed (ST 2086). Five specifiers here MUST
+        // stay matched by five arguments further down — adding one without the other
+        // is undefined behaviour, and it presents as the whole UI going blank rather
+        // than as anything pointing here. MSVC's C4473 catches it: build with
+        // warnings visible, not filtered to "error".
+        "\"hdrMeta\":%d,\"maxCLL\":%.0f,\"maxFALL\":%.0f,\"masterMax\":%.0f,\"masterMin\":%.4f},"
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"il\":%d},"
         "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d},"
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}",
+        (unsigned)graphGen_,
         st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
         rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
         dl.streaming, dl.width, dl.height, dl.fpsNum, dl.fpsDen, dl.colorspace, dl.eotf,
@@ -1546,6 +1751,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         (unsigned long long)dl.framesSkipped, (unsigned long long)dl.gateDropped,
         (unsigned long long)dl.droppedQueue, (unsigned long long)dl.renegotiations,
         (unsigned long long)dl.lastRefUs,
+        dl.hasHdrStaticMeta, dl.hdrMaxCLL, dl.hdrMaxFALL, dl.hdrMasteringMaxNits, dl.hdrMasteringMinNits,
         sigLocked, sigW, sigH, sigNum, sigDen, sigCs, sigDr, sigDepth, sigIl,
         vs.valid ? 1 : 0, vs.width, vs.height,
         vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
@@ -1553,37 +1759,52 @@ std::string MpcPlayer::GetUiStatusJson() const
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
-    char b2[3600];
+    char b2[4096];
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
-        "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d},"
+        "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"expTm\":%d,\"tmContrast\":%.3f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
-        "\"highlight\":%.3f,\"hiRoll\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
-        "\"knee\":%.3f,\"skin\":%.3f,\"contrast\":%.3f,\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
-        "\"face\":%d,\"faceStr\":%.3f,\"sky\":%d,\"skyStr\":%.3f,"
-        "\"person\":%d,\"persStr\":%.3f,\"skinPres\":%.3f,\"bars\":%d,"
+        "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
+        "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
+        "\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
+        "\"face\":%d,\"faceStr\":%.3f,\"faceFeather\":%.3f,\"faceExpand\":%.3f,"
+        "\"sky\":%d,\"skyStr\":%.3f,\"person\":%d,\"persStr\":%.3f,\"skinPres\":%.3f,"
+        "\"bars\":%d,\"barsHighlight\":%d,\"debugLog\":%d,\"debugCopy\":%d,"
+        "\"shadowZoneCeil\":%.3f,\"shadowSkin\":%.3f,\"shadowCap\":%.3f,"
         "\"shadowVis\":%d,\"contrastVis\":%d,\"faceVis\":%d,\"skyVis\":%d,\"personOv\":%d},"
         "\"out\":{\"d3d11\":%d,\"tex\":%d,\"nv12\":%d,\"p010\":%d,\"yuy2\":%d,\"other\":%d,"
-        "\"deint\":%d,\"deintDb\":%d,\"deintBl\":%d,\"chroma\":%d,\"upsc\":%d,\"downsc\":%d,"
-        "\"superRes\":%d,\"dither\":%d,\"vblank\":%d,\"adjust\":%d,\"reinit\":%d,"
-        "\"showStats\":%d,\"tray\":%d}}",
+        "\"deint\":%d,\"deintDb\":%d,\"deintBl\":%d,\"shaderVP\":%d,"
+        "\"chroma\":%d,\"upsc\":%d,\"downsc\":%d,\"superRes\":%d,\"rtxVideoHdr\":%d,"
+        "\"interpolate50\":%d,\"dither\":%d,\"swapEffect\":%d,\"exclusiveFS\":%d,"
+        "\"vblank\":%d,\"adjust\":%d,\"reinit\":%d,\"showStats\":%d,\"tray\":%d}}",
         hdr.preferDoVi ? 1 : 0, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits, hdr.displayMaxNits,
         hdr.toneMapCurve, hdr.toggleDisplay, hdr.osdBrightness, hdr.hdrPassthroughRaw ? 1 : 0,
+        hdr.displayMinNits, hdr.outputGamut,
+        hdr.titlePeakNits, hdr.hableKnee,
+        hdr.experimentalToneMapper, hdr.toneLutContrast,
         ml.enable ? 1 : 0, ml.mode,
-        ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl,
+        ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
         ml.hunt, ml.chNeutral, ml.chFire, ml.chKnee, ml.chSkin,
-        ml.contrast, ml.contrastZoneLo, ml.contrastRatioCap, ml.contrastSkinProtect,
-        ml.faceProtectEnabled ? 1 : 0, ml.faceStrength,
+        ml.contrastEnabled ? 1 : 0, ml.contrast,
+        ml.contrastZoneLo, ml.contrastRatioCap, ml.contrastSkinProtect,
+        ml.faceProtectEnabled ? 1 : 0, ml.faceStrength, ml.faceFeather, ml.faceExpand,
         ml.skyEnabled ? 1 : 0, ml.skyStrength,
-        ml.personEnabled ? 1 : 0, ml.personStrength, ml.skinPreserve, ml.barsEnabled ? 1 : 0,
+        ml.personEnabled ? 1 : 0, ml.personStrength, ml.skinPreserve,
+        ml.barsEnabled ? 1 : 0, ml.barsHighlight ? 1 : 0,
+        ml.debugLog ? 1 : 0, ml.debugCopy ? 1 : 0,
+        ml.shadowZoneCeil, ml.shadowSkinProtect, ml.shadowRatioCap,
         ml.shadowDebugVis ? 1 : 0, ml.contrastDebugVis ? 1 : 0, ml.faceDebugVis ? 1 : 0,
         ml.skyDebugVis ? 1 : 0, ml.personOverlay ? 1 : 0,
         out.useD3D11 ? 1 : 0, out.texFormat,
         out.vpNV12 ? 1 : 0, out.vpP01x ? 1 : 0, out.vpYUY2 ? 1 : 0, out.vpOther ? 1 : 0,
         out.deinterlace, out.deintDouble ? 1 : 0, out.deintBlend ? 1 : 0,
+        out.shaderVPScaling ? 1 : 0,
         out.chromaScaling, out.upscaling, out.downscaling,
-        out.superRes, out.useDither ? 1 : 0, out.vBlank ? 1 : 0,
-        out.adjustPresent ? 1 : 0, out.reinitDisplay ? 1 : 0,
+        out.superRes, out.rtxVideoHdr ? 1 : 0,
+        out.interpolate50 ? 1 : 0, out.useDither ? 1 : 0,
+        out.swapEffect, out.exclusiveFS ? 1 : 0,
+        out.vBlank ? 1 : 0, out.adjustPresent ? 1 : 0, out.reinitDisplay ? 1 : 0,
         out.showStats ? 1 : 0, out.trayIcon ? 1 : 0);
 
     return std::string(b1) + std::string(b2);
@@ -1596,7 +1817,16 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     HdrSettings hdr{};   bool hAny = false;
     MlSettings  ml{};    bool mAny = false;
     OutSettings out{};   bool oAny = false;
-    if (renderer_) { GetHdrSettings(hdr); GetMlSettings(ml); GetOutSettings(out); }
+    // Seed from the live renderer when there is one, because that IS the current
+    // intent; otherwise seed from the remembered intent, because there is nothing
+    // live to read. The old code seeded only from the renderer and then dropped the
+    // whole push when it did not exist — so a push that arrived before the graph
+    // was built was lost while the caller still saw S_OK.
+    if (renderer_) {
+        GetHdrSettings(hdr); GetMlSettings(ml); GetOutSettings(out);
+    } else {
+        hdr = pendingHdr_; ml = pendingMl_; out = pendingOut_;
+    }
 
     const auto vd = [](const std::string& v) { return atof(v.c_str()); };
     const auto vb = [](const std::string& v) {
@@ -1613,74 +1843,109 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
         const std::string grp  = key.substr(0, dot);
         const std::string name = key.substr(dot + 1);
 
-        if (grp == "hdr") { hAny = true;
+        // A group applies if ANY of its names was recognised: an unknown name
+        // must not veto the recognised ones. (It used to, when the unknown was
+        // the last entry of its group — the flag was cleared per-name.)
+        if (grp == "hdr") {
+            bool hit = true;
             if      (name == "preferDoVi") hdr.preferDoVi = vb(v);
             else if (name == "convSdr")    hdr.convertToSdr = vb(v);
             else if (name == "sdrNits")    hdr.sdrDisplayNits = (int)vd(v);
             else if (name == "dispNits")   hdr.displayMaxNits = (int)vd(v);
+            else if (name == "blackNits")  hdr.displayMinNits = (float)vd(v);
+            else if (name == "gamut")      hdr.outputGamut = (int)vd(v);
+            else if (name == "titlePeak")  hdr.titlePeakNits = (float)vd(v);
+            else if (name == "hableKnee")  hdr.hableKnee = (float)vd(v);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);
             else if (name == "raw")        hdr.hdrPassthroughRaw = vb(v);
-            else hAny = false;
-        } else if (grp == "ml") { mAny = true;
-            if      (name == "enable")    ml.enable = vb(v);
-            else if (name == "mode")      ml.mode = (int)vd(v);
-            else if (name == "gamma")     ml.gamma = (float)vd(v);
-            else if (name == "shadow")    ml.shadow = (float)vd(v);
-            else if (name == "shDehaze")  ml.shadowDehaze = (float)vd(v);
-            else if (name == "highlight") ml.highlight = (float)vd(v);
-            else if (name == "hiRoll")    ml.highlightRolloffCtrl = (float)vd(v);
-            else if (name == "hunt")      ml.hunt = (float)vd(v);
-            else if (name == "chN")       ml.chNeutral = (float)vd(v);
-            else if (name == "chF")       ml.chFire = (float)vd(v);
-            else if (name == "knee")      ml.chKnee = (float)vd(v);
-            else if (name == "skin")      ml.chSkin = (float)vd(v);
-            else if (name == "contrast")  ml.contrast = (float)vd(v);
-            else if (name == "csZoneLo")  ml.contrastZoneLo = (float)vd(v);
-            else if (name == "csCap")     ml.contrastRatioCap = (float)vd(v);
-            else if (name == "csSkin")    ml.contrastSkinProtect = (float)vd(v);
-            else if (name == "face")      ml.faceProtectEnabled = vb(v);
-            else if (name == "faceStr")   ml.faceStrength = (float)vd(v);
-            else if (name == "sky")       ml.skyEnabled = vb(v);
-            else if (name == "skyStr")    ml.skyStrength = (float)vd(v);
-            else if (name == "person")    ml.personEnabled = vb(v);
-            else if (name == "persStr")   ml.personStrength = (float)vd(v);
-            else if (name == "skinPres")  ml.skinPreserve = (float)vd(v);
-            else if (name == "bars")      ml.barsEnabled = vb(v);
-            else if (name == "shadowVis") ml.shadowDebugVis = vb(v);
-            else if (name == "contrastVis") ml.contrastDebugVis = vb(v);
-            else if (name == "faceVis")   ml.faceDebugVis = vb(v);
-            else if (name == "skyVis")    ml.skyDebugVis = vb(v);
-            else if (name == "personOv")  ml.personOverlay = vb(v);
-            else mAny = false;
-        } else if (grp == "out") { oAny = true;
-            if      (name == "d3d11")    out.useD3D11 = vb(v);
-            else if (name == "tex")      out.texFormat = (int)vd(v);
-            else if (name == "nv12")     out.vpNV12 = vb(v);
-            else if (name == "p010")     out.vpP01x = vb(v);
-            else if (name == "yuy2")     out.vpYUY2 = vb(v);
-            else if (name == "other")    out.vpOther = vb(v);
-            else if (name == "deint")    out.deinterlace = (int)vd(v);
-            else if (name == "deintDb")  out.deintDouble = vb(v);
-            else if (name == "deintBl")  out.deintBlend = vb(v);
-            else if (name == "chroma")   out.chromaScaling = (int)vd(v);
-            else if (name == "upsc")     out.upscaling = (int)vd(v);
-            else if (name == "downsc")   out.downscaling = (int)vd(v);
-            else if (name == "superRes") out.superRes = (int)vd(v);
-            else if (name == "dither")   out.useDither = vb(v);
-            else if (name == "vblank")   out.vBlank = vb(v);
-            else if (name == "adjust")   out.adjustPresent = vb(v);
-            else if (name == "reinit")   out.reinitDisplay = vb(v);
-            else if (name == "showStats") out.showStats = vb(v);
-            else if (name == "tray")     out.trayIcon = vb(v);
-            else oAny = false;
+            else if (name == "expTm")      hdr.experimentalToneMapper = (int)vd(v);
+            else if (name == "tmContrast") hdr.toneLutContrast = (float)vd(v);
+            else hit = false;
+            hAny = hAny || hit;
+        } else if (grp == "ml") {
+            bool hit = true;
+            if      (name == "enable")         ml.enable = vb(v);
+            else if (name == "mode")           ml.mode = (int)vd(v);
+            else if (name == "toneEnable")     ml.toneCurveEnabled = vb(v);
+            else if (name == "gamma")          ml.gamma = (float)vd(v);
+            else if (name == "shadow")         ml.shadow = (float)vd(v);
+            else if (name == "shDehaze")       ml.shadowDehaze = (float)vd(v);
+            else if (name == "highlight")      ml.highlight = (float)vd(v);
+            else if (name == "hiRoll")         ml.highlightRolloffCtrl = (float)vd(v);
+            else if (name == "gammaTopUp")     ml.gammaTopUp = (float)vd(v);
+            else if (name == "hunt")           ml.hunt = (float)vd(v);
+            else if (name == "chN")            ml.chNeutral = (float)vd(v);
+            else if (name == "chF")            ml.chFire = (float)vd(v);
+            else if (name == "knee")           ml.chKnee = (float)vd(v);
+            else if (name == "skin")           ml.chSkin = (float)vd(v);
+            else if (name == "contrastEnable") ml.contrastEnabled = vb(v);
+            else if (name == "contrast")       ml.contrast = (float)vd(v);
+            else if (name == "csZoneLo")       ml.contrastZoneLo = (float)vd(v);
+            else if (name == "csCap")          ml.contrastRatioCap = (float)vd(v);
+            else if (name == "csSkin")         ml.contrastSkinProtect = (float)vd(v);
+            else if (name == "face")           ml.faceProtectEnabled = vb(v);
+            else if (name == "faceStr")        ml.faceStrength = (float)vd(v);
+            else if (name == "faceFeather")    ml.faceFeather = (float)vd(v);
+            else if (name == "faceExpand")     ml.faceExpand = (float)vd(v);
+            else if (name == "sky")            ml.skyEnabled = vb(v);
+            else if (name == "skyStr")         ml.skyStrength = (float)vd(v);
+            else if (name == "person")         ml.personEnabled = vb(v);
+            else if (name == "persStr")        ml.personStrength = (float)vd(v);
+            else if (name == "skinPres")       ml.skinPreserve = (float)vd(v);
+            else if (name == "bars")           ml.barsEnabled = vb(v);
+            else if (name == "barsHighlight")  ml.barsHighlight = vb(v);
+            else if (name == "debugLog")       ml.debugLog = vb(v);
+            else if (name == "debugCopy")      ml.debugCopy = vb(v);
+            else if (name == "shadowVis")      ml.shadowDebugVis = vb(v);
+            else if (name == "shadowZoneCeil") ml.shadowZoneCeil = (float)vd(v);
+            else if (name == "shadowSkin")     ml.shadowSkinProtect = (float)vd(v);
+            else if (name == "shadowCap")      ml.shadowRatioCap = (float)vd(v);
+            else if (name == "contrastVis")    ml.contrastDebugVis = vb(v);
+            else if (name == "faceVis")        ml.faceDebugVis = vb(v);
+            else if (name == "skyVis")         ml.skyDebugVis = vb(v);
+            else if (name == "personOv")       ml.personOverlay = vb(v);
+            else hit = false;
+            mAny = mAny || hit;
+        } else if (grp == "out") {
+            bool hit = true;
+            if      (name == "d3d11")         out.useD3D11 = vb(v);
+            else if (name == "tex")           out.texFormat = (int)vd(v);
+            else if (name == "nv12")          out.vpNV12 = vb(v);
+            else if (name == "p010")          out.vpP01x = vb(v);
+            else if (name == "yuy2")          out.vpYUY2 = vb(v);
+            else if (name == "other")         out.vpOther = vb(v);
+            else if (name == "deint")         out.deinterlace = (int)vd(v);
+            else if (name == "deintDb")       out.deintDouble = vb(v);
+            else if (name == "deintBl")       out.deintBlend = vb(v);
+            else if (name == "shaderVP")      out.shaderVPScaling = vb(v);
+            else if (name == "chroma")        out.chromaScaling = (int)vd(v);
+            else if (name == "upsc")          out.upscaling = (int)vd(v);
+            else if (name == "downsc")        out.downscaling = (int)vd(v);
+            else if (name == "superRes")      out.superRes = (int)vd(v);
+            else if (name == "rtxVideoHdr")   out.rtxVideoHdr = vb(v);
+            else if (name == "interpolate50") out.interpolate50 = vb(v);
+            else if (name == "dither")        out.useDither = vb(v);
+            else if (name == "swapEffect")    out.swapEffect = (int)vd(v);
+            else if (name == "exclusiveFS")   out.exclusiveFS = vb(v);
+            else if (name == "vblank")        out.vBlank = vb(v);
+            else if (name == "adjust")        out.adjustPresent = vb(v);
+            else if (name == "reinit")        out.reinitDisplay = vb(v);
+            else if (name == "showStats")     out.showStats = vb(v);
+            else if (name == "tray")          out.trayIcon = vb(v);
+            else hit = false;
+            oAny = oAny || hit;
         }
     }
 
-    if (hAny) SetHdrSettings(hdr);
-    if (mAny) SetMlSettings(ml);
-    if (oAny) SetOutSettings(out);
+    // Remember the merged intent, then push it to whatever renderer exists. The
+    // remembering is what makes a pre-graph push survive; the push is what makes a
+    // post-graph one take effect.
+    if (hAny) { pendingHdr_ = hdr; hasHdr_ = true; }
+    if (mAny) { pendingMl_  = ml;  hasMl_  = true; }
+    if (oAny) { pendingOut_ = out; hasOut_ = true; }
+    ApplyPendingSettings();
     return S_OK;
 }
 
@@ -1715,15 +1980,37 @@ int MpcPlayer::GetDecklinkDevices(std::vector<std::string>& names) const
 void MpcPlayer::UpdateIcsFromFilter()
 {
     DeckLinkSourceStats ds;
-    if (!GetDeckLinkSourceStats(ds)) return;
+    const bool have = GetDeckLinkSourceStats(ds);
+    // Log even when the stats are unavailable: this used to return before logging,
+    // so "no filter meta line" could mean either "never called" or "called without
+    // stats", and that ambiguity is what kept the stale ICS invisible.
+    if (!have) {
+        Log("[DECKLINK][engine] filter meta: stats unavailable, ICS left at %d",
+            decklinkSettings_.inputColorSpace);
+        return;
+    }
     int ics = 0;
-    if      (ds.colorspace == 3 && (ds.eotf == 2 || ds.eotf == 4)) ics = ICS_BT2020_PQ;  // 4 = DV, PQ-coded
-    else if (ds.colorspace == 3 && ds.eotf == 3) ics = ICS_BT2020_HLG;
-    else if (ds.colorspace == 3)                  ics = ICS_BT2020_SDR;
-    else if (ds.colorspace == 2)                  ics = ICS_BT709;
-    else if (ds.colorspace == 1)                  ics = ICS_BT601;
+    // EOTF DOMINATES; colours space is only a fallback for SDR.
+    //
+    // PQ and HLG are defined only in BT.2020, so an EOTF of PQ or HLG means the
+    // signal is BT.2020 no matter what the colours-space flag says. Testing
+    // colours space first meant a source reporting cs=2 (709) with eotf=2 (PQ) —
+    // exactly what this capture box emits for HDR10 — resolved to ICS_BT709, and
+    // MPCVR was then told to treat HDR10 as SDR BT.709.
+    //
+    // The consequence is not subtle: the media type reaches the renderer as
+    // BT.709 with a gamma transfer function, so its transfer function is never
+    // 2084, so the PQ->SDR converter is NEVER selected — which is why "Convert to
+    // SDR" did nothing, and why it did nothing only SOMETIMES: the box reports cs=3
+    // on some titles and cs=2 on others, so the answer changed with the content.
+    if      (ds.eotf == 2 || ds.eotf == 4) ics = ICS_BT2020_PQ;   // 4 = DV, PQ-coded
+    else if (ds.eotf == 3)                 ics = ICS_BT2020_HLG;
+    else if (ds.colorspace == 3)           ics = ICS_BT2020_SDR;
+    else if (ds.colorspace == 2)           ics = ICS_BT709;
+    else if (ds.colorspace == 1)           ics = ICS_BT601;
+    Log("[DECKLINK][engine] filter meta (cs=%d eotf=%d) → ICS %d (was %d)",
+        ds.colorspace, ds.eotf, ics, decklinkSettings_.inputColorSpace);
     decklinkSettings_.inputColorSpace = ics;
-    Log("[DECKLINK][engine] filter meta (cs=%d eotf=%d) → ICS %d", ds.colorspace, ds.eotf, ics);
 }
 
 // The FILTER is the format-change authority now (its SDK event, raised on its
@@ -1753,17 +2040,40 @@ void MpcPlayer::PostDecklinkRebuild()
 
 void MpcPlayer::RequestDecklinkRestart()
 {
-    // Skip a rebuild only when the graph is ACTUALLY SHOWING video (delivered
-    // advanced since the last decision — e.g. the format echo right after an
-    // open). If the graph is black/gate-dropping (delivered stagnant), ALWAYS
-    // rebuild: that is the self-heal path for a stale media type.
     DeckLinkSourceStats ds;
-    const bool showing = GetDeckLinkSourceStats(ds) && ds.framesDelivered > m_lastDlvSnapshot;
+    if (!GetDeckLinkSourceStats(ds)) {
+        // No stats means no evidence, and the old code turned that into a
+        // FABRICATED one: GetDeckLinkSourceStats zeroes the struct on failure, and
+        // m_lastDlvSnapshot was written unconditionally — so a failed read stored 0,
+        // and the next successful comparison saw "delivered > 0" and concluded video
+        // was flowing. The skip then fired on every subsequent request. Stats are
+        // unavailable for real periods here ("filter meta: stats unavailable"), so
+        // this was not a rare path.
+        Log("[DECKLINK][engine] restart requested, source stats unavailable — rebuilding");
+        PostDecklinkRebuild();
+        return;
+    }
+
+    const bool advanced = ds.framesDelivered > m_lastDlvSnapshot;
+    // "Delivering" is NOT "showing". A stale media type keeps delivering frames that
+    // the size gate then throws away (dims != connected type), so a delivery-only
+    // test skipped exactly the rebuild that fixes it — and because the stale state
+    // never clears itself, the picture stayed black until the app was restarted.
+    // Gate drops are the direct evidence that the connected media type no longer
+    // matches the signal, so their absence is what makes the skip safe.
+    const bool dropping = ds.gateDropped > m_lastGateSnapshot;
     m_lastDlvSnapshot = ds.framesDelivered;
-    if (showing) {
+    m_lastGateSnapshot = ds.gateDropped;
+
+    // Skip a rebuild only when the graph is ACTUALLY SHOWING video: frames
+    // advancing AND nothing being gate-dropped. Anything else rebuilds — that is
+    // the self-heal path for a stale media type.
+    if (advanced && !dropping) {
         Log("[DECKLINK][engine] restart requested while video is flowing — skipped");
         return;
     }
+    Log("[DECKLINK][engine] restart requested (advanced=%d gateDropped=%llu/%llu) — rebuilding",
+        advanced ? 1 : 0, ds.gateDropped, m_lastGateSnapshot);
     PostDecklinkRebuild();
 }
 
@@ -1835,6 +2145,41 @@ HRESULT MpcPlayer::SetDecklinkInputColor(int ics)
     s.iInputColorSpace = ics;
     vr->SetSettings(s);
     return S_OK;
+}
+
+// Derive the input colour space from the media type the graph ACTUALLY negotiated.
+//
+// This is the authoritative source, and the engine already logs it ("source media
+// type: ... tf=15 hdr=1"). The two earlier paths both fail in practice on the
+// DeckLink-direct graph:
+//   * the monitor's advice resolves colours space BEFORE the EOTF, so a PQ signal
+//     flagged cs=2 comes back as BT.709;
+//   * UpdateIcsFromFilter() reads the source filter's stats, which are unavailable
+//     during a rebuild — it logs "stats unavailable" and leaves the stale value in
+//     place.
+// So BT.709 won every time, and MPCVR was told to treat HDR10 as SDR. That is what
+// made "Convert to SDR" inert: the renderer's transfer function was never 2084, so
+// the PQ->SDR converter was never built, at any setting.
+//
+// The transfer function settles it on its own — PQ and HLG exist only in BT.2020 —
+// so EOTF is tested first and the primaries are only a fallback for SDR.
+int MpcPlayer::IcsFromMediaType() const
+{
+    if (videoStreamInfo_.transferFunction == MFVideoTransFunc_2084) return ICS_BT2020_PQ;
+    if (videoStreamInfo_.transferFunction == MFVideoTransFunc_HLG)  return ICS_BT2020_HLG;
+    if (videoStreamInfo_.colorspace == 3) return ICS_BT2020_SDR;
+    if (videoStreamInfo_.colorspace == 1) return ICS_BT601;
+    return ICS_BT709;
+}
+
+void MpcPlayer::ApplyIcsFromMediaType()
+{
+    const int ics = IcsFromMediaType();
+    Log("[ENGINE] media-type ICS: tf=%d hdr=%d cs=%d -> ICS %d (monitor/filter said %d)",
+        videoStreamInfo_.transferFunction, videoStreamInfo_.hdr ? 1 : 0,
+        videoStreamInfo_.colorspace, ics, decklinkSettings_.inputColorSpace);
+    if (ics == decklinkSettings_.inputColorSpace) return;
+    SetDecklinkInputColor(ics);
 }
 
 HRESULT MpcPlayer::GetOutSettings(OutSettings& o) const

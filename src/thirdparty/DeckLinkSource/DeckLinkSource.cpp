@@ -84,7 +84,10 @@ struct CaptureState {
     LONG64 rtBaseUs = 0;      // hwRef anchor → graph-relative sample times
     HANDLE restartEvent = nullptr;
     HANDLE firstDataEvent = nullptr;   // auto-reset: first format/frame detected
-    LONG   metaProbe = 0;              // one-shot: dump SDK signal/metadata on frame 1
+    LONG   metaProbe = 0;              // one-shot per session: dump SDK signal/metadata
+    LONG   hdrMetaTick = 0;            // countdown to the next ST 2086 read (1 Hz)
+    LONG   hdrMetaLogged = 0;          // values logged once, then only when they change
+    double hdrCll = 0.0, hdrFall = 0.0, hdrMaxMLL = 0.0, hdrMinMLL = 0.0;  // last read
     LONG   twelve = 0;                 // 1 while the 12-bit probe stream is the active capture
     LONG   twelveProbe = 0;            // one-shot per session: ask for a 12-bit capture, measure, revert
     LONG   modeApplied = 0;            // detected display mode has been applied once
@@ -183,7 +186,9 @@ public:
     std::thread m_worker;
 
     HRESULT StartCaptureSession(const wchar_t* deviceName);
-    void    StopCaptureSession();
+    void    StopDelivery();            // phase 1: halt at SDK, no join, no renderer wait
+    void    JoinCaptureThreads();      // phases 2-3: join+release; after StopDelivery AND pin disconnect
+    void    StopCaptureSession();      // == StopDelivery + JoinCaptureThreads
     void    SetLogSink(void* ctx, DeckLinkSourceLogFn fn);
     void    SetRestartCb(void* ctx, DeckLinkRestartFn fn);
     void    GetStats(DeckLinkSourceStats& out);
@@ -351,8 +356,17 @@ HRESULT CDeckLinkOutputPin::SetMediaType(const CMediaType* pmt)
         m_st.Lock();
         m_connWidth  = vih->bmiHeader.biWidth;
         m_connHeight = labs(vih->bmiHeader.biHeight);
-        StateLog(&m_st, "[DECKLINK][src] SetMediaType: %dx%d (state %dx%d)",
-            m_connWidth, m_connHeight, m_st.width, m_st.height);
+        // Log the colourimetry that is going INTO the connected media type, alongside
+        // the state it came from. Without this the two ends of the handoff were logged
+        // separately (the detection here, the parsed value in the engine) and they
+        // disagreed with no way to see where — the engine read tf=15 from a media type
+        // the state said should carry 709.
+        DXVA2_ExtendedFormat wrote = {};
+        wrote.value = vih->dwControlFlags;
+        StateLog(&m_st, "[DECKLINK][src] SetMediaType: %dx%d (state %dx%d) cs=%d eotf=%d -> tf=%d prim=%d",
+            m_connWidth, m_connHeight, m_st.width, m_st.height,
+            m_st.colorspace, m_st.eotf,
+            (int)wrote.VideoTransferFunction, (int)wrote.VideoPrimaries);
         m_st.Unlock();
     }
     return hr;
@@ -459,6 +473,14 @@ void CDeckLinkOutputPin::GetStats(DeckLinkSourceStats& out)
     out.eotf = m_st.eotf;
     out.streaming = m_st.started;
     out.lastRefUs = (m_st.prevRefUs > 0) ? (unsigned long long)m_st.prevRefUs : 0;
+    // Gate on the value, not on a "we have read it" flag: a failed or not-yet-settled
+    // read leaves zeros behind, and publishing those would announce real metadata.
+    const bool hdrOk = (m_st.hdrCll > 1.0 && m_st.hdrCll <= 10000.0);
+    out.hasHdrStaticMeta    = hdrOk ? 1 : 0;
+    out.hdrMaxCLL           = hdrOk ? (float)m_st.hdrCll : 0.0f;
+    out.hdrMaxFALL          = hdrOk ? (float)m_st.hdrFall : 0.0f;
+    out.hdrMasteringMaxNits = hdrOk ? (float)m_st.hdrMaxMLL : 0.0f;
+    out.hdrMasteringMinNits = hdrOk ? (float)m_st.hdrMinMLL : 0.0f;
     m_st.Unlock();
 }
 
@@ -513,6 +535,15 @@ HRESULT CDeckLinkOutputPin::StartCaptureSession(const wchar_t* deviceName)
     m_dev = dev.Detach();
     m_input = input.Detach();
 
+    // REMOVED 2026-09-18: the IDeckLinkHDMIInputEDID read probe. It answered its
+    // question — this card's input EDID already reports bmdDynamicRangeHDRStaticPQ,
+    // so it does advertise HDR, and yet the source still sends no ST.2086 payload —
+    // but it was added in the same session that capture regressed (connected media
+    // type stuck at 1080p while the source streamed 4K24, so ~99% of frames were
+    // gate-dropped). A QI plus GetInt on the EDID interface is the only plausible
+    // thing that could have disturbed the EDID handshake, so it is gone until that
+    // is ruled out. If it is ever needed again, prove capture stays healthy first.
+
     // Wire the capture callback — the SDK input thread only invokes
     // VideoInputFrameArrived / VideoInputFormatChanged after SetCallback, and
     // it AddRefs the callback for us (drop our local ref right after the set).
@@ -554,36 +585,47 @@ HRESULT CDeckLinkOutputPin::StartCaptureSession(const wchar_t* deviceName)
     return S_OK;
 }
 
-void CDeckLinkOutputPin::StopCaptureSession()
+void CDeckLinkOutputPin::StopDelivery()
 {
+    // PHASE 1 of the ordered teardown (DESIGN.md): halt the FEEDER at the
+    // source WITHOUT joining anything and WITHOUT waiting on the renderer.
+    //   1. SetCallback(nullptr): the SDK stops invoking us — nothing new can
+    //      enter the pipeline. It never blocks on the renderer.
+    //   2. Flags + wake: the forwarder drains/abandons, the worker runs its
+    //      quit path (StopStreams + DisableVideoInput — the worker is the ONLY
+    //      thread allowed to call those synchronously; calling from here can
+    //      block on an in-flight Deliver against a live renderer).
+    if (m_input) m_input->SetCallback(nullptr);
     m_st.Lock();
     const bool wasStreaming = m_st.started != 0;
     m_st.Unlock();
-    StateLog(&m_st, "[DECKLINK][src] StopCaptureSession (streaming=%d in=%d)",
-        wasStreaming, m_input != nullptr);
-
-    // 1. Tell callbacks to bail, then the worker to exit, and wake it. The
-    //    worker is the ONLY thread that calls StopStreams/DisableVideoInput —
-    //    a synchronous StopStreams here (or on the graph thread) can block on an
-    //    in-flight Deliver against a renderer that is itself being torn down
-    //    (the observed UI freeze on restart).
     InterlockedExchange(&m_st.stopPending, 1);
     InterlockedExchange(&m_st.quit, 1);
     InterlockedExchange(&m_st.active, 0);
     SetEvent(m_st.restartEvent);
+    if (m_dataEvent) SetEvent(m_dataEvent);
+    StateLog(&m_st, "[DECKLINK][src] StopDelivery (streaming=%d in=%d)",
+        wasStreaming, m_input != nullptr);
+}
 
-    // 2. Join the forwarder (drains the queue; Deliver stops once inactive),
-    //    then the worker (its quit path stops streams + disables input), then
-    //    drop the SDK objects. This order gives the worker's m_input reads a
-    //    happens-before (join), and SetCallback(null) happens only after no
-    //    thread can be inside the SDK.
-    if (m_dataEvent) { SetEvent(m_dataEvent); }   // wake the forwarder to exit
+void CDeckLinkOutputPin::JoinCaptureThreads()
+{
+    // PHASES 2-3: join the source's threads. SAFE ONLY AFTER StopDelivery AND
+    // after the caller disconnected this pin from the renderer (an in-flight
+    // Deliver then returns immediately). Both threads exit via their quit
+    // flags; joining them is just waiting for their current iteration.
+    if (m_dataEvent) SetEvent(m_dataEvent);
     if (m_forwarder.joinable()) m_forwarder.join();
     if (m_worker.joinable()) m_worker.join();
     if (m_dataEvent) { CloseHandle(m_dataEvent); m_dataEvent = nullptr; }
-    if (m_input) { m_input->SetCallback(nullptr); }
     if (m_input) { m_input->Release(); m_input = nullptr; }
     if (m_dev)   { m_dev->Release();   m_dev = nullptr; }
+}
+
+void CDeckLinkOutputPin::StopCaptureSession()
+{
+    StopDelivery();
+    JoinCaptureThreads();
 }
 
 // ---------------------------------------------------------------------------
@@ -701,8 +743,43 @@ void CDeckLinkOutputPin::WorkerLoop()
                 if (SUCCEEDED(m_input->QueryInterface(IID_IDeckLinkStatus, (void**)&ist)) && ist) {
                     LONGLONG v = 0;
                     if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputColorspace, &v))) {
+                        // 0 (unknown) is a real answer and must stay 0, not become
+                        // "BT.709". The old `: 2` fallback reported a detection that
+                        // had not happened, so an unrecognised value was announced as
+                        // BT.709 and the panel showed it as fact. 0 already behaves as
+                        // BT.709 in the media type below (both else-branches default
+                        // to 709), so nothing downstream changes — only the claim does.
                         m_st.colorspace = (v == (LONGLONG)bmdColorspaceRec2020) ? 3
-                                        : (v == (LONGLONG)bmdColorspaceRec601)  ? 1 : 2;
+                                        : (v == (LONGLONG)bmdColorspaceRec601)  ? 1
+                                        : (v == (LONGLONG)bmdColorspaceRec709)  ? 2 : 0;
+                    }
+                    // OBSERVATION ONLY — the two mode status items, logged side by side.
+                    //
+                    // DetectedVideoInputMode is the mode the SOURCE is sending;
+                    // CurrentVideoInputMode is the mode we are CAPTURING IN. When they
+                    // disagree the connected media type is stale, and the capture
+                    // callback's size gate then discards every frame whose dimensions
+                    // differ from it — which is exactly how a 4K24 source being
+                    // captured at a 1080p media type lost 446 of 451 frames, with the
+                    // only visible symptom a stutter in the picture.
+                    //
+                    // Nothing acts on this yet, deliberately: the same disagreement
+                    // during StartCapture is normal (the card reports a default mode
+                    // before the source's is known), so a guard needs to tell those
+                    // apart before it may force a renegotiation. Log it first and see
+                    // what the healthy and unhealthy cases actually look like.
+                    if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputMode, &v))) {
+                        const unsigned long long det = (unsigned long long)v;
+                        LONGLONG cur = 0;
+                        const bool haveCur = SUCCEEDED(ist->GetInt(bmdDeckLinkStatusCurrentVideoInputMode, &cur));
+                        const unsigned long long curM = haveCur ? (unsigned long long)cur : 0;
+                        StateLog(&m_st, "[DECKLINK][src] modes: detected=%#llx current=%#llx%s conn=%dx%d%s",
+                            det, curM, haveCur ? "" : " (current unreadable)",
+                            (int)m_connWidth, (int)m_connHeight,
+                            (haveCur && det != curM) ? "  <-- MISMATCH: source mode != capture mode" : "");
+                    }
+                    if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusVideoInputSignalLocked, &v))) {
+                        StateLog(&m_st, "[DECKLINK][src] signalLocked=%lld", (long long)v);
                     }
                     if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputDynamicRange, &v))) {
                         if (v & bmdDynamicRangeHDRStaticHLG)      m_st.eotf = 3;
@@ -715,6 +792,21 @@ void CDeckLinkOutputPin::WorkerLoop()
                         // state still builds HDR, while the panel can still
                         // say "Dolby Vision" instead of collapsing to HDR10.
                         else if (m_st.colorspace == 3) m_st.eotf = 4;
+                        // Everything else IS SDR, and this has to be stated rather
+                        // than left to inheritance. Without this branch eotf kept
+                        // whatever the PREVIOUS title set, so a later SDR signal
+                        // was still announced as PQ — and the media type went out
+                        // as 2084, so the renderer decoded gamma-encoded SDR as PQ
+                        // and tone-mapped it again.
+                        //
+                        // Observed on a Dolby Vision Profile 5 title from an Oppo:
+                        // P5 is single-layer with no HDR10 base layer, the Oppo sees
+                        // a capture card whose EDID advertises no HDR, and so it
+                        // converts DV to SDR and signals cs=2/dsdr=0 honestly. The
+                        // stale eotf then made Unplugged treat that SDR output as
+                        // PQ. (P7 survives this because it carries an HDR10 base
+                        // layer, so the Oppo can fall back to HDR instead.)
+                        else m_st.eotf = 0;
                     }
                     StateLog(&m_st, "[DECKLINK][src] format change: status cs=%d eotf=%d — engine rebuild requested",
                         m_st.colorspace, m_st.eotf);
@@ -860,12 +952,40 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFormatChanged(
     // the real BT.2020 primaries was tried here and STALLED the capture
     // (GetInt on the SDK callback thread under the CS) — the monitor-driven
     // ICS override carries the real color-space instead.
-    if (detectedSignalFlags & bmdDetectedVideoInputRGB444) m_st->colorspace = 2;
-    else if (detectedSignalFlags & bmdDetectedVideoInputYCbCr422) m_st->colorspace = 2; // Rec709 default
+    // The 4:2:2/4:4:4 detected-flag carries NO primary information — forcing
+    // BT.709 here is what made an HDR HDMI signal (BT.2020, YCbCr4:2:2) report
+    // BT.709 to the renderer and the panel (2026-09-15 bench). The authoritative
+    // primaries come from the WORKER's bmdDeckLinkStatusDetectedVideoInput-
+    // Colorspace read (outside SDK callbacks — a status query in-callback
+    // stalled the capture historically) and the monitor's SetSignalMeta.
+    (void)detectedSignalFlags;
     if (events & bmdVideoInputColorspaceChanged) {
-        // The 0x04 event precedes HDR content on HDMI — mark PQ until the
-        // frame flags refine it (Phase 2b reads GetFlags() per frame).
-        m_st->eotf = 2;
+        // DO NOT invent an EOTF here. This used to force `eotf = 2` (PQ) on the
+        // theory that "the 0x04 event precedes HDR content on HDMI", to be refined
+        // later by per-frame flag reads in a "Phase 2b" that was never implemented.
+        // Nothing refined it, so it simply OVERWROTE the worker's real measurement:
+        // captured live, the worker read the card status and logged cs=2 eotf=0,
+        // then this callback set eotf=2 ten milliseconds later, and the media type
+        // went out as 2084/PQ for an SDR signal.
+        //
+        // It also made the reported state depend on which of the two ran last — the
+        // same signal read eotf=2 or eotf=0 from one run to the next, which is the
+        // intermittency that made "Convert to SDR" and the HDR detection look
+        // unreliable. Readings previously taken as "HDR10 detected" (cs=2 eotf=2)
+        // were often this forced value rather than a detection.
+        //
+        // The EOTF has exactly one authoritative source, and it is not a callback:
+        // bmdDeckLinkStatusDetectedVideoInputDynamicRange, read on the WORKER
+        // (a status query inside an SDK callback stalled the driver historically —
+        // see the note below). That read distinguishes HLG, PQ, the DV fingerprint
+        // (BT.2020 + SDR) and plain SDR on its own.
+        //
+        // The cost is that the very first media type may be built before the
+        // worker's first read lands, so a cold start on HDR content can begin as
+        // SDR and correct on the rebuild that the worker's format-change already
+        // requests. That is preferable to announcing PQ for content that is not.
+        StateLog(m_st, "[DECKLINK][src] colorspaceChanged event — EOTF left to the worker's status read (eotf=%d)",
+            m_st->eotf);
     }
     m_st->formatOutstanding = 1;
     m_st->Unlock();
@@ -873,6 +993,16 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFormatChanged(
         (unsigned)dm, (unsigned long)w, (unsigned long)h,
         (fDen > 0 && fNum > 0) ? ((double)fDen / (double)fNum) : 0.0,
         (unsigned long)fDen, (unsigned long)fNum, (unsigned)detectedSignalFlags);
+    // `w`/`h` are logged above but the state only takes them when both are > 0, so a
+    // 0 would leave width/height stale while the mode and rate updated — the card
+    // would enable the new mode, the media type would be built from the OLD size, and
+    // the capture callback's size gate would then discard every frame of the new one.
+    // (Observed 2026-09-18: source 4K24, media type 1080p, 446 of 451 frames dropped.)
+    // Log the take explicitly so that failure is distinguishable from a wrong mode.
+    if (!(w > 0 && h > 0)) {
+        StateLog(m_st, "[DECKLINK][src] !! GetWidth/GetHeight returned %lldx%lld — dimensions NOT updated (state stays %ldx%ld)",
+            (long long)w, (long long)h, (long)m_st->width, (long)m_st->height);
+    }
     SetEvent(m_st->firstDataEvent);    // a format is known → release StartCapture wait
     SetEvent(m_st->restartEvent);      // worker renegotiates (mode-diff only)
     return S_OK;
@@ -917,6 +1047,23 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
         m_st->skipped++;
         if (connW > 0 && (realW != connW || realH != connH)) {
             m_st->gateDropped++;              // dims differ from the connected type
+            // Correct the STATE from the frame before asking for a rebuild.
+            //
+            // This is what makes the self-heal below able to converge. The state only
+            // ever takes its dimensions from a format EVENT (see the `width <= 0`
+            // case above), so if that event does not re-fire — which is what happens
+            // once the handshake has settled on the wrong mode — width/height stay
+            // stale, GetMediaType rebuilds the SAME wrong type, the frames still
+            // mismatch, and the rebuild repeats every 1.5 s forever. Observed
+            // 2026-09-18: the card was torn down and rebuilt on that cadence while
+            // 446 of 451 frames were gate-dropped, and only an app restart recovered
+            // it. The FRAME's dimensions are ground truth — the card is delivering
+            // them — so the state is corrected from those.
+            if (realW > 0 && realH > 0 && (m_st->width != realW || m_st->height != realH)) {
+                StateLog(m_st, "[DECKLINK][src] size gate: state %ldx%ld != frames %ldx%ld — taking the frame's size",
+                    (long)m_st->width, (long)m_st->height, (long)realW, (long)realH);
+                m_st->width = realW; m_st->height = realH;
+            }
             // The connected type is STALE — request an engine rebuild so the
             // new format drives delivery. Throttled: the SDK can fire many
             // mismatched frames while the graph is mid-flip, and the engine
@@ -985,11 +1132,21 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
         }
     }
 
-    // HDR-signal probe — ONE frame per session: dump everything the SDK will
+    // HDR-signal probe — one frame per DISTINCT signal. Dumps everything the SDK will
     // tell us about this input, raw. Bench question: does the card parse HDMI
-    // InfoFrame colorimetry + ST 2086 (Dune DV disc) or not? Nothing user-visible;
-    // this block is deleted once the answers are in.
+    // InfoFrame colorimetry + ST 2086, or not? Nothing user-visible; this block is
+    // deleted once the answers are in.
+    //
+    // Re-armed by the worker on a format change, so it lands on the HDR frame rather
+    // than on frame 1 (see metaProbes).
     if (m_st->metaProbe == 0) {
+        // ONE frame per session, deliberately. This queries IDeckLinkStatus on the SDK
+        // callback thread, and a status query in-callback is known to stall this
+        // driver. Re-arming it per format change (tried 2026-09-18) broke capture:
+        // the card stayed on a 1080p mode while the source was 4K, so 49 of 51 frames
+        // were gate-dropped and the signal classification came back cs=0 eotf=0.
+        // If this ever needs to run on an HDR frame, do the status read on the WORKER
+        // and only pass the result here.
         m_st->metaProbe = 1;
         CComPtr<IDeckLinkStatus> st;
         if (m_input && SUCCEEDED(m_input->QueryInterface(IID_IDeckLinkStatus, (void**)&st))) {
@@ -1022,32 +1179,110 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
         }
         CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
         if (videoFrame && SUCCEEDED(videoFrame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta))) {
-            LONGLONG v = 0;
+            // THE ACCESSOR TYPE IS THE WHOLE BALLGAME, and getting it wrong once
+            // cost us months. Blackmagic's own DeckLinkAPI.idl splits these:
+            //
+            //   /* Colorspace Metadata - Integers */  bmdDeckLinkFrameMetadataColorspace
+            //   /* HDR Metadata        - Integers */  bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc
+            //   /* HDR Metadata        - Floats   */  primaries x8, white point x2,
+            //                                         mastering min/max, MaxCLL, MaxFALL
+            //
+            // The first version of this probe called GetInt on all fourteen and
+            // printed "<unsupported>" for any failure. The twelve float-typed ones all
+            // failed, and the two integer-typed ones succeeded — which is exactly what
+            // a type mismatch looks like, and is precisely the evidence we recorded as
+            // "the card cannot supply ST 2086 over HDMI". It was never true.
+            //
+            // Every failure now prints its HRESULT, so a wrong accessor can never
+            // again be mistaken for genuine non-support.
+            const DWORD flags = videoFrame->GetFlags();
+            StateLog(m_st, "[PROBE] frame flags=0x%08X  containsHDRMeta=%d  noInputSource=%d",
+                (unsigned)flags,
+                (flags & bmdFrameContainsHDRMetadata) ? 1 : 0,
+                (flags & bmdFrameHasNoInputSource) ? 1 : 0);
+
             StateLog(m_st, "[PROBE] IDeckLinkVideoFrameMetadataExtensions available — ST 2086:");
-            const struct { BMDDeckLinkFrameMetadataID id; const char* name; } ids[] = {
-                { bmdDeckLinkFrameMetadataColorspace,                         "colorspace   " },
-                { bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc,      "EOTF         " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedX,            "primRx       " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedY,            "primRy       " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenX,          "primGx       " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenY,          "primGy       " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueX,           "primBx       " },
-                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueY,           "primBy       " },
-                { bmdDeckLinkFrameMetadataHDRWhitePointX,                     "whiteptX     " },
-                { bmdDeckLinkFrameMetadataHDRWhitePointY,                     "whiteptY     " },
-                { bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance,    "maxMLL(+1)   " },
-                { bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance,    "minMLL(x.0001)" },
-                { bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel,        "MaxCLL       " },
-                { bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel,   "MaxFALL      " },
+
+            const struct { BMDDeckLinkFrameMetadataID id; const char* name; } intIds[] = {
+                { bmdDeckLinkFrameMetadataColorspace,                    "colorspace   " },
+                { bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc, "EOTF         " },
             };
-            for (const auto& e : ids) {
-                if (SUCCEEDED(meta->GetInt(e.id, &v)))
-                    StateLog(m_st, "[PROBE]   %s = %lld", e.name, (long long)v);
-                else
-                    StateLog(m_st, "[PROBE]   %s = <unsupported>", e.name);
+            for (const auto& e : intIds) {
+                LONGLONG v = 0;
+                const HRESULT hr = meta->GetInt(e.id, &v);
+                if (SUCCEEDED(hr)) StateLog(m_st, "[PROBE]   %s = %lld", e.name, (long long)v);
+                else                StateLog(m_st, "[PROBE]   %s = n/a (hr=0x%08X)", e.name, (unsigned)hr);
+            }
+
+            // Units per the .idl: primaries/white point 0.0-1.0; maxMLL and the two
+            // content-light values 1-65535 cd/m2; minMLL 0.0001-6.5535 cd/m2.
+            const struct { BMDDeckLinkFrameMetadataID id; const char* name; } floatIds[] = {
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedX,          "primRx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedY,          "primRy       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenX,        "primGx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenY,        "primGy       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueX,         "primBx       " },
+                { bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueY,         "primBy       " },
+                { bmdDeckLinkFrameMetadataHDRWhitePointX,                   "whiteptX     " },
+                { bmdDeckLinkFrameMetadataHDRWhitePointY,                   "whiteptY     " },
+                { bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance,  "maxMLL nits  " },
+                { bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance,  "minMLL nits  " },
+                { bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel,      "MaxCLL  nits " },
+                { bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel, "MaxFALL nits " },
+            };
+            for (const auto& e : floatIds) {
+                double d = 0.0;
+                const HRESULT hr = meta->GetFloat(e.id, &d);
+                if (SUCCEEDED(hr)) StateLog(m_st, "[PROBE]   %s = %g", e.name, d);
+                else                StateLog(m_st, "[PROBE]   %s = n/a (hr=0x%08X)", e.name, (unsigned)hr);
             }
         } else {
             StateLog(m_st, "[PROBE] IDeckLinkVideoFrameMetadataExtensions UNAVAILABLE on frame");
+        }
+    }
+
+    // HDR static metadata (ST 2086) from the HDMI HDR InfoFrame — deliberately NOT
+    // behind the one-shot gate above, because that probe fires on frame 1, which is
+    // exactly when these reads return E_UNEXPECTED.
+    //
+    // Sampled at ~1 Hz rather than per frame: these are COM calls on the SDK capture
+    // callback thread, and this driver is documented as sensitive to work in there.
+    // ST 2086 is static per title, so a 1 Hz sample misses nothing and costs 1/24th
+    // of a per-frame read at 24 fps.
+    //
+    // Gated on bmdFrameContainsHDRMetadata, so the cost is paid only on frames the
+    // card says actually carry an HDR block. Values are logged once and then only
+    // when they change.
+    if (videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)) {
+        const LONG tick = InterlockedDecrement(&m_st->hdrMetaTick);
+        if (tick <= 0) {
+            InterlockedExchange(&m_st->hdrMetaTick, 24);   // next sample in ~1 s at 24 fps
+            CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
+            if (SUCCEEDED(videoFrame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta)) && meta) {
+                double cll = 0.0, fall = 0.0, mMax = 0.0, mMin = 0.0;
+                const HRESULT hCll  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel, &cll);
+                const HRESULT hFall = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel, &fall);
+                const HRESULT hMax  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance, &mMax);
+                const HRESULT hMin  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance, &mMin);
+
+                // Only publish a reading if the content-light pair actually came back.
+                // A failed read must not overwrite a good one with zeros.
+                if (SUCCEEDED(hCll) && SUCCEEDED(hFall) && cll > 1.0 && cll <= 10000.0) {
+                    const bool changed = (m_st->hdrMetaLogged == 0)
+                        || cll != m_st->hdrCll || fall != m_st->hdrFall
+                        || mMax != m_st->hdrMaxMLL || mMin != m_st->hdrMinMLL;
+                    m_st->hdrCll = cll;     m_st->hdrFall = fall;
+                    m_st->hdrMaxMLL = mMax; m_st->hdrMinMLL = mMin;
+                    if (changed) {
+                        m_st->hdrMetaLogged = 1;
+                        StateLog(m_st, "[HDRMETA] frame %llu  MaxCLL=%g  MaxFALL=%g  masteringMax=%g  masteringMin=%g",
+                            m_st->frames, cll, fall, mMax, mMin);
+                    }
+                } else if (m_st->hdrMetaLogged == 0) {
+                    StateLog(m_st, "[HDRMETA] read failed (hr cll/fall/max/min = 0x%08X/0x%08X/0x%08X/0x%08X) — frame flagged HDR but no usable values",
+                        (unsigned)hCll, (unsigned)hFall, (unsigned)hMax, (unsigned)hMin);
+                }
+            }
         }
     }
 
@@ -1128,6 +1363,11 @@ public:
     {
         if (!m_pPin) return E_POINTER;
         return m_pPin->StartCaptureSession(deviceName ? deviceName : L"");
+    }
+    STDMETHODIMP StopDelivery() override
+    {
+        if (m_pPin) m_pPin->StopDelivery();
+        return S_OK;
     }
     STDMETHODIMP StopCapture() override
     {

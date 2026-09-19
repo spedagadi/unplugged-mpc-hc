@@ -54,6 +54,31 @@ static int ToWide(const char* utf8, wchar_t* w, int cap) {
     return n;
 }
 
+// Reads a flat JSON field by name (string value, or bare number). Our own UI
+// generates every payload, so a full parser isn't warranted — but dispatching
+// on the "a" field is, because a settings value can legitimately contain words
+// like "play" or "seek" and used to mis-dispatch the whole command.
+// Declared outside the extern "C" block below: it returns a C++ type.
+static std::string JsonField(const std::string& s, const char* key)
+{
+    const std::string k = std::string("\"") + key + "\"";
+    size_t p = s.find(k);
+    if (p == std::string::npos) return std::string();
+    p += k.size();
+    while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == ':')) ++p;
+    std::string out;
+    if (p < s.size() && s[p] == '"') {
+        for (++p; p < s.size() && s[p] != '"'; ++p) {
+            if (s[p] == '\\' && p + 1 < s.size()) ++p;
+            out += s[p];
+        }
+        return out;
+    }
+    while (p < s.size() && ((s[p] >= '0' && s[p] <= '9') || s[p] == '-' || s[p] == '.'))
+        out += s[p++];
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 extern "C" {
 
@@ -95,34 +120,73 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
     EnsureCom();
     if (!jsonUtf8) return -1;
     const std::string s(jsonUtf8);
-    if (s.find("\"play\"") != std::string::npos)  return (int)g_player()->Play();
-    if (s.find("\"pause\"") != std::string::npos) return (int)g_player()->Pause();
-    if (s.find("\"stop\"") != std::string::npos)  return (int)g_player()->Pause();
-    if (s.find("\"seek\"") != std::string::npos) {
-        const size_t p = s.find("\"pos\"");
-        if (p != std::string::npos) {
-            long long pos = 0;
-            for (size_t i = p + 6; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i)
-                pos = pos * 10 + (s[i] - '0');
-            return (int)g_player()->Seek(pos);   // pos in 100 ns units (JS seconds * 1e7)
-        }
+    const std::string a = JsonField(s, "a");
+
+    if (a == "play")  return (int)g_player()->Play();
+    if (a == "pause") return (int)g_player()->Pause();
+    // Live capture has nothing to stop — the engine owns start/stop and the
+    // self-healing monitor drives transitions, so "stop" stays a benign pause.
+    if (a == "stop")  return (int)g_player()->Pause();
+    if (a == "seek") {
+        const std::string pos = JsonField(s, "pos");
+        long long n = 0;
+        for (size_t i = 0; i < pos.size(); ++i)
+            if (pos[i] >= '0' && pos[i] <= '9') n = n * 10 + (pos[i] - '0');
+        return (int)g_player()->Seek(n);   // pos in 100 ns units (JS seconds * 1e7)
     }
-    if (s.find("\"set\"") != std::string::npos) {
+    if (a == "set") {
         // P2 settings: {"a":"set","sets":"hdr.sdrNits=204;ml.gamma=1.1;..."}
-        const size_t p = s.find("\"sets\":\"");
-        if (p != std::string::npos) {
-            std::vector<std::string> sets;
-            std::string body;
-            for (size_t i = p + 8; i < s.size() && s[i] != '"'; ++i) body += s[i];
-            size_t start = 0;
-            for (size_t i = 0; i <= body.size(); ++i) {
-                if (i == body.size() || body[i] == ';') {
-                    if (i > start) sets.push_back(body.substr(start, i - start));
-                    start = i + 1;
-                }
+        const std::string body = JsonField(s, "sets");
+        std::vector<std::string> sets;
+        size_t start = 0;
+        for (size_t i = 0; i <= body.size(); ++i) {
+            if (i == body.size() || body[i] == ';') {
+                if (i > start) sets.push_back(body.substr(start, i - start));
+                start = i + 1;
             }
-            return (int)g_player()->ApplySettingsFlat(sets);
         }
+        return (int)g_player()->ApplySettingsFlat(sets);
+    }
+    // Persist the renderer's live settings to MPCVR's own registry key. SetSettings
+    // is live-only, so without this a graph rebuild re-reads a stale key and every
+    // pushed setting is silently lost. The UI sends this once a change settles.
+    if (a == "save") return (int)g_player()->SaveRendererSettings();
+    if (a == "lut") {
+        // {"a":"lut","file":"C:\\...\\display.cube","mode":2}
+        //   empty file unloads; mode 0=off 1=gamma 2=greyscale 3=full (default)
+        const std::string m = JsonField(s, "mode");
+        return (int)g_player()->LoadCubeLut(JsonField(s, "file"),
+                                            m.empty() ? 3 : atoi(m.c_str()));
+    }
+    // {"a":"grab","file":"C:\\...\\frame.bmp"}
+    // Write the frame the renderer is producing right now. The point is A/B
+    // evidence: apply a setting, grab, apply another, grab, and compare the two
+    // files — "the picture did not change" stops being a judgement call.
+    if (a == "grab") return (int)g_player()->GrabFrame(JsonField(s, "file"));
+    // {"a":"rendererdump","file":"C:\\...\\renderer.txt"}
+    // The renderer's own live state (IVideoRenderer::GetMLStats) as text. This is
+    // how a machine checks a claim like "the mapper is running": the settings echo
+    // proves the value was stored, and only the renderer can say what it did with
+    // it. The MPCVR-side DLog is a no-op in Release builds, so this is the only
+    // channel that carries it.
+    if (a == "rendererdump") {
+        const std::string path = JsonField(s, "file");
+        if (path.empty()) return 0;
+        std::wstring text;
+        if (FAILED(g_player()->GetMlStats(text)) || text.empty()) return -1;
+        // GetMLStats emits UTF-16; narrow it so the dump is readable by anything.
+        const int need = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(),
+                                             nullptr, 0, nullptr, nullptr);
+        std::string utf8((size_t)(need > 0 ? need : 0), '\0');
+        if (need > 0) {
+            WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(),
+                                utf8.data(), need, nullptr, nullptr);
+        }
+        FILE* f = nullptr;
+        if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) return -1;
+        fwrite(utf8.data(), 1, utf8.size(), f);
+        fclose(f);
+        return 0;
     }
     return 0;
 }
