@@ -252,11 +252,11 @@ KEY_MAP = {
 # Rows whose panel option INDEX is not MPCVR's enum value (IVideoRenderer.h).
 # Cycle rows absent here send their index straight through.
 #   zion.toneMode    panel Auto/Manual/Off  -> iMLMode 2/1/0 (0 = Disable)
-#   hdr.toneMapCurve panel ACES..BT-2390    -> iHdrLocalToneMappingType 1..5
+#   hdr.toneMapCurve panel ACES..Reference  -> iHdrLocalToneMappingType 1..5,7
 #   out.texFormat    panel Auto/8/10/16f    -> iTexFormat 0/8/10/16
 VALUE_MAP = {
     "zion.toneMode":    [2, 1, 0],
-    "hdr.toneMapCurve": [1, 2, 3, 4, 5],
+    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7],
     "out.texFormat":    [0, 8, 10, 16],
 }
 
@@ -344,8 +344,15 @@ def build_rows():
     # sets it to 5, and VALUE_MAP shifts the panel index by +1). The shell used 2
     # here, but it populates rows by pulling the renderer, so its initial index
     # never reached anything — ours does, and 2 would have seeded Hable.
+    # "Reference" (index 5 -> TONE_CURVE_REFERENCE 7) is the upstream
+    # VideoRenderer-master converter kept verbatim — per-channel RGB Hable over a
+    # fixed 4.8, reading none of the title metadata, scene peak, knee or ICtCp.
+    # It exists to isolate a change: if the picture differs between "Hable" and
+    # "Reference" the change is in the machinery around the curve, not in Hable.
+    # It outranks the experimental mapper and ignores the knee; the Zion rows
+    # (Gamma top-up) still apply — zero them for a clean A/B.
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
-        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390"], 4, uncheck=False)
+        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference"], 4, uncheck=False)
     # Content peak: the top of the range the tone curves map FROM. NOT the display's
     # peak (that is "Static nits (max)", and it belongs to the HDR-output path).
     #

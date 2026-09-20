@@ -1470,7 +1470,12 @@ void MpcPlayer::ApplyPendingSettings()
     }
     if (hasMl_)  ApplyMlToSettings(pendingMl_, s);
     if (hasOut_) ApplyOutToSettings(pendingOut_, s);
+    // Instrumented 2026-09-20: SetSettings rebuilds the tone LUT and can BLOCK
+    // indefinitely while the graph is mid-rebuild. ENTER without RETURN in the
+    // engine log is the smoking gun for the UI freeze.
+    Log("[ENGINE] ApplyPendingSettings: SetSettings ENTER");
     vr->SetSettings(s);
+    Log("[ENGINE] ApplyPendingSettings: SetSettings RETURN");
     Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d pushed",
         hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0);
 }

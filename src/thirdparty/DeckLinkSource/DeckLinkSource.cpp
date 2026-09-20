@@ -21,6 +21,16 @@
 #include "DeckLinkAPI_h.h"   // DeckLink C++ SDK (vendored; GUIDs live in DeckLinkAPI_i.c)
 #include "DeckLinkSourceControl.h"   // IDeckLinkSourceControl (engine control surface)
 
+// 2026-09-20 — every COM status/metadata query made on the VideoInputFrameArrived
+// callback thread is "known to stall this driver" (the two blocks below say so,
+// and the worker's format-change handler moves its status read onto the worker
+// thread for exactly that reason). The raw spike — whose callback ONLY counts —
+// streams 294 frames with 0 missed gaps, while this filter's callback went silent
+// ~26 frames in, wedged in that same in-callback query work. Both blocks are
+// gated on this one flag until their reads are relocated to the worker thread.
+// Off = the callback only copies + delivers, which is the proven-safe path.
+constexpr bool kInCallbackDriverQueries = false;
+
 // VIDEOINFOHEADER2 + AMCONTROL_* colorimetry bits, and DXVA2_ExtendedFormat for
 // packing that colorimetry into dwControlFlags. The SDK's dshow.h covers the
 // former only up to FORMAT_VideoInfo; the V2 format lives in dvdmedia.h.
@@ -1139,7 +1149,7 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
     //
     // Re-armed by the worker on a format change, so it lands on the HDR frame rather
     // than on frame 1 (see metaProbes).
-    if (m_st->metaProbe == 0) {
+    if (kInCallbackDriverQueries && m_st->metaProbe == 0) {
         // ONE frame per session, deliberately. This queries IDeckLinkStatus on the SDK
         // callback thread, and a status query in-callback is known to stall this
         // driver. Re-arming it per format change (tried 2026-09-18) broke capture:
@@ -1253,7 +1263,7 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
     // Gated on bmdFrameContainsHDRMetadata, so the cost is paid only on frames the
     // card says actually carry an HDR block. Values are logged once and then only
     // when they change.
-    if (videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)) {
+    if (kInCallbackDriverQueries && videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)) {
         const LONG tick = InterlockedDecrement(&m_st->hdrMetaTick);
         if (tick <= 0) {
             InterlockedExchange(&m_st->hdrMetaTick, 24);   // next sample in ~1 s at 24 fps
