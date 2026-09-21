@@ -162,6 +162,11 @@ public:
         // Hable knee: display-relative light below which Hable is replaced by
         // identity. 0 = pure Hable (the previous behaviour, exactly).
         float hableKnee = 0.0f;
+    // Soft-plus pre-compressor on the Hable path. knee <= 0 = off (identical to
+    // before it existed); knee/width are display-relative (1.0 = display white).
+    float softKnee      = 0.60f;
+    float softKneeRatio = 2.48f;
+    float softKneeWidth = 0.42f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR

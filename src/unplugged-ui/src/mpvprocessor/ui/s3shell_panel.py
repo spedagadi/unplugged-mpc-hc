@@ -219,6 +219,9 @@ KEY_MAP = {
     "hdr.blackNits": ("hdr", "blackNits"),
     "hdr.titlePeak": ("hdr", "titlePeak"),
     "hdr.hableKnee": ("hdr", "hableKnee"),
+    "hdr.softKnee":      ("hdr", "softKnee"),
+    "hdr.softKneeRatio": ("hdr", "softKneeRatio"),
+    "hdr.softKneeWidth": ("hdr", "softKneeWidth"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -380,6 +383,14 @@ def build_rows():
     # 0 = pure Hable, i.e. exactly the previous behaviour.
     add("Hable knee", SLIDER, H, "hdr.hableKnee", "TONE MAPPING",
         max_=0.80, val=0, default=0, uncheck=False)
+    # Soft-plus pre-compressor: re-spreads the highlight band Hable compresses
+    # least (the sky). 0 = off (identical to before it existed).
+    add("Soft knee (0=off)", SLIDER, H, "hdr.softKnee", "TONE MAPPING",
+        min_=0, max_=4, val=0.6, default=0.6, uncheck=False)
+    add("Soft knee ratio", SLIDER, H, "hdr.softKneeRatio", "TONE MAPPING",
+        min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False)
+    add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "TONE MAPPING",
+        min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:

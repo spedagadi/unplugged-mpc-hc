@@ -1355,6 +1355,9 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.iOutputGamut = h.outputGamut;
     s.fHdrTitlePeakNits = h.titlePeakNits;
     s.fHdrHableKnee = h.hableKnee;
+    s.fSoftKnee      = h.softKnee;
+    s.fSoftKneeRatio = h.softKneeRatio;
+    s.fSoftKneeWidth = h.softKneeWidth;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
@@ -1373,6 +1376,9 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.outputGamut = s.iOutputGamut;
     h.titlePeakNits = s.fHdrTitlePeakNits;
     h.hableKnee = s.fHdrHableKnee;
+    h.softKnee      = s.fSoftKnee;
+    h.softKneeRatio = s.fSoftKneeRatio;
+    h.softKneeWidth = s.fSoftKneeWidth;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
@@ -2124,7 +2130,7 @@ std::string MpcPlayer::GetUiStatusJson() const
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
-        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"expTm\":%d,\"tmContrast\":%.3f},"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"expTm\":%d,\"tmContrast\":%.3f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
@@ -2142,7 +2148,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         hdr.preferDoVi ? 1 : 0, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits, hdr.displayMaxNits,
         hdr.toneMapCurve, hdr.toggleDisplay, hdr.osdBrightness, hdr.hdrPassthroughRaw ? 1 : 0,
         hdr.displayMinNits, hdr.outputGamut,
-        hdr.titlePeakNits, hdr.hableKnee,
+        hdr.titlePeakNits, hdr.hableKnee, hdr.softKnee, hdr.softKneeRatio, hdr.softKneeWidth,
         hdr.experimentalToneMapper, hdr.toneLutContrast,
         ml.enable ? 1 : 0, ml.mode,
         ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
@@ -2217,6 +2223,9 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "gamut")      hdr.outputGamut = (int)vd(v);
             else if (name == "titlePeak")  hdr.titlePeakNits = (float)vd(v);
             else if (name == "hableKnee")  hdr.hableKnee = (float)vd(v);
+            else if (name == "softKnee")      hdr.softKnee      = (float)vd(v);
+            else if (name == "softKneeRatio") hdr.softKneeRatio = (float)vd(v);
+            else if (name == "softKneeWidth") hdr.softKneeWidth = (float)vd(v);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);
