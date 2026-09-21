@@ -47,6 +47,7 @@ const CLSID CLSID_DeckLinkSource = {0x8c2f2a32, 0x27b1, 0x4e61, {0xA1, 0xBE, 0x7
 const GUID g_clsidDeckLinkIterator = {0xba6c6f44, 0x6da5, 0x4dce, {0x94, 0xaa, 0xee, 0x2d, 0x13, 0x72, 0xa6, 0x76}};
 const GUID g_iidDeckLink           = {0xc418fbdd, 0x0587, 0x48ed, {0x8f, 0xe5, 0x64, 0x0f, 0x0a, 0x14, 0xaf, 0x91}};
 
+
 // MEDIASUBTYPE_v210 — 'v210' 4CC GUID. Defined in wmcodecdsp.h/axextend but
 // not pulled by dshow.h alone; declare the well-known bytes here. (FOURCC
 // 'v210' = 0x30313276; the previous 0x38303176 spelling was 'v108'.)
@@ -191,34 +192,9 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
     if (source.empty()) return E_INVALIDARG;
 
-    // DeckLink ordered teardown (DESIGN.md): stop the feeder at the source,
-    // disconnect the renderer, THEN join the source's threads. Never drop a
-    // graph while the source's delivery thread can be inside the renderer —
-    // that join-into-live-receive is the movie→menu hang. Open runs on the
-    // ops-queue executor for the capture path (never the UI thread).
-    if (decklinkControl_) {
-        decklinkControl_->StopDelivery();     // SDK stops invoking — no new frames
-        DisconnectDecklinkPins();             // in-flight Deliver now returns fast
-        decklinkControl_->StopCapture();      // join worker+forwarder (safe now) + release SDK
-        // graph_.Release() below drops the filter object; its destructor's
-        // StopCaptureSession finds non-joinable threads — no wait.
-    }
-
-    if (mediaControl_) mediaControl_->Stop();
-    if (renderer_) {
-        if (CComQIPtr<IVideoWindow> pVW = renderer_) {
-            pVW->put_Visible(OAFALSE);
-            pVW->put_Owner(0);
-        }
-    }
-    graph_.Release();
-    mediaControl_.Release();
-    mediaSeeking_.Release();
-    mediaEvent_.Release();
-    splitter_.Release();
-    renderer_.Release();
-    audioDecoder_.Release();
-    audioRenderer_.Release();
+    Log("[GRAPH] Open: starting ordered teardown of the old graph");
+    TeardownDecklinkGraph();
+    Log("[GRAPH] Open: teardown complete — building the new graph");
 
     snapshot_ = {};
     snapshot_.state = State::Opening;
@@ -239,6 +215,66 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     Notify("opened");
     m_liveReady = true;   // graph + renderer fully wired — live cache may touch them now
     return S_OK;
+}
+
+// DeckLink ordered teardown (DESIGN.md): stop the feeder at the source,
+// disconnect the renderer, THEN join the source's threads. Never drop a graph
+// while the source's delivery thread can be inside the renderer — that
+// join-into-live-receive is the movie→menu hang.
+//
+// Both the rebuild path (Open) and the Stop path call this, so the order exists
+// in exactly one place. Executor only, always under m_graphMtx.
+void MpcPlayer::TeardownDecklinkGraph()
+{
+    // Each step is bracketed BEFORE and AFTER. This is the destructive sequence —
+    // a fault here takes the process with it, and the surviving log cannot say
+    // how far it got. With the brackets, the last "…: enter" with no matching
+    // "…: done" names the exact step that died, which is the difference between
+    // "the renderer faulted during StopDelivery" and "during graph release".
+    if (decklinkControl_) {
+        Log("[TEARDOWN] 1/4 StopDelivery (halt the feeder) — enter");
+        decklinkControl_->StopDelivery();     // SDK stops invoking — no new frames
+        Log("[TEARDOWN] 1/4 StopDelivery — done");
+        Log("[TEARDOWN] 2/4 disconnect source↔renderer pins — enter");
+        DisconnectDecklinkPins();             // in-flight Deliver now returns fast
+        Log("[TEARDOWN] 2/4 disconnect pins — done");
+        Log("[TEARDOWN] 3/4 StopCapture (join worker+forwarder, release SDK) — enter");
+        decklinkControl_->StopCapture();      // join worker+forwarder (safe now) + release SDK
+        Log("[TEARDOWN] 3/4 StopCapture — done");
+        // graph_.Release() below drops the filter object; its destructor's
+        // StopCaptureSession finds non-joinable threads — no wait.
+    }
+
+    Log("[TEARDOWN] 4/4 stop graph + release filters/renderer — enter");
+    if (mediaControl_) mediaControl_->Stop();
+    if (renderer_) {
+        if (CComQIPtr<IVideoWindow> pVW = renderer_) {
+            pVW->put_Visible(OAFALSE);
+            pVW->put_Owner(0);
+        }
+    }
+    graph_.Release();
+    mediaControl_.Release();
+    mediaSeeking_.Release();
+    mediaEvent_.Release();
+    splitter_.Release();
+    renderer_.Release();
+    audioDecoder_.Release();
+    audioRenderer_.Release();
+    Log("[TEARDOWN] 4/4 stop graph + release — done");
+
+    // Release the PREVIOUS capture session here — the quiescent point. Its
+    // destructor joins the SDK worker; that join measured 47 ms at this stage
+    // because the ordered script has already stopped and disconnected
+    // everything. Doing it here is what removes the detached retire thread, and
+    // with it the only remaining actor that destroyed a filter while a live
+    // graph was delivering into the renderer. Bracketed, so a fault here names
+    // itself rather than looking like the next component's.
+    if (m_retiredControl) {
+        Log("[TEARDOWN] 5/5 release the retired capture session (its destructor joins the SDK worker) — enter");
+        m_retiredControl.Release();
+        Log("[TEARDOWN] 5/5 release the retired capture session — done");
+    }
 }
 
 HRESULT MpcPlayer::Play()
@@ -283,11 +319,19 @@ HRESULT MpcPlayer::Stop()
 void MpcPlayer::Shutdown()
 {
     Log("[DECKLINK][engine] Shutdown (ordered teardown)");
-    // Arm the executor stop FIRST so no new rebuild can start while we tear down.
+    // Stop the DECIDER first: while it is alive it can still emit an intent, and
+    // an intent arriving mid-shutdown is a graph op racing the teardown.
+    if (ingest_) {
+        ingest_->Stop();
+        ingest_.reset();
+    }
+    // Then arm the executor stop so no queued op can start while we tear down.
     {
         std::lock_guard<std::mutex> lk(m_gopMtx);
         m_gopStop = true;
         m_gopQueued = false;
+        m_gopApplyQueued = false;
+        m_gopIntent = IngestController::Intent::None;
     }
     m_gopCv.notify_all();
 
@@ -614,40 +658,33 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // settings the UI pushed into the previous instance no longer apply. The
     // counter lets the UI notice and re-push (see "gen" in GetUiStatusJson).
     ++graphGen_;
+    Log("[GRAPH] BuildGraph enter — generation now %u", (unsigned)graphGen_);
 
-    // Retire the previous direct filter OFF the UI thread: its destructor joins
-    // the SDK worker, whose StopStreams can block while the HDMI source is
-    // mid-signal-change (UB820 stop→menu freeze observed). The retired reference
-    // is dropped by a background cleanup thread; the UI thread proceeds without
-    // ever waiting on the old card's SDK teardown.
-    static std::mutex                        s_retireMtx;
-    static std::vector<CComPtr<IDeckLinkSourceControl>> s_retired;
+    // Hold the previous direct filter for release by the EXECUTOR, at the next
+// teardown — not by a detached thread (2026-09-21).
+    //
+    // This used to hand the old filter to a detached 3-second cleanup thread,
+    // which ran its destructor — joining the SDK worker, stopping streams —
+    // WHILE the new graph was live and delivering into the renderer. DESIGN.md
+    // invariant 5 forbids exactly that shape ("No .detach() threads"; "Never
+    // create a thread whose exit waits on a thread that is inside the component
+    // the waiting path destroys"), and it landed on the fault twice: the log
+    // ends at a `[DECKLINK][src] StopDelivery` carrying no `[TEARDOWN]` bracket,
+    // so it came from a destructor, ~2 s after a rebuild — inside the retire
+    // thread's own cycle.
+    //
+    // TeardownDecklinkGraph releases it instead: at that point the old graph is
+    // stopped, disconnected and joined, and the new one does not exist yet. That
+    // is the quiescent point the ordered script already defines, and the join
+    // measured 47 ms there rather than blocking. The UI never waits either — the
+    // executor is not the UI thread, which was the whole reason the detached
+    // thread was added.
     if (decklinkControl_) {
-        {
-            std::lock_guard<std::mutex> lk(s_retireMtx);
-            s_retired.push_back(std::move(decklinkControl_));
-        }
-        static bool s_retireThreadStarted = false;
-        if (!s_retireThreadStarted) {
-            s_retireThreadStarted = true;
-            std::thread([]() {
-                for (;;) {
-                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                    std::vector<CComPtr<IDeckLinkSourceControl>> gone;
-                    {
-                        std::lock_guard<std::mutex> lk(s_retireMtx);
-                        gone.swap(s_retired);
-                    }
-                    if (gone.empty()) continue;
-                    for (auto& p : gone) p.Release();   // destructor (worker join) runs here
-                    gone.clear();
-                    if (s_retired.empty()) {
-                        // Nothing left to retire for a long while; loop forever is fine
-                        // (one lazy thread per process, ~free).
-                    }
-                }
-            }).detach();
-        }
+        // Hand it to the executor's next teardown instead of a detached thread.
+        // Any previously-held one is released here too — this runs ON the
+        // executor, under m_graphMtx, between graphs.
+        m_retiredControl.Release();
+        m_retiredControl = std::move(decklinkControl_);
     }
 
     // DeckLink HDMI capture: LAVSplitterSource demuxes the decklink:// URL
@@ -746,7 +783,9 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
 
     hr = AddRenderer(renderer_);
     if (FAILED(hr) || !renderer_) return FAILED(hr) ? hr : E_FAIL;
+    Log("[GRAPH] adding the renderer filter to the graph — enter");
     hr = graph_->AddFilter(renderer_, L"Video Renderer");
+    Log("[GRAPH] renderer added hr=0x%08X", (unsigned)hr);
     if (FAILED(hr)) return hr;
 
     // Apply the user's settings BEFORE the pins negotiate. Any setting that
@@ -754,7 +793,15 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // colour space) is consumed during negotiation, so pushing it afterwards only
     // works if something forces a re-negotiation — which is how Convert to SDR
     // ended up applying on some starts and not others.
+    //
+    // m_inGraphBuild makes this push unrestricted: the pins are not connected, the
+    // renderer is not active, and Configure()'s destructive paths are all behind
+    // an `if (!m_pFilter->GetActive()) return;` — so every field, including the
+    // rebuild-only ones, is safe here. This is the one place a held-back setting
+    // is actually delivered.
+    m_inGraphBuild = true;
     ApplyPendingSettings();
+    m_inGraphBuild = false;
 
     if (renderTarget_) ConfigureRendererWindow();
 
@@ -840,7 +887,9 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // ApplyIcsFromMediaType). Placed after the connects so it wins over the
     // monitor's advice and the decoder-path guess above.
     if (bDeckLinkDirect || bDeckLink) {
+        Log("[GRAPH] applying the input colour space from the negotiated media type — enter");
         ApplyIcsFromMediaType();
+        Log("[GRAPH] input colour space applied — done");
     }
 
     if (renderTarget_) {
@@ -1032,7 +1081,31 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
     switch (choice) {
     case Renderer::MPCVR:
         hr = out.CoCreateInstance(CLSID_MPCVR);
-        if (SUCCEEDED(hr)) return S_OK;
+        if (SUCCEEDED(hr)) {
+            // BISECT PROBE (2026-09-21): the abort (0xc0000409, no handler, no
+            // dump) fires at exactly this handoff — the renderer immediately
+            // calls a raw function pointer into s3engine.dll, which is built
+            // WITHOUT /guard:cf (see tools/s3engine/build_s3engine.bat), so its
+            // functions are not in the process CFG bitmap and the renderer's
+            // guarded indirect call can fail-fast. Setting this to true rebuilds
+            // the sink path; false disables it to prove the linkage.
+            constexpr bool kAttachRendererSink = false;
+            if (kAttachRendererSink) {
+                // Inject the OPTIONAL high-level log sink (IMpcvrLogSink). The
+                // renderer's own account of init, media-type/signal changes and
+                // deinit then lands in THIS log, on this clock, in sequence with
+                // the engine's and the signal monitor's lines.
+                if (CComQIPtr<IMpcvrLogSink> ls = out) {
+                    ls->SetLogSink(this, &MpcPlayer::DeckLinkSourceLogBridge);
+                    Log("[ENGINE] renderer log sink attached (IMpcvrLogSink) — renderer lines now share this log");
+                } else {
+                    Log("[ENGINE] renderer exposes no IMpcvrLogSink — renderer will not log");
+                }
+            } else {
+                Log("[ENGINE] renderer log sink ATTACH DISABLED (bisect probe: CFG cross-module callback)");
+            }
+            return S_OK;
+        }
         [[fallthrough]];
     case Renderer::VMR9:
         hr = out.CoCreateInstance(CLSID_VideoMixingRenderer9);
@@ -1213,6 +1286,64 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.configSeq = s.configSeq;
 }
 
+// Fields the renderer CANNOT take on a live graph, and why.
+//
+// DX11VideoProcessor::Configure() is a cascade of early returns: for
+// changeHDR / changeInputColor / changeWindow / changeVP / changeRTXVideoHDR it
+// calls ReleaseSwapChain() / m_pFilter->Init(true) / InitMediaType() and RETURNS.
+// Everything after that (the comment says "changes that do not require a global
+// rebuild") frees and recreates GPU resources — shaders and textures — which the
+// render thread samples WITHOUT holding m_RendererLock (CMpcVideoRenderer::
+// DoRenderSample takes no lock at all, and neither does ProcessSample).
+//
+// So a live push of any of these races the render thread with no mutual
+// exclusion. That is not theoretical: it is the access violation at a fixed
+// address in MpcVideoRenderer64.ax this project has hit repeatedly, most
+// recently `Configure — renegotiation triggered … hdr=1 active=1` immediately
+// followed by InitMediaType on a delivering graph.
+//
+// The benign flags are deliberately NOT in this list: changeLuminanceParams is a
+// constant-buffer write (SetShaderLuminanceParams) and changeResizeStats only
+// recomputes statistics — neither frees anything — which is why the tone-map and
+// grade rails keep working live.
+//
+// Returns true when anything here differs, and in that case restores dst's copies
+// to the live values so the push cannot act on them. The caller then rebuilds.
+bool HoldBackNegotiationFields(Settings_t& dst, const Settings_t& live)
+{
+    bool differs = false;
+    auto hold = [&differs](auto& d, const auto& l) {
+        if (d != l) { differs = true; d = l; }
+    };
+
+    // Configure() -> changeHDR (media-type re-derivation)
+    hold(dst.iHdrLocalToneMappingType, live.iHdrLocalToneMappingType);
+    hold(dst.iHdrToggleDisplay,        live.iHdrToggleDisplay);
+    hold(dst.bHdrPassthrough,          live.bHdrPassthrough);
+    // Configure() -> changeVP (video-processor re-init)
+    hold(dst.bHdrPreferDoVi,           live.bHdrPreferDoVi);
+    hold(dst.bVPScaling,               live.bVPScaling);
+    hold(dst.iVPDeinterlacing,         live.iVPDeinterlacing);
+    hold(dst.VPFmts.bNV12,             live.VPFmts.bNV12);
+    hold(dst.VPFmts.bP01x,             live.VPFmts.bP01x);
+    hold(dst.VPFmts.bYUY2,             live.VPFmts.bYUY2);
+    hold(dst.VPFmts.bOther,            live.VPFmts.bOther);
+    // Configure() -> changeRTXVideoHDR
+    hold(dst.bVPRTXVideoHDR,           live.bVPRTXVideoHDR);
+    // Configure() -> changeWindow (swap chain / device)
+    hold(dst.iSwapEffect,              live.iSwapEffect);
+    hold(dst.bExclusiveFS,             live.bExclusiveFS);
+    // Configure() -> rebuilds shaders / textures the render thread is sampling
+    hold(dst.iTexFormat,               live.iTexFormat);
+    hold(dst.iChromaScaling,           live.iChromaScaling);
+    hold(dst.iUpscaling,               live.iUpscaling);
+    hold(dst.iDownscaling,             live.iDownscaling);
+    hold(dst.bUseDither,               live.bUseDither);
+    hold(dst.iVPSuperRes,              live.iVPSuperRes);
+    hold(dst.iHdrOsdBrightness,        live.iHdrOsdBrightness);
+    return differs;
+}
+
 void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
 {
     s.bHdrPreferDoVi = h.preferDoVi;
@@ -1308,11 +1439,46 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
 }   // namespace
 
 
+// Ask the graph owner to apply remembered settings. This is the UI's entry
+// point, and it deliberately does NOT write the renderer itself.
+//
+// Why (2026-09-21): the UI thread used to call ApplyPendingSettings() directly,
+// holding no m_graphMtx, while the executor could be mid-teardown. SetSettings →
+// Configure → for a changed changeHDR row → ReleaseSwapChain() + InitMediaType()
+// is a media-type renegotiation on a live renderer, from a thread that does not
+// own the graph — the fault class already recorded for the HDR-passthrough
+// toggle. The setting is remembered here; the executor applies it, serialized
+// against every graph mutation, which is also what makes a push that arrives
+// during a rebuild land on the NEW renderer instead of a dying one.
+void MpcPlayer::QueueSettingsApply()
+{
+    if (!m_gopThread.joinable()) {
+        // No capture session, so there is no executor and no rebuild can be in
+        // flight: the graph is only mutated by UI transport calls, which are on
+        // THIS thread. Applying directly keeps live tuning working in file
+        // playback (Media Player mode) exactly as before — the serialization
+        // this function adds is only needed where a rebuild can race, which is
+        // the capture path.
+        ApplyPendingSettings();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        m_gopApplyQueued = true;    // coalescing: a burst of rows → one apply
+    }
+    m_gopCv.notify_one();
+}
+
+void MpcPlayer::ApplySettingsOp()
+{
+    ApplyPendingSettings();
+}
+
 HRESULT MpcPlayer::SetMlSettings(const MlSettings& m)
 {
     pendingMl_ = m;
     hasMl_ = true;
-    ApplyPendingSettings();
+    QueueSettingsApply();
     return renderer_ ? S_OK : S_FALSE;
 }
 
@@ -1379,7 +1545,22 @@ HRESULT MpcPlayer::GrabFrame(const std::string& utf8Path)
     fwrite(dib.data(), 1, (size_t)size, f);
     fclose(f);
 
-    Log("[ENGINE] GrabFrame: wrote %ldx%ld to %s", (long)bih->biWidth, (long)bih->biHeight, utf8Path.c_str());
+    // Mean luma of the captured frame — the objective answer to "is the image
+    // black?". This is what told us the renderer PRESENTS 50fps while the screen
+    // reads black for an entirely reasons outside the counters; the luma number
+    // separates "black pixels out of the renderer" from "window not on screen".
+    double lumaSum = 0.0;
+    size_t lumaCount = 0;
+    const BYTE* px = dib.data() + sizeof(BITMAPINFOHEADER);
+    const size_t pxBytes = std::min((size_t)bih->biSizeImage,
+                                    (size_t)size - sizeof(BITMAPINFOHEADER));
+    for (size_t i = 0; i + 2 < pxBytes && i < 8ull * 1024 * 1024; i += 4) {
+        lumaSum += 0.114 * px[i] + 0.587 * px[i + 1] + 0.299 * px[i + 2];
+        lumaCount++;
+    }
+    Log("[ENGINE] GrabFrame: wrote %ldx%ld to %s  meanLuma=%.2f/255",
+        (long)bih->biWidth, (long)bih->biHeight, utf8Path.c_str(),
+        lumaCount ? lumaSum / (double)lumaCount : -1.0);
     return S_OK;
 }
 
@@ -1421,7 +1602,7 @@ HRESULT MpcPlayer::SetHdrSettings(const HdrSettings& h)
     // Remember first, always — the renderer may not exist yet.
     pendingHdr_ = h;
     hasHdr_ = true;
-    ApplyPendingSettings();
+    QueueSettingsApply();
     return renderer_ ? S_OK : S_FALSE;
 }
 
@@ -1445,7 +1626,8 @@ void MpcPlayer::ApplyPendingSettings()
     if (!vr) return;
 
     Settings_t s;
-    vr->GetSettings(s);
+    vr->GetSettings(s);          // s = what the renderer holds right now
+    const Settings_t live = s;   // keep the live values for the hold-back below
     if (hasHdr_) {
         // The card's own ST 2086 MaxCLL is the real content peak, and it WINS over
         // the panel's Title peak row — that row stays the fallback for signals with
@@ -1473,11 +1655,168 @@ void MpcPlayer::ApplyPendingSettings()
     // Instrumented 2026-09-20: SetSettings rebuilds the tone LUT and can BLOCK
     // indefinitely while the graph is mid-rebuild. ENTER without RETURN in the
     // engine log is the smoking gun for the UI freeze.
+    // On a LIVE graph, hold back everything the renderer cannot take safely, so this
+// push is structurally incapable of renegotiating a media type or freeing a
+// resource the render thread is sampling. Inside BuildGraph (m_inGraphBuild) the
+// pins are not connected yet, so everything IS safe and goes through — which is
+// also how the held-back values eventually take effect.
+    bool needRebuild = false;
+    if (!m_inGraphBuild) {
+        needRebuild = HoldBackNegotiationFields(s, live);
+        if (needRebuild) {
+            Log("[ENGINE] settings: a rebuild-only row changed (curve/toggle/dovi/swap/"
+                "scaling/tex/dither/osd). Held back from the live renderer and rebuilding "
+                "instead — BuildGraph re-applies it before the pins connect.");
+        }
+    }
+
     Log("[ENGINE] ApplyPendingSettings: SetSettings ENTER");
     vr->SetSettings(s);
     Log("[ENGINE] ApplyPendingSettings: SetSettings RETURN");
-    Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d pushed",
-        hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0);
+    Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d pushed rebuild=%d",
+        hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0, needRebuild ? 1 : 0);
+
+    if (needRebuild) RequestSettingsRebuild();
+}
+
+// Ask the graph owner to rebuild, which is how a rebuild-only setting reaches the
+// renderer: BuildGraph applies every pending group BEFORE the pins connect, so
+// the value lands in the media-type decision it shapes, with no live
+// renegotiation and no resource freed under the render thread.
+void MpcPlayer::RequestSettingsRebuild()
+{
+    if (!m_gopThread.joinable()) return;   // no capture graph — nothing to rebuild
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        m_gopIntent = IngestController::Intent::Reload;
+        // m_gopUrl is left as-is; RunDecklinkRebuild falls back to decklinkUrl_.
+        m_gopQueued = true;
+    }
+    Log("[DECKLINK][engine] settings rebuild requested — Reload posted to the executor");
+    m_gopCv.notify_one();
+}
+
+// Ask the graph owner to rebuild for a stated reason. Same Reload intent as a
+// signal change, distinguished only in the log, so the executor is the single
+// place a rebuild is ever performed.
+void MpcPlayer::RequestDecklinkReload(const char* why)
+{
+    if (!m_gopThread.joinable()) return;
+    {
+        std::lock_guard<std::mutex> lk(m_gopMtx);
+        m_gopIntent = IngestController::Intent::Reload;
+        // m_gopUrl is left as-is; RunDecklinkRebuild falls back to decklinkUrl_.
+        m_gopQueued = true;
+    }
+    Log("[DECKLINK][engine] Reload requested (%s) — posted to the executor", why);
+    m_gopCv.notify_one();
+}
+
+// Delivery-stall monitor — "frames displayed" vs "frames received", built to
+// the rules this project logged during the 2026-09-21 crash chase.
+//
+// The first version keyed on the SOURCE's counters (delivered/gate) and missed
+// the actual blank: the user observed "Renderer Recv" and "Delivered" BOTH
+// advancing while the screen stayed black — the graph and the filter are fine,
+// only the PRESENT stops. "Displayed" is the renderer's own framesDrawn, which
+// this tick already reads. So there are TWO stalls to catch:
+//
+//   A) DISPLAYED frozen while frames ARE being received (recv/delv advancing):
+//      the present path has stopped — exactly the observed blank. Reload fixes
+//      it by bringing up a fresh renderer that re-inits the swap chain/present.
+//   B) DELIVERED frozen while ARRIVED advances and GATE climbs: the size gate
+//      discarding every frame — the stale-media-type variant from before.
+//
+// Either fires after kStallTicks consecutive seconds, while Playing and locked,
+// and posts a Reload to the executor (coalesced, so it cannot storm). "Arrived
+// and delivered both frozen" is the card having stopped — not ours to force.
+void MpcPlayer::CheckDeliveryStall(const DeckLinkSourceStats& dl, const RenderStats& r)
+{
+    constexpr int          kStallTicks = 2;   // 2 consecutive seconds
+    const bool running = (snapshot_.state == State::Playing) && renderer_;
+    if (!running || !decklinkSettings_.signalLocked) {
+        m_stallTicks = 0;
+        m_stallLastDelv = dl.framesDelivered;
+        m_stallLastArrived = dl.framesArrived;
+        m_stallLastGate = dl.gateDropped;
+        m_stallLastDrawn = r.framesDrawn;
+        m_stallLastRecv  = r.framesReceived;
+        return;
+    }
+
+    const bool displayedAdvancing = r.framesDrawn != m_stallLastDrawn;
+    const bool receivedAdvancing  = r.framesReceived != m_stallLastRecv;
+    const bool arriving     = dl.framesArrived != m_stallLastArrived;
+    const bool gateClimbing = dl.gateDropped > m_stallLastGate;
+    m_stallLastDrawn    = r.framesDrawn;
+    m_stallLastRecv     = r.framesReceived;
+    m_stallLastDelv    = dl.framesDelivered;
+    m_stallLastArrived = dl.framesArrived;
+    m_stallLastGate    = dl.gateDropped;
+
+    if (displayedAdvancing) {                 // actually presented — healthy
+        m_stallTicks = 0;
+        return;
+    }
+
+    // displayed frozen here. Is anything still being received?
+    const bool typeMismatch = arriving && gateClimbing;   // (B) size-gate signature
+    const bool receiving    = receivedAdvancing;          // (A) filter still delivers
+    if (!typeMismatch && !receiving) return;              // card stopped — not ours
+
+    if (++m_stallTicks < kStallTicks) return;
+
+    m_stallTicks = 0;
+    if (receiving) {
+        Log("[DECKLINK][engine] DISPLAY STALL CONFIRMED: framesDrawn frozen for %d s while "
+            "frames are still received (delv=%llu drawn=%u) — presenting stopped, requesting a rebuild",
+            (int)kStallTicks, (unsigned long long)dl.framesDelivered, (unsigned)r.framesDrawn);
+        RequestDecklinkReload("display stall (receiving but not presenting)");
+    } else {
+        Log("[DECKLINK][engine] DELIVERY STALL CONFIRMED: delivered frozen for %d s with gate "
+            "dropping %llu type-mismatched frames — stale media type, requesting a rebuild",
+            (int)kStallTicks, (unsigned long long)dl.gateDropped);
+        RequestDecklinkReload("delivery stall (stale media type)");
+    }
+}
+
+// Source-format change monitor — the resolution the DECIDER could not see.
+//
+// The monitor DLL reports no dimensions (every poll reads 0x0 0/0), so a pure
+// resolution change never produced a fact and the graph stayed on the OLD size —
+// the observed DV→menu black (the filter reported src=4K50 while its own media
+// type and frames stayed 1080p50, and the renderer drew the wrong-size stream).
+// The SOURCE filter is the dimension measurer: GetStats carries the true frame
+// dims and self-heals them. So when THOSE settle on a new format, the decider
+// asks the executor to rebuild onto it.
+void MpcPlayer::CheckSourceFormatChange(const DeckLinkSourceStats& dl)
+{
+    constexpr int kSettleTicks = 2;      // two consecutive seconds
+    const bool valid = dl.width > 0 && dl.height > 0 && dl.fpsNum > 0 && dl.fpsDen > 0;
+    if (!valid) { m_srcChangeTicks = 0; return; }
+
+    const bool firstSeen = (m_srcCommittedW == 0 && m_srcCommittedH == 0);
+    if (firstSeen) {                       // baseline, never fire on the first
+        m_srcCommittedW = dl.width; m_srcCommittedH = dl.height;
+        m_srcCommittedN = dl.fpsNum;  m_srcCommittedD = dl.fpsDen;
+        m_srcChangeTicks = 0;
+        return;
+    }
+
+    const bool same = (dl.width == m_srcCommittedW && dl.height == m_srcCommittedH &&
+                       dl.fpsNum == m_srcCommittedN && dl.fpsDen == m_srcCommittedD);
+    if (same) { m_srcChangeTicks = 0; return; }
+
+    if (++m_srcChangeTicks < kSettleTicks) return;
+
+    Log("[DECKLINK][engine] SOURCE FORMAT CHANGED: %dx%d@%d/%d held for %d s (was %dx%d@%d/%d) — "
+        "requesting a rebuild onto the new format",
+        (int)dl.width, (int)dl.height, (int)dl.fpsNum, (int)dl.fpsDen, (int)kSettleTicks,
+        (int)m_srcCommittedW, (int)m_srcCommittedH, (int)m_srcCommittedN, (int)m_srcCommittedD);
+    m_srcCommittedW = dl.width; m_srcCommittedH = dl.height;
+    m_srcCommittedN = dl.fpsNum;  m_srcCommittedD = dl.fpsDen;
+    m_srcChangeTicks = 0;
+    RequestDecklinkReload("source format change (dimension-blind monitor covered)");
 }
 
 HRESULT MpcPlayer::GetHdrSettings(HdrSettings& h) const
@@ -1495,7 +1834,7 @@ HRESULT MpcPlayer::SetOutSettings(const OutSettings& o)
 {
     pendingOut_ = o;
     hasOut_ = true;
-    ApplyPendingSettings();
+    QueueSettingsApply();
     return renderer_ ? S_OK : S_FALSE;
 }
 
@@ -1516,44 +1855,33 @@ HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
 
     decklinkMonitor_ = std::make_unique<DeckLinkMonitor>();
     decklinkMonitor_->SetLogSink(logSink_);
-    // Master contract (DESIGN.md): the monitor observes the signal; on a
-    // CONFIRMED stable change it advises the engine, which relays to the UI.
-    decklinkMonitor_->SetRestartCallback([this](const DeckLinkMonitor::RestartRequest& req) {
-        decklinkSettings_.signalLocked = !req.signalLost;
-        Log("[DECKLINK][engine] monitor advised: signalLost=%d ics=%d url='%s'",
-            req.signalLost, req.ics, req.url.c_str());
-        if (!req.url.empty()) {
-            pendingDecklinkUrl_.assign(req.url.begin(), req.url.end());
-            decklinkSettings_.inputColorSpace = req.ics;
-            // The monitor is the authority on WHETHER the signal changed; it is not
-            // the authority on the colour space. Its ICS is derived colours-space
-            // first, so a PQ signal flagged cs=2 comes back as BT.709 — and taking
-            // that verbatim is what put the renderer on the SDR BT.709 path, where
-            // the PQ->SDR converter is never built and "Convert to SDR" cannot do
-            // anything. Re-derive from the filter's own stats, which carry the
-            // transfer function, and keep the monitor's number only as the fallback
-            // for when those stats are unavailable.
-            UpdateIcsFromFilter();
-            // SELF-HEALING (WPF shell): the engine owns the whole transition.
-            // Posting the rebuild here (to OUR ops-queue executor) means the UI
-            // never has to react to signal changes — it only polls stats. The
-            // executor runs the ordered teardown + relaunch internally.
-            PostDecklinkRebuild();
-            Notify("decklink:signal");
-            return;
-        }
-        decklinkSettings_.signalLocked = false;
-        Notify("decklink:lost");
+
+    // The monitor's ONLY outbound edge: a settled fact, handed to the decider.
+    // It used to post a graph rebuild from here, which is what made a measurer a
+    // lifecycle decider. Nothing in this callback touches the graph, and nothing
+    // acts on it: OnFact records and wakes.
+    decklinkMonitor_->SetFactCallback([this](const DeckLinkMonitor::SignalFact& f) {
+        if (ingest_) ingest_->OnFact(f);
+    });
+
+    // The decider: consumes facts and emits an intent. It cannot act — its sink
+    // only queues an op for the executor below.
+    ingest_ = std::make_unique<IngestController>();
+    ingest_->SetLogSink(logSink_);
+    ingest_->SetDecisionSink([this](const IngestController::Decision& d) {
+        HandleIngestDecision(d);
     });
 
     // The ops-queue executor — the ONLY thread that may mutate the capture
-    // card + graph (DESIGN.md). Started with the monitor, joined at stop.
+    // card + graph. Started with the monitor, joined at stop.
     if (!m_gopThread.joinable()) {
         m_gopStop = false;
         m_gopQueued = false;
+        m_gopApplyQueued = false;
         m_gopThread = std::thread([this]() { DecklinkOpLoop(); });
         Log("[DECKLINK][engine] ops-queue executor started");
     }
+    ingest_->Start();
 
     const std::string narrow(deviceName.begin(), deviceName.end());
     if (!decklinkMonitor_->Start(narrow)) {
@@ -1567,6 +1895,13 @@ HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
 
 HRESULT MpcPlayer::StopDecklinkCapture()
 {
+    // Order matters: stop the DECIDER first, so it cannot emit a new intent while
+    // we are tearing its consumers down; then the monitor that feeds it; then the
+    // executor. Reverse of how they were started.
+    if (ingest_) {
+        ingest_->Stop();
+        ingest_.reset();
+    }
     if (decklinkMonitor_) {
         decklinkMonitor_->Stop();
         decklinkMonitor_.reset();
@@ -1575,6 +1910,8 @@ HRESULT MpcPlayer::StopDecklinkCapture()
         std::lock_guard<std::mutex> lk(m_gopMtx);
         m_gopStop = true;
         m_gopQueued = false;
+        m_gopApplyQueued = false;
+        m_gopIntent = IngestController::Intent::None;
     }
     m_gopCv.notify_all();
     if (m_gopThread.joinable()) m_gopThread.join();
@@ -1651,9 +1988,11 @@ void MpcPlayer::RefreshLive()
             return ml.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
         };
         const std::wstring pipe = Field(L"pipeline:");
-        Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d pipeline:%ls",
+        Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d pipeline:%ls src=%dx%d@%d/%d gateDrops=%llu",
             r.framesReceived, r.drawFps, r.presentLatencyMs, renderer_ != nullptr,
-            pipe.empty() ? L" ?" : pipe.c_str());
+            pipe.empty() ? L" ?" : pipe.c_str(),
+            (int)dl.width, (int)dl.height, (int)dl.fpsNum, (int)dl.fpsDen,
+            (unsigned long long)dl.gateDropped);
         // The HDR block the engine is actually holding, next to the renderer's own
         // account of what it built from it. These two are read back FROM the
         // renderer (GetHdrSettings → GetSettings), so a value here that differs from
@@ -1663,6 +2002,23 @@ void MpcPlayer::RefreshLive()
             hd.sdrDisplayNits, hd.displayMinNits, hd.convertToSdr ? 1 : 0, hd.outputGamut,
             hd.experimentalToneMapper, hd.toneLutContrast, hd.displayMaxNits);
     }
+    // (The delivery watchdog lived here: it read the renderer's frame counters and
+    // posted a graph rebuild when they froze. Removed 2026-09-21. It was a
+    // renderer→graph-destruction cycle, and it could not answer the only question
+    // that mattered — a frozen counter is the signature of BOTH a genuine stall
+    // and a legitimate movie→menu renegotiation, so it fired into transitions.
+    // Ingestion state now changes only when the IngestController says so, and it
+    // decides from settled FACTS (which include the format), not from a proxy.)
+    //
+    // This tick remains a pure SNAPSHOT: it reads and caches, and mutates nothing.
+    // The one action it may take — asking the graph owner to rebuild on a
+    // CONFIRMED delivery stall — is a notification to the ops queue, exactly the
+    // posting side of the snapshot contract (the same reasoning the removed
+    // watchdog documented, but now keyed on the SOURCE's own counters, debounced,
+    // and routed through the one executor).
+    CheckDeliveryStall(dl, r);
+    CheckSourceFormatChange(dl);
+
     {
         std::lock_guard<std::mutex> lk(m_liveMtx);
         m_liveRender = r;
@@ -1745,7 +2101,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // than as anything pointing here. MSVC's C4473 catches it: build with
         // warnings visible, not filtered to "error".
         "\"hdrMeta\":%d,\"maxCLL\":%.0f,\"maxFALL\":%.0f,\"masterMax\":%.0f,\"masterMin\":%.4f},"
-        "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"il\":%d},"
+        "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"chroma\":%d,\"il\":%d},"
         "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d},"
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}",
         (unsigned)graphGen_,
@@ -1757,7 +2113,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         (unsigned long long)dl.droppedQueue, (unsigned long long)dl.renegotiations,
         (unsigned long long)dl.lastRefUs,
         dl.hasHdrStaticMeta, dl.hdrMaxCLL, dl.hdrMaxFALL, dl.hdrMasteringMaxNits, dl.hdrMasteringMinNits,
-        sigLocked, sigW, sigH, sigNum, sigDen, sigCs, sigDr, sigDepth, sigIl,
+        sigLocked, sigW, sigH, sigNum, sigDen, sigCs, sigDr, sigDepth, sigChroma, sigIl,
         vs.valid ? 1 : 0, vs.width, vs.height,
         vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
         vs.subtypeName.c_str(), vs.hdr ? 1 : 0,
@@ -1950,7 +2306,9 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     if (hAny) { pendingHdr_ = hdr; hasHdr_ = true; }
     if (mAny) { pendingMl_  = ml;  hasMl_  = true; }
     if (oAny) { pendingOut_ = out; hasOut_ = true; }
-    ApplyPendingSettings();
+    // UI-thread entry point: remember, and let the graph owner apply. Never
+    // write the renderer from here — see QueueSettingsApply().
+    QueueSettingsApply();
     return S_OK;
 }
 
@@ -2018,107 +2376,108 @@ void MpcPlayer::UpdateIcsFromFilter()
     decklinkSettings_.inputColorSpace = ics;
 }
 
-// The FILTER is the format-change authority now (its SDK event, raised on its
-// worker). We rebuild gracefully — off the UI thread, serialized by the graph
-// lock so no two threads ever touch the graph together.
-void __cdecl MpcPlayer::DeckLinkRestartBridge(void* ctx)
-{
-    static_cast<MpcPlayer*>(ctx)->RequestDecklinkRestart();
-}
+// (DeckLinkRestartBridge and RequestDecklinkRestart lived here. The bridge was
+// the filter's restart callback — written, but never registered, so the filter
+// could not initiate a rebuild at all; and RequestDecklinkRestart was a second
+// decider that inferred "stalled" from renderer counters, which cannot be told
+// apart from a legitimate renegotiation. Both are gone: the IngestController
+// decides, HandleIngestDecision queues, the executor acts.)
 
-// THE ops-queue entry point. Called from the filter's worker (restart
-// callback / gate-throttled self-heal) and from the shell (monitor command).
-// Non-blocking, coalescing — the EXECUTOR thread runs the rebuild, never this
-// caller.
-void MpcPlayer::PostDecklinkRebuild()
+// THE ops-queue entry point, and the only way ingestion changes state. Called
+// by the IngestController with its decision. Non-blocking and coalescing: the
+// EXECUTOR thread performs the work, never this caller.
+void MpcPlayer::HandleIngestDecision(const IngestController::Decision& d)
 {
+    if (d.intent == IngestController::Intent::None) return;
+
+    // Record the fact that produced the decision (signal lock state, ICS advice)
+    // — this is state the UI displays; the graph is not touched here.
+    decklinkSettings_.signalLocked = (d.intent != IngestController::Intent::Stop);
+    if (!d.url.empty()) {
+        pendingDecklinkUrl_.assign(d.url.begin(), d.url.end());
+        decklinkSettings_.inputColorSpace = d.ics;
+    }
+
     {
         std::lock_guard<std::mutex> lk(m_gopMtx);
-        // The op carries the target URL (monitor-advised). decklinkUrl_ is NOT
-        // usable here on the first launch — it is only set inside BuildGraph.
-        if (!pendingDecklinkUrl_.empty()) m_gopUrl = pendingDecklinkUrl_;
-        m_gopQueued = true;               // coalesce: a burst → one rebuild
+        m_gopIntent = d.intent;           // coalesce: latest decision wins
+        if (!d.url.empty()) m_gopUrl.assign(d.url.begin(), d.url.end());
+        m_gopQueued = true;
     }
-    Log("[DECKLINK][engine] rebuild POSTED to ops queue (executor)");
+    Log("[DECKLINK][engine] op POSTED to executor: %s url='%s'",
+        IngestController::IntentName(d.intent), d.url.c_str());
     m_gopCv.notify_one();
+    Notify(d.intent == IngestController::Intent::Stop ? "decklink:lost" : "decklink:signal");
 }
 
-void MpcPlayer::RequestDecklinkRestart()
-{
-    DeckLinkSourceStats ds;
-    if (!GetDeckLinkSourceStats(ds)) {
-        // No stats means no evidence, and the old code turned that into a
-        // FABRICATED one: GetDeckLinkSourceStats zeroes the struct on failure, and
-        // m_lastDlvSnapshot was written unconditionally — so a failed read stored 0,
-        // and the next successful comparison saw "delivered > 0" and concluded video
-        // was flowing. The skip then fired on every subsequent request. Stats are
-        // unavailable for real periods here ("filter meta: stats unavailable"), so
-        // this was not a rare path.
-        Log("[DECKLINK][engine] restart requested, source stats unavailable — rebuilding");
-        PostDecklinkRebuild();
-        return;
-    }
-
-    const bool advanced = ds.framesDelivered > m_lastDlvSnapshot;
-    // "Delivering" is NOT "showing". A stale media type keeps delivering frames that
-    // the size gate then throws away (dims != connected type), so a delivery-only
-    // test skipped exactly the rebuild that fixes it — and because the stale state
-    // never clears itself, the picture stayed black until the app was restarted.
-    // Gate drops are the direct evidence that the connected media type no longer
-    // matches the signal, so their absence is what makes the skip safe.
-    const bool dropping = ds.gateDropped > m_lastGateSnapshot;
-    m_lastDlvSnapshot = ds.framesDelivered;
-    m_lastGateSnapshot = ds.gateDropped;
-
-    // Skip a rebuild only when the graph is ACTUALLY SHOWING video: frames
-    // advancing AND nothing being gate-dropped. Anything else rebuilds — that is
-    // the self-heal path for a stale media type.
-    if (advanced && !dropping) {
-        Log("[DECKLINK][engine] restart requested while video is flowing — skipped");
-        return;
-    }
-    Log("[DECKLINK][engine] restart requested (advanced=%d gateDropped=%llu/%llu) — rebuilding",
-        advanced ? 1 : 0, ds.gateDropped, m_lastGateSnapshot);
-    PostDecklinkRebuild();
-}
-
-// The single executor: every rebuild/launch for the capture path runs here,
-// strictly ordered (DESIGN.md). The UI/monitor/filter only POST ops.
+// The single executor: every graph mutation for the capture path runs here,
+// strictly ordered. The monitor, the decider, the UI and the filter only POST.
 void MpcPlayer::DecklinkOpLoop()
 {
     for (;;) {
-        bool run = false;
+        bool runGraph = false, runApply = false;
         {
             std::unique_lock<std::mutex> lk(m_gopMtx);
-            m_gopCv.wait(lk, [this] { return m_gopStop || m_gopQueued; });
+            m_gopCv.wait(lk, [this] { return m_gopStop || m_gopQueued || m_gopApplyQueued; });
             if (m_gopStop) break;
-            m_gopQueued = false;
-            run = true;
+            // The graph op goes first: a settings push that arrived during a
+            // rebuild is then applied onto the NEW renderer, which is the point
+            // of routing it through here at all.
+            if (m_gopQueued)           { m_gopQueued = false; runGraph = true; }
+            else if (m_gopApplyQueued) { m_gopApplyQueued = false; runApply = true; }
         }
-        if (run) RunDecklinkRebuild();
+        if (runGraph) RunDecklinkRebuild();
+        else if (runApply) { std::lock_guard<std::recursive_mutex> lk(m_graphMtx); ApplySettingsOp(); }
     }
 }
 
 void MpcPlayer::RunDecklinkRebuild()
 {
+    IngestController::Intent intent = IngestController::Intent::None;
     std::wstring url;
     {
         std::lock_guard<std::mutex> lk(m_gopMtx);
+        intent = m_gopIntent;
         url = m_gopUrl;
         m_gopUrl.clear();
+        m_gopIntent = IngestController::Intent::None;
     }
     if (url.empty()) url = decklinkUrl_;
-    Log("[DECKLINK][engine] executor: rebuild (ordered teardown + relaunch) url='%s'",
-        url.empty() ? "<empty>" : "decklink://…");
+
     std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+
+    if (intent == IngestController::Intent::Stop) {
+        Log("[DECKLINK][engine] executor: STOP (ordered teardown, no relaunch)");
+        TeardownDecklinkGraph();
+        snapshot_ = {};
+        snapshot_.state = State::Stopped;
+        if (ingest_) ingest_->OnIngestActive(false);
+        Notify("state");
+        return;
+    }
+
+    Log("[DECKLINK][engine] EXECUTOR: %s dequeued from the ops queue — starting ordered teardown + relaunch url='%s'",
+        intent == IngestController::Intent::Launch ? "LAUNCH" : "RELOAD",
+        url.empty() ? "<empty>" : "decklink://…");
     UpdateIcsFromFilter();
     if (!url.empty()) {
         // Open() embodies the ordered teardown (StopDelivery → disconnect →
         // StopCapture) then builds the fresh graph on this thread.
+        Log("[DECKLINK][engine] EXECUTOR: calling Open(url) — enter");
         const HRESULT hrO = Open(url);
+        Log("[DECKLINK][engine] EXECUTOR: Open returned hr=0x%08X — calling Play", (unsigned)hrO);
         const HRESULT hrP = Play();
-        Log("[DECKLINK][engine] executor rebuild done: Open hr=0x%08X Play hr=0x%08X",
+        Log("[DECKLINK][engine] EXECUTOR: rebuild done: Open hr=0x%08X Play hr=0x%08X",
             (unsigned)hrO, (unsigned)hrP);
+        // Tell the decider ingestion is running, so its next decision is Reload
+        // rather than Launch. This is the only thing it learns about the graph.
+        const bool active = SUCCEEDED(hrO) && SUCCEEDED(hrP);
+        if (ingest_) ingest_->OnIngestActive(active);
+        Log("[DECKLINK][engine] EXECUTOR: informed the decider ingestActive=%d", active ? 1 : 0);
+        // (The post-reload auto-grab lived here. REVERTED same day: GetCurrentImage
+        // blocks the renderer while a live graph is streaming, so running it from
+        // the 1 s snapshot tick wedged startup acquisition — overlay stuck, frame
+        // frozen. Live snapshots must never call blocking renderer methods.)
     }
     Notify("opened");
 }

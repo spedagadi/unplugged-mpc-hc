@@ -19,20 +19,163 @@
 #include <ole2.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 #include "MpcPlayer.h"
 
+static void EngineLog(const char* line);   // defined below; the crash hooks need it first
+
+// ─ Crash self-diagnosis: the engine prints its own stack at the moment of death ─
+//
+// This process kept dying with 0xc0000409 (STATUS_STACK_BUFFER_OVERRUN), which
+// is how the CRT's abort() reports itself. WER writes no dump for __fastfail,
+// so the stack died with the process. These hooks catch the three ways a Release
+// MSVC binary ends up in abort() — the CRT invalid-parameter handler, an
+// unhandled C++ exception (set_terminate), and a raw unhandled SEH — and in each
+// case log WHY it happened and print a symbolised stack to s3engine.log BEFORE
+// terminating. The renderer's PDB sits beside its .ax, so its frames resolve;
+// the engine's own frames resolve from any PDB dbghelp can find.
+#include <windows.h>
+#include <dbghelp.h>
+
+static void S3LogAndStack(const char* why)
+{
+    EngineLog("==== CRASH SELF-DIAGNOSIS ====");
+    EngineLog(why);
+
+    HANDLE hp = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitialize(hp, nullptr, TRUE);
+
+    void* addrs[24] = {};
+    const USHORT n = CaptureStackBackTrace(1, 24, addrs, nullptr);
+    for (USHORT i = 0; i < n; ++i) {
+        DWORD64 a = (DWORD64)addrs[i];
+        union {
+            char data[sizeof(SYMBOL_INFO) + 255];
+            SYMBOL_INFO sym;
+        } u = {};
+        u.sym.SizeOfStruct = sizeof(SYMBOL_INFO);
+        u.sym.MaxNameLen = 255;
+        DWORD64 disp = 0;
+        char line[768];
+        if (SymFromAddr(hp, a, &disp, &u.sym)) {
+            IMAGEHLP_LINE64 li = { sizeof(IMAGEHLP_LINE64) };
+            DWORD ld = 0;
+            if (SymGetLineFromAddr64(hp, a, &ld, &li) && li.FileName)
+                _snprintf_s(line, sizeof(line), _TRUNCATE,
+                            "[STACK] %-32s+0x%llx  %s:%u",
+                            u.sym.Name, (unsigned long long)disp,
+                            li.FileName, li.LineNumber);
+            else
+                _snprintf_s(line, sizeof(line), _TRUNCATE,
+                            "[STACK] %-32s+0x%llx",
+                            u.sym.Name, (unsigned long long)disp);
+        } else {
+            _snprintf_s(line, sizeof(line), _TRUNCATE, "[STACK] 0x%llx",
+                        (unsigned long long)a);
+        }
+        EngineLog(line);
+    }
+}
+
+static void __cdecl S3InvalidParam(const wchar_t* expr, const wchar_t* fn,
+                                   const wchar_t* file, unsigned line, uintptr_t r)
+{
+    S3LogAndStack("== cause: CRT invalid_parameter (the usual 0xc0000409 source) ==");
+    std::abort();
+}
+
+static void __cdecl S3Terminate()
+{
+    S3LogAndStack("== cause: unhandled C++ exception -> set_terminate ==");
+    std::abort();
+}
+
+static LONG WINAPI S3UnhandledFilter(EXCEPTION_POINTERS* ep)
+{
+    S3LogAndStack("== cause: unhandled SEH exception ==");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void S3InstallCrashHooks()
+{
+    static bool done = [] {
+        _set_invalid_parameter_handler(S3InvalidParam);
+        std::set_terminate(S3Terminate);
+        SetUnhandledExceptionFilter(S3UnhandledFilter);
+        return true;
+    }();
+    (void)done;
+}
+
 // ---------------------------------------------------------------------------
+// The single sink. EVERY line in the audit trail comes through here — engine,
+// signal monitor, ingest decider, and the DeckLinkSource filter (which logs via
+// MpcPlayer's bridge). Two properties this must have, both learned the hard way
+// while chasing the 2026-09-21 crash:
+//
+//   * WALL-CLOCK TIMESTAMP on every line. The Windows crash records carry only a
+//     wall-clock time, so without one here a run cannot be lined up against a
+//     fault — "which line was the last one before it died" is unanswerable.
+//     Elapsed-ms is added too, for ordering within a second.
+//   * SERIALISED writes. The append is not atomic for a long line, and several
+//     threads log concurrently, so an unsynchronised pair interleaves — observed
+//     as a line whose beginning belongs to a different line ("aming=0 in=1)").
+//     A log that garbles lines cannot be used as evidence.
+// Keep exactly ONE previous run. An investigation needs the log of the run that
+// died, and the very next launch would otherwise append straight over it — which
+// is almost how the evidence for the 2026-09-21 crash was lost. Rotation runs
+// once per process, before the first line, and only when the log has grown past
+// a size where it is more noise than signal (the per-poll trace makes it grow
+// ~1 MB/hour, so this bounds it without touching a short session).
+static void RotateLogOnce() {
+    static bool done = [] {
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (!GetFileAttributesExW(L"s3engine.log", GetFileExInfoStandard, &fad)) return true;
+        const unsigned long long sz =
+            ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+        if (sz < 8ull * 1024ull * 1024ull) return true;
+        DeleteFileW(L"s3engine.prev.log");
+        MoveFileW(L"s3engine.log", L"s3engine.prev.log");
+        return true;
+    }();
+    (void)done;
+}
+
 static void EngineLog(const char* line) {
-    if (FILE* f = _wfopen(L"s3engine.log", L"a")) { fputs(line, f); fputc('\n', f); fclose(f); }
-    OutputDebugStringA(line);
+    static std::mutex s_logMtx;
+    static const unsigned long long s_t0 = GetTickCount64();
+    RotateLogOnce();
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    const unsigned long long elapsed = GetTickCount64() - s_t0;
+
+    char stamped[1024];
+    _snprintf_s(stamped, sizeof(stamped), _TRUNCATE,
+                "%02u:%02u:%02u.%03u +%7llu  %s",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, elapsed, line);
+
+    {
+        std::lock_guard<std::mutex> lk(s_logMtx);
+        if (FILE* f = _wfopen(L"s3engine.log", L"a")) {
+            fputs(stamped, f); fputc('\n', f); fclose(f);
+        }
+    }
+    OutputDebugStringA(stamped);
     OutputDebugStringA("\n");
 }
 static MpcPlayer* g_player() {
     static MpcPlayer s_player;       // lazily constructed on first use
-    static bool s_logged = [] { s_player.SetLogSink(EngineLog); return true; }();
+    static bool s_logged = [] {
+        S3InstallCrashHooks();       // a fatal abort now prints its own stack first
+        s_player.SetLogSink(EngineLog);
+        return true;
+    }();
     (void)s_logged;
     return &s_player;
 }

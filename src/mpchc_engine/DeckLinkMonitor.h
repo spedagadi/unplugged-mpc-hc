@@ -1,12 +1,17 @@
 #pragma once
 
 // DeckLink HDMI signal monitor — polls decklink_monitor.dll (read-only
-// IDeckLinkStatus) on a worker thread and reports signal/format changes so the
-// player can restart the capture graph with the new mode + colour space.
+// IDeckLinkStatus) on a worker thread and publishes a SETTLED FACT about the
+// wire. It measures; it decides nothing.
 //
-// The monitor NEVER touches the DirectShow graph — it only invokes the restart
-// callback. The caller is responsible for marshalling that to its UI thread
-// (the s3_shell posts a WM_APP message).
+// CONTRACT (component boundary, 2026-09-21):
+//   in  : the device
+//   out : SignalFact — published only for a state that held for kSustainMs
+//   never: touches the DirectShow graph, blocks, or commands another component
+//
+// It used to hand out a RestartRequest, i.e. it told the engine to rebuild. That
+// made a measurer a lifecycle decider. It now publishes the measurement; the
+// IngestController decides and the ops-queue executor acts.
 
 #include <atomic>
 #include <functional>
@@ -17,12 +22,6 @@
 
 class DeckLinkMonitor {
 public:
-    // ics uses the MPCVR ICS_* enum (IVideoRenderer.h): Auto/601/709/2020_*.
-    struct RestartRequest {
-        std::string url;    // decklink://<device>?... full URL for the new mode
-        int ics = 0;        // 0 = Auto
-        bool signalLost = false;
-    };
     struct SignalInfo {     // mirrors decklink_monitor VFSignalInfo (extended)
         int colorspace = 1;    // 0=601 1=709 2=2020
         int dynamic_range = 0; // 0=SDR 1=PQ 2=HLG
@@ -34,7 +33,17 @@ public:
         int interlace = 2;   // 0=prog 1=interlaced 2=unknown
     };
 
-    using RestartCallback = std::function<void(const RestartRequest&)>;
+    // The FACT. Everything here is measured or derived from the device; none of it
+    // is an instruction. `url` and `ics` are derivations the DLL glue owns (they
+    // need the open device), not decisions — the controller may ignore them.
+    struct SignalFact {
+        SignalInfo sig{};
+        std::string url;        // decklink://<device>?... for the settled format
+        int ics = 0;            // MPCVR ICS_* hint (IVideoRenderer.h) — advice only
+        unsigned long long seq = 0;   // monotonic; lets a consumer spot reordering
+    };
+
+    using FactCallback = std::function<void(const SignalFact&)>;
     using LogSink = std::function<void(const char*)>;   // timestamp-free; caller adds time
 
     DeckLinkMonitor();
@@ -54,7 +63,7 @@ public:
     // device display names (UTF-8), generally one per HDMI input port.
     int EnumerateDevices(std::vector<std::string>& out);
 
-    void SetRestartCallback(RestartCallback cb) { restartCb_ = std::move(cb); }
+    void SetFactCallback(FactCallback cb) { factCb_ = std::move(cb); }
     bool IsRunning() const { return running_; }
     // Latest signal snapshot read by the poll thread (LIVE panel). Copy under
     // the monitor mutex; fields are unchanged after a failed read.
@@ -69,6 +78,25 @@ private:
     void Loop();
     bool EnsureLoaded();           // LoadLibrary decklink_monitor.dll + resolve exports
     int  MapIcs(const SignalInfo&) const;  // colorspace×DR → ICS_*
+
+    // What "the state changed" means. The gate key MUST carry the FORMAT, not
+    // just locked/cs/dr: a 4K movie → 1080p disc menu keeps cs and dr identical,
+    // so a key without the dimensions never changes, no fact is ever published,
+    // and the graph is left holding a stale media type — the size gate then drops
+    // every frame and the picture stays black for the whole menu. interlace is in
+    // here for the same reason (1080i ↔ 1080p).
+    struct FactKey {
+        int locked = 0, colorspace = 0, dynamic_range = 0;
+        int width = 0, height = 0, fpsNum = 0, fpsDen = 0, interlace = 0;
+        bool operator==(const FactKey& o) const {
+            return locked == o.locked && colorspace == o.colorspace &&
+                   dynamic_range == o.dynamic_range && width == o.width &&
+                   height == o.height && fpsNum == o.fpsNum &&
+                   fpsDen == o.fpsDen && interlace == o.interlace;
+        }
+        bool operator!=(const FactKey& o) const { return !(*this == o); }
+    };
+    static FactKey KeyOf(const SignalInfo& si);
 
     // decklink_monitor.dll exports (cdecl)
     using FnOpen = int(__cdecl*)(const char*);
@@ -87,7 +115,7 @@ private:
     std::thread thread_;
     std::atomic<bool> running_ = false;
     std::atomic<bool> stop_ = false;
-    RestartCallback restartCb_;
+    FactCallback factCb_;
     LogSink logSink_;
     std::string device_;
     int pollMs_ = 500;
@@ -99,16 +127,20 @@ private:
     bool lastReadOk_ = false;
 
     // last-seen state for change detection
-    int lastLocked_ = -1;
     int lastMode_ = -1;
-    int lastColorSpace_ = -1;
-    int lastDynamicRange_ = -1;
-    // 1-second stability gate (DESIGN.md): armed when the wire state CHANGES
-    // (lastSeenKey_) to something different from the last commanded state
-    // (lastCmdKey_); a command fires once that state holds for kSustainMs. A
-    // state returning to the already-committed one never re-fires.
-    static constexpr DWORD kSustainMs = 1000;
-    int   lastSeenKey_ = -999;
-    int   lastCmdKey_ = -999;
-    DWORD candidateSince_ = MAXDWORD;
+    // 1-second stability gate: a state is armed as a candidate when the wire
+    // CHANGES (lastSeenKey_) to something different from the last state a FACT was
+    // published for (lastCmdKey_); the fact is published once that state has been
+    // observed for >= kSustainMs AND on at least kSustainSamples polls, so a slow
+    // or blocked read cannot make one sample look like sustained observation.
+    // A state returning to the already-published one never re-fires.
+    static constexpr DWORD kSustainMs      = 1000;
+    static constexpr int   kSustainSamples = 2;
+    FactKey lastSeenKey_;
+    FactKey lastCmdKey_;
+    bool    seenValid_ = false;
+    bool    cmdValid_  = false;
+    DWORD   candidateSince_   = MAXDWORD;
+    int     candidateSamples_ = 0;
+    unsigned long long factSeq_ = 0;   // monotonic fact sequence (poll thread only)
 };

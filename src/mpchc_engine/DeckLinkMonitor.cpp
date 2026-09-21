@@ -93,10 +93,11 @@ bool DeckLinkMonitor::Start(const std::string& deviceName, int pollMs)
     pollMs_ = pollMs > 0 ? pollMs : 500;
     stop_ = false;
     running_ = true;
-    lastLocked_ = -1;
     lastMode_ = -1;
-    lastColorSpace_ = -1;
-    lastDynamicRange_ = -1;
+    seenValid_ = false;
+    cmdValid_  = false;
+    candidateSince_   = MAXDWORD;
+    candidateSamples_ = 0;
 
     thread_ = std::thread([this] { Loop(); });
     Log("[DECKLINK][monitor] Start OK — poll thread launched");
@@ -132,6 +133,23 @@ int DeckLinkMonitor::MapIcs(const SignalInfo& si) const
     }
 }
 
+// The gate key. Carries the FORMAT — locked/cs/dr alone cannot see a resolution
+// or interlace change, which is exactly what a movie → disc-menu switch is when
+// the disc keeps the same colour space. See the declaration for why that matters.
+DeckLinkMonitor::FactKey DeckLinkMonitor::KeyOf(const SignalInfo& si)
+{
+    FactKey k;
+    k.locked        = si.locked;
+    k.colorspace    = si.colorspace;
+    k.dynamic_range = si.dynamic_range;
+    k.width         = si.width;
+    k.height        = si.height;
+    k.fpsNum        = si.frame_rate_num;
+    k.fpsDen        = si.frame_rate_den;
+    k.interlace     = si.interlace;
+    return k;
+}
+
 void DeckLinkMonitor::Loop()
 {
     // open is retried every kOpenRetryPolls polls until it succeeds, so a
@@ -151,8 +169,12 @@ void DeckLinkMonitor::Loop()
     int unlockedSince = 0;   // consecutive ms signal reported as unlocked
     int pollCount = 0;
     while (!stop_) {
-        const DWORD t0 = GetTickCount();
         Sleep(pollMs_);
+        // t0 AFTER the sleep: the budget is about work, not about waiting. Timing
+        // from before the sleep made every iteration look like it had spent the
+        // poll interval inside the driver, so "poll budget exceeded" fired on
+        // ordinary ticks and told us nothing about a genuinely blocked read.
+        const DWORD t0 = GetTickCount();
         pollCount++;
 
         // Retry the device open periodically (covers driver-not-ready, HDMI
@@ -164,9 +186,13 @@ void DeckLinkMonitor::Loop()
                 ++openFailures, rc, opened ? " -> opened" : "");
             if (opened) {
                 unlockedSince = 0;
-                lastLocked_ = -1;
-                lastColorSpace_ = -1;
-                lastDynamicRange_ = -1;
+                // A fresh session has no history: forget the last seen/published
+                // states so the first settled reading republishes rather than
+                // being suppressed as "the same as before".
+                seenValid_ = false;
+                cmdValid_  = false;
+                candidateSince_   = MAXDWORD;
+                candidateSamples_ = 0;
             }
         }
         if (!opened) {
@@ -209,49 +235,81 @@ void DeckLinkMonitor::Loop()
             unlockedSince = 0;
         }
 
-        bool changed = false;
-        if (si.locked != lastLocked_) { changed = true; lastLocked_ = si.locked; }
+        // The wire state, INCLUDING the format. See FactKey: omitting the
+        // dimensions is what let a 4K movie → 1080p menu pass unnoticed.
+        // ── flow trace ────────────────────────────────────────────────────────
+        // Everything the gate sees, before it decides anything. The per-poll line
+        // above shows the raw reading; these two say what the gate MADE of it,
+        // which is the part that was previously invisible:
+        //   OBSERVE  — this poll's key, and whether it differs from the last one
+        //              the gate looked at and from the last one PUBLISHED.
+        //   GATE     — while a candidate is armed, how long and over how many
+        //              polls it has held. "held 0 ms over 1 polls" climbing to
+        //              ">=1000 ms over 2 polls" is the gate doing its job; a
+        //              candidate that keeps restarting is a flapping wire.
+        const FactKey key = KeyOf(si);
+        const bool keyChanged = (!seenValid_ || key != lastSeenKey_);
+        const bool keyDiffersFromPublished = (!cmdValid_ || key != lastCmdKey_);
+        Log("[DECKLINK][monitor] OBSERVE key(locked=%d cs=%d dr=%d %dx%d %d/%d il=%d) "
+            "newSinceLastPoll=%d differsFromPublished=%d",
+            si.locked, si.colorspace, si.dynamic_range,
+            si.width, si.height, si.frame_rate_num, si.frame_rate_den, si.interlace,
+            keyChanged ? 1 : 0, keyDiffersFromPublished ? 1 : 0);
 
-        // Map change detection: colorspace or dynamic range shifting is the
-        // "movie→menu" switch even when the mode fourcc stays the same (e.g.
-        // DV→SDR changes colorspace while DR stays 0).
-        if (si.colorspace != lastColorSpace_) { changed = true; lastColorSpace_ = si.colorspace; }
-        if (si.dynamic_range != lastDynamicRange_) { changed = true; lastDynamicRange_ = si.dynamic_range; }
-
-        if (changed) {
-            Log("[DECKLINK][monitor] CHANGE detected (locked=%d cs=%d dr=%d) — arming 1 s stability gate",
-                si.locked, si.colorspace, si.dynamic_range);
-        }
-
-        // Stability gate (DESIGN.md): a state is armed as a candidate and only
-        // becomes a command once it has been observed continuously for >=
-        // kSustainMs AND it differs from the last commanded state. HDMI
-        // detection can flicker (menu↔movie flapping); a state that flaps and
-        // returns to the already-commanded one must NOT command again — only a
-        // genuinely different state that holds 1 s commands. This keeps an
-        // unstable wire from repeatedly tearing down a running graph.
-        const int key = (si.locked << 16) | ((si.colorspace & 0xff) << 8) | (si.dynamic_range & 0xff);
-        if (key != lastSeenKey_) {                 // the wire changed since the last poll
+        if (keyChanged) {
+            seenValid_  = true;
             lastSeenKey_ = key;
-            if (key != lastCmdKey_) candidateSince_ = GetTickCount();  // new state → arm window
-            else candidateSince_ = MAXDWORD;                           // back to committed state → pin
+            Log("[DECKLINK][monitor] CHANGE detected (locked=%d cs=%d dr=%d %dx%d %d/%d il=%d) "
+                "— arming %u ms stability gate",
+                si.locked, si.colorspace, si.dynamic_range,
+                si.width, si.height, si.frame_rate_num, si.frame_rate_den, si.interlace,
+                (unsigned)kSustainMs);
+            if (keyDiffersFromPublished) { candidateSince_ = GetTickCount(); candidateSamples_ = 1; }
+            else { candidateSince_ = MAXDWORD; candidateSamples_ = 0; }   // back to the published state
+        } else if (keyDiffersFromPublished) {
+            if (candidateSamples_ > 0) ++candidateSamples_;   // still the same candidate — keep counting
         }
-        if (key != lastCmdKey_ && restartCb_ &&
+        if (keyDiffersFromPublished && candidateSamples_ > 0) {
+            const DWORD heldMs = (candidateSince_ == MAXDWORD) ? 0 : (GetTickCount() - candidateSince_);
+            Log("[DECKLINK][monitor] GATE candidate held %u ms over %d poll(s) "
+                "(need >= %u ms and >= %d polls)",
+                (unsigned)heldMs, candidateSamples_,
+                (unsigned)kSustainMs, kSustainSamples);
+        }
+
+        // Publish the FACT once the state is genuinely settled: held for
+        // kSustainMs AND seen on >= kSustainSamples polls. The sample count is
+        // what stops a single reading from qualifying just because the read
+        // itself blocked for over a second — the DLL's status reads can take
+        // seconds, and "one slow sample" is not "observed continuously".
+        const bool isCandidate = (!cmdValid_ || key != lastCmdKey_);
+        if (isCandidate && factCb_ && candidateSamples_ >= kSustainSamples &&
             (GetTickCount() - candidateSince_) >= kSustainMs) {
-            lastCmdKey_ = key;                     // command this state out — no repeat until a different one
-            lastSeenKey_ = key;
-            candidateSince_ = MAXDWORD;
-            Log("[DECKLINK][monitor] state confirmed (held >= %u ms) → command", (unsigned)kSustainMs);
-            RestartRequest req;
-            req.signalLost = !si.locked;
-            req.ics = MapIcs(si);
+            lastCmdKey_ = key;                 // published — no repeat until a different state settles
+            cmdValid_   = true;
+            candidateSince_   = MAXDWORD;
+            candidateSamples_ = 0;
+            Log("[DECKLINK][monitor] state confirmed (held >= %u ms over %d polls) → fact published",
+                (unsigned)kSustainMs, kSustainSamples);
+
+            SignalFact f;
+            f.sig = si;
+            f.ics = MapIcs(si);
             if (fnBuildUrl_ && si.locked) {
                 char url[512] = {};
                 const int n = fnBuildUrl_(device_.empty() ? nullptr : device_.c_str(), url, sizeof(url));
                 Log("[DECKLINK][monitor] vf_dl_build_url n=%d url='%s'", n, n > 0 ? url : "(empty)");
-                if (n > 0) req.url = url;
+                if (n > 0) f.url = url;
             }
-            restartCb_(req);
+            f.seq = ++factSeq_;
+
+            // The boundary crossing, bracketed. If the process dies inside the
+            // callback, the PAIR tells us it went in and never came back — which
+            // is a different diagnosis from "never got there at all".
+            Log("[DECKLINK][monitor] PUBLISH fact seq=%llu → handing to the decider (boundary: monitor→decider)",
+                f.seq);
+            factCb_(f);
+            Log("[DECKLINK][monitor] PUBLISH fact seq=%llu → decider accepted it (returned)", f.seq);
         }
 
         if (GetTickCount() - t0 > 2000)

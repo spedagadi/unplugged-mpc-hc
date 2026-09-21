@@ -14,7 +14,8 @@
 #include <vector>
 
 #include "DeckLinkSourceControl.h"
-#include "DeckLinkMonitor.h"   // signal monitor — the ingest-change MASTER (DESIGN.md)
+#include "DeckLinkMonitor.h"   // measures the wire — publishes settled facts only
+#include "IngestController.h"  // the single ingestion decider — facts in, intent out
 
 class MpcPlayer final {
 public:
@@ -333,11 +334,18 @@ public:
         int  lastDynamicRange = -1; // 0=SDR 1=PQ 2=HLG
         bool signalLocked = false;
     };
-    // Post a DeckLink rebuild to the single ops-queue executor (non-blocking,
-    // coalescing). The monitor, the filter restart callback, and the shell call
-    // THIS instead of Open() — the executor is the only graph owner.
-    void PostDecklinkRebuild();
-    HRESULT SetDecklinkCapture(const std::wstring& deviceName); // start the signal monitor (MASTER)
+    // The ONLY way ingestion changes state. Called by the IngestController with
+    // its decision; queues an op for the executor, which is the only thing that
+    // creates or destroys a graph. Non-blocking, coalescing (latest wins).
+    void HandleIngestDecision(const IngestController::Decision& d);
+    // Delivery-stall monitor ("ingested vs displayed"): called from RefreshLive's
+    // snapshot tick with the filter's counters. Posts a Reload only for the
+    // stale-media-type signature (arrived advancing, delivered frozen, gate
+    // climbing) — see the implementation for why that is the safe discriminator.
+    void CheckDeliveryStall(const DeckLinkSourceStats& dl, const RenderStats& r);
+    void CheckSourceFormatChange(const DeckLinkSourceStats& dl);
+    void RequestDecklinkReload(const char* why);   // post a Reload, logged with the reason
+    HRESULT SetDecklinkCapture(const std::wstring& deviceName); // start the monitor + decider
     HRESULT StopDecklinkCapture();                              // stop the signal monitor
     HRESULT SetDecklinkInputColor(int ics);
     // Derive the input colour space from the negotiated media type (authoritative)
@@ -397,6 +405,9 @@ private:
     // mutation (DESIGN.md ordered teardown). All initiators post here; nothing
     // else ever calls Open/Stop for the capture path.
     void RunDecklinkRebuild();          // executor: ordered teardown + relaunch
+    // The ordered teardown (DESIGN.md), extracted so the Stop path and the
+    // rebuild path cannot drift apart. Executor only, under m_graphMtx.
+    void TeardownDecklinkGraph();
     void DecklinkOpLoop();              // executor thread body
     void DisconnectDecklinkPins();      // source-out <-> renderer-in, before any join
     HRESULT AddRenderer(CComPtr<IBaseFilter>&);
@@ -414,9 +425,17 @@ private:
     HRESULT Notify(std::string_view eventName);
     HRESULT UpdateSnapshot() const;
     static void __cdecl DeckLinkSourceLogBridge(void* ctx, const char* line);
-    static void __cdecl DeckLinkRestartBridge(void* ctx);
-    void RequestDecklinkRestart();   // filter format-change → guarded graceful rebuild
     void UpdateIcsFromFilter();      // filter cs/eotf → ICS override state (pre-connect)
+    // The settings-apply work item the UI queues instead of writing the renderer
+    // itself. Runs on the executor, i.e. serialized against graph mutation.
+    void QueueSettingsApply();   // any thread: remember + queue, never writes
+    void ApplySettingsOp();      // executor only, under m_graphMtx
+    // A settings change that only a REBUILD can deliver safely: posted as a
+    // Reload, so BuildGraph applies it pre-connect. See ApplyPendingSettings.
+    void RequestSettingsRebuild();
+    // True only for the duration of BuildGraph's own ApplyPendingSettings call,
+    // where the graph is not yet connected and every field is safe to push.
+    bool m_inGraphBuild = false;
 
     CComPtr<IGraphBuilder> graph_;
     CComPtr<IMediaControl> mediaControl_;
@@ -446,25 +465,41 @@ private:
     CComPtr<IDeckLinkSourceControl> decklinkControl_;  // current direct filter (retired on rebuild)
     std::wstring decklinkUrl_;               // source the decklink graph was opened with
     std::wstring pendingDecklinkUrl_;        // latest monitor-advised URL (shell → restart)
-    std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;   // the signal MASTER
-    // Ops queue (the executor): all rebuilds funnel through here.
+    // The previous capture session, released by the executor at the next teardown
+    // (see TeardownDecklinkGraph step 5/5). Replaces the detached retire thread.
+    CComPtr<IDeckLinkSourceControl> m_retiredControl;
+    std::unique_ptr<DeckLinkMonitor> decklinkMonitor_;   // MEASURES the wire — decides nothing
+    // The single ingestion decider: consumes settled facts, emits intents.
+    // It holds no graph and cannot act — see IngestController.h.
+    std::unique_ptr<IngestController> ingest_;
+    // Ops queue (the executor): the ONLY thing that mutates card + graph.
     std::mutex              m_gopMtx;
     std::condition_variable m_gopCv;
     std::wstring            m_gopUrl;      // target URL carried by the pending op
-    bool                    m_gopQueued = false;
+    IngestController::Intent m_gopIntent = IngestController::Intent::None;
+    bool                    m_gopQueued = false;        // a graph op is pending
+    // A settings-apply op, tracked separately from the graph op so a settings
+    // push is never lost by coalescing against a rebuild. Serviced by the same
+    // executor thread, which is what serializes it against graph mutation.
+    bool                    m_gopApplyQueued = false;
     bool                    m_gopStop = false;
     std::thread             m_gopThread;
+    // Delivery-stall state (CheckDeliveryStall) — live-tick only.
+    unsigned long long m_stallLastDelv    = 0;
+    unsigned long long m_stallLastArrived = 0;
+    unsigned long long m_stallLastGate    = 0;
+    unsigned long long m_stallLastDrawn   = 0;   // renderer "displayed" counter
+    unsigned long long m_stallLastRecv    = 0;   // renderer "received" counter
+    int                m_stallTicks       = 0;
+    // Source-format change state (CheckSourceFormatChange): the SOURCE filter is
+    // the dimension measurer (the monitor DLL reports none); dims settling for 2 s
+    // and differing from the committed format → the decider asks for a Reload.
+    int m_srcCommittedW = 0, m_srcCommittedH = 0, m_srcCommittedN = 0, m_srcCommittedD = 0;
+    int m_srcChangeTicks = 0;
     // Serializes every graph-mutating call (Open/Stop/Play/Seek + the restart
     // worker) so no two threads touch the graph — the minimal-threading rule.
     // Recursive: the restart worker calls the public API under the same lock.
     std::recursive_mutex m_graphMtx;
-    std::atomic<bool> m_restartPending { false };   // one restart at a time
-    unsigned long long m_lastDlvSnapshot = 0;       // delivered counter at last restart decision
-    // Gate-dropped counter at the same decision. Drops mean the incoming frames do
-    // not match the connected media type — the one condition that makes the
-    // "video is flowing, skip the rebuild" shortcut wrong, since a stale media type
-    // keeps delivering frames it then discards. See RequestDecklinkRestart.
-    unsigned long long m_lastGateSnapshot = 0;
     // Live telemetry cache + its refresh worker (UI must not touch the renderer).
     mutable std::mutex m_liveMtx;
     RenderStats           m_liveRender{};

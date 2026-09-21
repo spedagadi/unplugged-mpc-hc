@@ -830,12 +830,45 @@ void CDeckLinkOutputPin::WorkerLoop()
                     renegFn  = m_st.restartFn;
                 }
             }
-            if (m_st.started) { m_input->StopStreams(); m_st.started = 0; }
+            // ── In-session renegotiation is NOT ours to do ───────────────────
+            //
+            // On a mode change while the graph is already connected and
+            // delivering, renegotiating here re-enables the input and re-pushes
+            // this pin's media type — which lands in the RENDERER as
+            // CMpcVideoRenderer::SetMediaType, re-deriving its media type via
+            // InitMediaType() on THIS worker thread and queuing a second swap
+            // consumed inside DoRenderSample. The render path holds no lock, so
+            // that is an access violation at a fixed address in
+            // MpcVideoRenderer64.ax — observed 2026-09-21, immediately after a
+            // `VideoInputFormatChanged` on disc stop (movie -> menu).
+            //
+            // Rebuilding the graph is the ENGINE's job, and DESIGN.md already
+            // says how: step 5 of the teardown script launches a FRESH filter
+            // instance, which enables the input with the new mode in a clean SDK
+            // session. The monitor sees the colour-space/dynamic-range change and
+            // the ingest decider requests a Reload, so the transition still
+            // completes — without this pin ever changing the renderer's media
+            // type mid-stream.
+            //
+            // Known cost, deliberate: a change that alters ONLY the resolution
+            // (colour space and dynamic range identical) produces no monitor fact,
+            // so nothing requests the rebuild. The size gate drops those frames,
+            // so the picture stays black until something else forces a rebuild.
+            // Closing that needs the filter's measured format fed to the ingest
+            // decider as a fact — the follow-up to this change.
+            const bool graphConnected = (m_connWidth > 0 || m_st.delivered > 0);
+            const bool midStreamModeDiff = modeDiff && graphConnected;
+            if (midStreamModeDiff) {
+                StateLog(&m_st, "[DECKLINK][src] mode change while connected (mode=%#x) — NOT "
+                    "renegotiating in-session; waiting for the engine to rebuild", (unsigned)m_st.mode);
+            }
+
+            if (!midStreamModeDiff && m_st.started) { m_input->StopStreams(); m_st.started = 0; }
             // A mode change needs a fresh Enable; a failed-enable reset needs a
             // Disable too so the retry (next Active wake) does not re-enable
             // while already enabled.
-            if (modeDiff && m_st.enabled) { m_input->DisableVideoInput(); m_st.enabled = 0; }
-            if (!m_st.enabled) {
+            if (!midStreamModeDiff && modeDiff && m_st.enabled) { m_input->DisableVideoInput(); m_st.enabled = 0; }
+            if (!midStreamModeDiff && !m_st.enabled) {
                 const HRESULT hrE = m_input->EnableVideoInput(m_st.mode,
                     bmdFormat10BitYUV, bmdVideoInputEnableFormatDetection);
                 if (FAILED(hrE)) {
@@ -861,12 +894,14 @@ void CDeckLinkOutputPin::WorkerLoop()
                     continue;
                 }
             }
-            const HRESULT hrS = m_input->StartStreams();
-            m_st.started = (hrS == S_OK);
-            m_st.everStarted = 1;
-            StateLog(&m_st, "[DECKLINK][src] StartStreams hr=0x%08X (mode=%#x)", (unsigned)hrS,
-                (unsigned)m_st.mode);
-            if (modeDiff) SetEvent(m_st.firstDataEvent);   // a restart is itself a format cue
+            if (!midStreamModeDiff) {
+                const HRESULT hrS = m_input->StartStreams();
+                m_st.started = (hrS == S_OK);
+                m_st.everStarted = 1;
+                StateLog(&m_st, "[DECKLINK][src] StartStreams hr=0x%08X (mode=%#x)", (unsigned)hrS,
+                    (unsigned)m_st.mode);
+                if (modeDiff) SetEvent(m_st.firstDataEvent);   // a restart is itself a format cue
+            }
         }
         m_st.Unlock();
 
