@@ -167,6 +167,9 @@ public:
     float softKnee      = 0.60f;
     float softKneeRatio = 2.48f;
     float softKneeWidth = 0.42f;
+    // The Hable curve's 1.0 in nits, decoupled from display white. 203 = libplacebo's
+    // SDR diffuse white (clouds are content below that), 0 = sdrNits (legacy).
+    float refWhiteNits  = 203.0f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR

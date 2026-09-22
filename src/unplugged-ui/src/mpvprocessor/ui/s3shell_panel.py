@@ -222,6 +222,7 @@ KEY_MAP = {
     "hdr.softKnee":      ("hdr", "softKnee"),
     "hdr.softKneeRatio": ("hdr", "softKneeRatio"),
     "hdr.softKneeWidth": ("hdr", "softKneeWidth"),
+    "hdr.refWhite":      ("hdr", "refWhite"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -391,6 +392,11 @@ def build_rows():
         min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False)
     add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "TONE MAPPING",
         min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False)
+    # Scene reference white: the Hable curve's 1.0, decoupled from display white.
+    # 203 = libplacebo's SDR diffuse white — clouds at 150-200 nits are content,
+    # not highlight. Punch above clouds via the soft knee / ratio.
+    add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "TONE MAPPING",
+        min_=50, max_=400, val=203, default=203, uncheck=False)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:
