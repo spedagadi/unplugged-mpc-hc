@@ -143,6 +143,7 @@ GROUPS = [
 
 TOGGLE, CYCLE, SLIDER = "toggle", "cycle", "slider"
 FILE = "file"          # a path row: click opens a picker, value is a filename
+ACTION = "action"      # a command row: click runs an action (no stored value)
 
 # A display LUT is a COMMAND, not a flat grp.name=value setting, so these rows
 # bypass KEY_MAP and go through engine.load_cube_lut() instead.
@@ -223,6 +224,8 @@ KEY_MAP = {
     "hdr.softKneeRatio": ("hdr", "softKneeRatio"),
     "hdr.softKneeWidth": ("hdr", "softKneeWidth"),
     "hdr.refWhite":      ("hdr", "refWhite"),
+    "hdr.highlightNeutral": ("hdr", "highlightNeutral"),
+    "hdr.chromaExp":      ("hdr", "chromaExp"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -397,6 +400,18 @@ def build_rows():
     # not highlight. Punch above clouds via the soft knee / ratio.
     add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "TONE MAPPING",
         min_=50, max_=400, val=203, default=203, uncheck=False)
+    # Highlight neutral (head): pulls the top of the PQ->SDR output toward its own
+    # luma, level-dependently (the measured fix for the warm-white head on warm
+    # sources — Everest vs madVR, verified 2026-09-23; 0.9 matched madVR's own
+    # warm head). 0 = exactly the pre-feature picture. Live cbuffer re-push: the
+    # picture changes while the slider is dragged.
+    add("Highlight neutral (head)", SLIDER, H, "hdr.highlightNeutral", "TONE MAPPING",
+        min_=0.0, max_=1.0, val=0.9, default=0.9, uncheck=False)
+    # Chroma compensation exponent — STAGE 1 (delivery only): the value is
+    # carried to the renderer and reported as clE= in the pipeline dump, but
+    # NOT applied in the shader yet (application is the next stage).
+    add("Chroma desat (exp)", SLIDER, H, "hdr.chromaExp", "TONE MAPPING",
+        min_=-1.0, max_=3.5, val=1.35, default=1.35, uncheck=False)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:
@@ -481,6 +496,13 @@ def build_rows():
     # Full 3D   = everything, including the gamut mapping that fades deep colour.
     add("LUT mode", CYCLE, O, _LUT_MODE_KEY, "DISPLAY CALIBRATION",
         _LUT_MODES, 3, uncheck=False)
+
+    # ── OUTPUT — renderer frame capture ──────────────────────────────────────
+    # Saves what the RENDERER actually drew (IBasicVideo::GetCurrentImage) to a
+    # user-chosen PNG — not a window/desktop capture, so no overlay or
+    # compositing ever enters the file. Key has no engine mapping: it is a
+    # command, not a setting (KEY_MAP skips it on apply/ini).
+    add("Save frame as PNG", ACTION, O, "__capFrame", "OUTPUT")
 
     add("Tray icon", TOGGLE, S, "sys.trayIcon", "App", on=True)
     return r
@@ -790,6 +812,15 @@ class S3ShellPanel(QWidget):
                        fm.elidedText(name, Qt.TextElideMode.ElideMiddle, ct.width()))
             return
 
+        if r.type == ACTION:
+            # Command row: right-aligned CTA that reads as clickable.
+            ct = QRect(RIGHT_W - CONTROL_W, y, CONTROL_W - PAD, ROW_H)
+            p.setFont(F_STATUS)
+            p.setPen(ACCENT2 if r.text else ACCENT)
+            p.drawText(ct, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       "Save…")
+            return
+
         ct = QRect(RIGHT_W - CONTROL_W, y, CONTROL_W - PAD, ROW_H)
         if r.type == TOGGLE:
             w = 46; h = 22
@@ -875,6 +906,8 @@ class S3ShellPanel(QWidget):
             log(f"cycle {r.key} -> {r.opt}")
         elif r.type == FILE:
             self._pick_lut_file(r)
+        elif r.type == ACTION:
+            self._save_frame_png(r)
         else:
             # Only a press ON the track starts a drag. A press on the row's label is
             # not a value change — it used to be, and it set the slider to whatever
@@ -900,6 +933,56 @@ class S3ShellPanel(QWidget):
         r.text = path
         log(f"lut file -> {path}")
         self._set(r)
+
+    def _save_frame_png(self, r):
+        """Save the renderer's CURRENT output frame to a user-chosen PNG.
+
+        The engine grabs via IBasicVideo::GetCurrentImage (the frame the renderer
+        actually drew — no desktop/window compositing, so no Snipping-Tool-style
+        overlay/tone-capture mismatch). The engine writes a BMP; Qt converts to
+        PNG so the file is lossless. Outcome is both logged and shown in a
+        message box; success is deterministic (engine log has meanLuma + size).
+        """
+        from PyQt6.QtGui import QImage
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import os
+        import tempfile
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save frame as PNG",
+            str(Path.home() / "unplugged_frame.png"),
+            "PNG image (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        if self.engine is None:
+            QMessageBox.warning(self, "Save frame", "Engine not loaded")
+            return
+        fd, tmp = tempfile.mkstemp(suffix=".bmp")
+        os.close(fd)
+        try:
+            rc = self.engine.capture_frame(tmp)
+            if rc != 0:
+                raise RuntimeError(f"engine grab failed hr=0x{rc:08X} "
+                                   "(engine log has the reason)")
+            img = QImage(tmp)
+            if img.isNull():
+                raise RuntimeError("engine returned no frame image")
+            if not img.save(path, "PNG"):
+                raise RuntimeError("PNG write failed")
+            log(f"frame saved -> {path} ({img.width()}x{img.height()})")
+            QMessageBox.information(
+                self, "Frame saved",
+                f"Saved renderer frame to:\n{path}\n{img.width()} × {img.height()}")
+        except Exception as e:   # noqa: BLE001
+            log(f"frame save FAILED: {e}")
+            QMessageBox.warning(self, "Save frame", f"Failed:\n{e}")
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     def _drag_slider(self, r, x):
         lo, hi = self._slider_span(r)

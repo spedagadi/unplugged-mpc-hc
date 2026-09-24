@@ -170,6 +170,8 @@ public:
     // The Hable curve's 1.0 in nits, decoupled from display white. 203 = libplacebo's
     // SDR diffuse white (clouds are content below that), 0 = sdrNits (legacy).
     float refWhiteNits  = 203.0f;
+    float highlightNeutral = 0.9f;   // 0..1: PQ->SDR head pulls toward neutral
+    float chromaExp = 1.35f;         // STAGE 1 delivery-only: value carried, not applied
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
@@ -499,6 +501,10 @@ private:
     unsigned long long m_stallLastDrawn   = 0;   // renderer "displayed" counter
     unsigned long long m_stallLastRecv    = 0;   // renderer "received" counter
     int                m_stallTicks       = 0;
+    // A held-back (renegotiation-shaping) setting in Media mode has no executor to
+    // rebuild onto, so the live tick re-opens the current source to apply it
+    // pre-connect — the tone-curve row bug on files.
+    bool m_fileRebuildPending = false;
     // Source-format change state (CheckSourceFormatChange): the SOURCE filter is
     // the dimension measurer (the monitor DLL reports none); dims settling for 2 s
     // and differing from the committed format → the decider asks for a Reload.
@@ -516,6 +522,22 @@ private:
     HdrSettings           m_liveHdr{};
     OutSettings           m_liveOut{};
     DeckLinkSourceStats   m_liveDl{};
+    // Renderer-reported transfer/primaries (parsed from the pipeline readout in
+    // RefreshLive). The pin media type often carries NO color info on file paths
+    // (flags=0), while the renderer knows the truth from the decoded stream —
+    // this is the fallback that fills the panel's Transfer/Primaries/HDR rows.
+    int m_liveRenderTf   = 0;
+    int m_liveRenderPrim = 0;
+    // The file's own ST 2086 (MaxCLL/MaxFALL / mastering max/min) as the
+    // RENDERER read it from the decoded sample side data (its m_lastHdr10.hdr10)
+    // — parsed from the pipeline dump's cll=/fall=/mmax=/mmin= tokens in
+    // RefreshLive. Feeds the panel's MaxCLL/MaxFALL/Mastering rows on the file
+    // path, where the DeckLink dl.* values (which also drive those rows on the
+    // capture path) are always zero.
+    int m_liveMdrCll  = 0;   // MaxContentLightLevel, cd/m²
+    int m_liveMdrFall = 0;   // MaxFrameAverageLightLevel, cd/m²
+    int m_liveMdrMmax = 0;   // MaxMasteringLuminance, cd/m²
+    int m_liveMdrMmin = 0;   // MinMasteringLuminance, 0.0001 cd/m² (DXGI_HDR_METADATA scale)
     std::atomic<bool>     m_liveStop{ false };
     std::atomic<bool>     m_liveReady{ false };   // graph exists — safe to touch the renderer
     std::thread           m_liveThread;

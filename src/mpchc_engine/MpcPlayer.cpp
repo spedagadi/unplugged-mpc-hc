@@ -319,6 +319,22 @@ HRESULT MpcPlayer::Stop()
 void MpcPlayer::Shutdown()
 {
     Log("[DECKLINK][engine] Shutdown (ordered teardown)");
+    // Stop the LIVE SNAPSHOT thread BEFORE touching the graph. It polls the
+    // renderer (~1 s cadence) from its own thread; running it concurrently with
+    // mediaControl_->Stop() — which waits on the renderer's present thread —
+    // contended inside the renderer and delayed the whole teardown (observed
+    // 2026-09-23: the app froze on X for seconds, [live] lines kept firing past
+    // Shutdown, user task-killed it). With the snapshot thread joined first,
+    // nothing else is inside the renderer while we stop it. m_liveReady=false so
+    // RefreshLive in any straggler returns immediately, not just at the join.
+    m_liveStop = true;
+    m_liveReady = false;
+    if (m_liveThread.joinable()) {
+        m_liveThread.join();   // ≤ ~1 s (its sleep)
+        Log("[SHUTDOWN] live snapshot thread joined");
+    } else {
+        Log("[SHUTDOWN] live snapshot thread already joined");
+    }
     // Stop the DECIDER first: while it is alive it can still emit an intent, and
     // an intent arriving mid-shutdown is a graph op racing the teardown.
     if (ingest_) {
@@ -334,10 +350,10 @@ void MpcPlayer::Shutdown()
         m_gopIntent = IngestController::Intent::None;
     }
     m_gopCv.notify_all();
-
+    Log("[SHUTDOWN] decider + executor armed — graph stop enter");
     {
         // DESIGN.md order: STOP the feeder at the SDK, disconnect the renderer,
-        // join the source's threads — only THEN stop the graph. mediaControl_>
+        // join the source's threads — only THEN stop the graph. mediaControl_
         // Stop() waits on the renderer whose present thread is fed by our
         // forwarder; without the ordered stop it never returns (observed: exit
         // path zombie — window gone, capture still delivering).
@@ -349,6 +365,7 @@ void MpcPlayer::Shutdown()
         }
         if (mediaControl_) mediaControl_->Stop();
     }
+    Log("[SHUTDOWN] graph stop done");
 
     if (m_gopThread.joinable()) m_gopThread.join();
     if (decklinkMonitor_) {
@@ -357,6 +374,7 @@ void MpcPlayer::Shutdown()
     }
     decklinkDevice_.clear();
     pendingDecklinkUrl_.clear();
+    Log("[SHUTDOWN] teardown complete");
 }
 
 HRESULT MpcPlayer::Seek(LONGLONG position)
@@ -874,7 +892,15 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         // MPCVR's auto-ICS can resolve it to SDR (G22P709) depending on the
         // graph handoff. Force the ICS to match the decoded transfer so the ML
         // grade + tone-map see the real HDR signal (mirrors the decklink path).
-        ApplyMediaColorToRenderer(FindPin(decoder, PINDIR_OUTPUT));
+        //
+        // A/B PROBE (2026-09-22): forcing BT2020_PQ may SUPPRESS MPCVR's own
+        // Dolby-Vision recognition — on a DV P5 file the renderer logged dovi=0
+        // and showed the classic green/purple, and it worked before this push
+        // existed. Set false to revert the file path for the probe.
+        constexpr bool kForceFileIcsPush = false;
+        if (kForceFileIcsPush) {
+            ApplyMediaColorToRenderer(FindPin(decoder, PINDIR_OUTPUT));
+        }
     }
     if (!bDeckLink) {
         ConnectAudio(splitter);
@@ -942,8 +968,10 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
     if (FAILED(srcPin->ConnectionMediaType(&mt))) return;
 
     videoStreamInfo_.valid = true;
+    unsigned savedFlags = 0;
     if (mt.formattype == FORMAT_VideoInfo2 && mt.pbFormat) {
         const VIDEOINFOHEADER2* vih2 = reinterpret_cast<const VIDEOINFOHEADER2*>(mt.pbFormat);
+        savedFlags = vih2->dwControlFlags;
         videoStreamInfo_.width  = vih2->bmiHeader.biWidth;
         videoStreamInfo_.height = labs(vih2->bmiHeader.biHeight);
         videoStreamInfo_.avgTimePerFrame100ns = (int)vih2->AvgTimePerFrame;
@@ -979,11 +1007,11 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
                 (xf.VideoPrimaries == 2) ? 2 : 1;
         }
     }
-    Log("[ENGINE] source media type: %dx%d itl=%d avg=%d fmt=%d tf=%d hdr=%d",
+    Log("[ENGINE] source media type: %dx%d itl=%d avg=%d fmt=%d tf=%d hdr=%d (flags=0x%08X)",
         videoStreamInfo_.width, videoStreamInfo_.height,
         videoStreamInfo_.interlaced, videoStreamInfo_.avgTimePerFrame100ns,
         videoStreamInfo_.pixelFormat, videoStreamInfo_.transferFunction,
-        videoStreamInfo_.hdr ? 1 : 0);
+        videoStreamInfo_.hdr ? 1 : 0, savedFlags);
     // Free the media type (DeleteMediaType is a base-class helper not linked here;
 // AM_MEDIA_TYPE allocates only pbFormat).
     if (mt.cbFormat && mt.pbFormat) CoTaskMemFree(mt.pbFormat);
@@ -1359,6 +1387,8 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fSoftKneeRatio = h.softKneeRatio;
     s.fSoftKneeWidth = h.softKneeWidth;
     s.fHdrRefWhiteNits = h.refWhiteNits;
+    s.fHdrHighlightNeutral = h.highlightNeutral;
+    s.fHdrChromaExp = h.chromaExp;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
@@ -1381,6 +1411,8 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.softKneeRatio = s.fSoftKneeRatio;
     h.softKneeWidth = s.fSoftKneeWidth;
     h.refWhiteNits  = s.fHdrRefWhiteNits;
+    h.highlightNeutral = s.fHdrHighlightNeutral;
+    h.chromaExp = s.fHdrChromaExp;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
@@ -1685,6 +1717,14 @@ void MpcPlayer::ApplyPendingSettings()
         hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0, needRebuild ? 1 : 0);
 
     if (needRebuild) RequestSettingsRebuild();
+    // Media (file) path: there is no executor to rebuild onto, so a held-back
+    // renegotiation-shaping row (e.g. the Tone curve) could never apply. Defer a
+    // re-open; the live tick consumes it (pre-connect push applies everything).
+    if (needRebuild && !m_gopThread.joinable()) {
+        m_fileRebuildPending = true;
+        Log("[ENGINE] settings: a rebuild-only row changed on the FILE path — re-open "
+            "queued so it applies pre-connect");
+    }
 }
 
 // Ask the graph owner to rebuild, which is how a rebuild-only setting reaches the
@@ -1996,6 +2036,31 @@ void MpcPlayer::RefreshLive()
             return ml.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
         };
         const std::wstring pipe = Field(L"pipeline:");
+        // Renderer-reported color truth. The file-path pin media type often
+        // carries NO color info (flags=0), while the renderer learned the
+        // transfer from the decoded stream — parse the numbers it already
+        // reports (`tf=`,`prim=`) as the authoritative fallback for the panel.
+        {
+            const wchar_t* t = wcsstr(pipe.c_str(), L"tf=");
+            if (t) m_liveRenderTf = (int)wcstol(t + 3, nullptr, 10);
+            const wchar_t* p = wcsstr(pipe.c_str(), L"prim=");
+            if (p) m_liveRenderPrim = (int)wcstol(p + 5, nullptr, 10);
+        }
+        // ...and the file's ST 2086 (MaxCLL/MaxFALL/mastering) the renderer read
+        // from the decoded sample side data. These feed the panel's card rows in
+        // media-file mode; on the capture path those rows use the DeckLink
+        // dl.* values instead (this file-path block still parses, but the
+        // renderer has no side data for a card feed either).
+        {
+            const wchar_t* clv = wcsstr(pipe.c_str(), L"cll=");
+            if (clv) m_liveMdrCll = (int)wcstol(clv + 4, nullptr, 10);
+            const wchar_t* fav = wcsstr(pipe.c_str(), L"fall=");
+            if (fav) m_liveMdrFall = (int)wcstol(fav + 5, nullptr, 10);
+            const wchar_t* mav = wcsstr(pipe.c_str(), L"mmax=");
+            if (mav) m_liveMdrMmax = (int)wcstol(mav + 5, nullptr, 10);
+            const wchar_t* miv = wcsstr(pipe.c_str(), L"mmin=");
+            if (miv) m_liveMdrMmin = (int)wcstol(miv + 5, nullptr, 10);
+        }
         Log("[live] recv=%u draw=%.1f lag=%.0fms renderer=%d pipeline:%ls src=%dx%d@%d/%d gateDrops=%llu",
             r.framesReceived, r.drawFps, r.presentLatencyMs, renderer_ != nullptr,
             pipe.empty() ? L" ?" : pipe.c_str(),
@@ -2026,6 +2091,35 @@ void MpcPlayer::RefreshLive()
     // and routed through the one executor).
     CheckDeliveryStall(dl, r);
     CheckSourceFormatChange(dl);
+
+    // Media file path — a rebuild-only setting was held back; re-open the source
+    // so it applies pre-connect (the file has no executor).
+    if (m_fileRebuildPending) {
+        m_fileRebuildPending = false;
+        const std::wstring src = snapshot_.source;
+        if (!src.empty()) {
+            Log("[DECKLINK][engine] file re-open queued by a rebuild-only setting — applying");
+            Open(src);
+            Play();
+        }
+    }
+
+    // File playback: refresh snapshot_.position/duration from IMediaSeeking so
+    // the UI's seek bar tracks playback. DeckLink capture has no meaningful
+    // stream position, and the read is harmless there too. This tick is already
+    // the sanctioned snapshot path (reads into caches via the m_liveMtx store).
+    if (snapshot_.state == State::Playing) {
+        UpdateSnapshot();
+        // One-shot probe: what IMediaSeeking actually reports on the file path —
+        // the seek bar draws and acts against dur in the JSON, so a zero here is
+        // the whole story. Logged once so the file's first open shows it.
+        static bool s_snapLogged = false;
+        if (!s_snapLogged) {
+            s_snapLogged = true;
+            Log("[SNAP] seek pos=%lld dur=%lld",
+                (long long)snapshot_.position, (long long)snapshot_.duration);
+        }
+    }
 
     {
         std::lock_guard<std::mutex> lk(m_liveMtx);
@@ -2097,6 +2191,22 @@ std::string MpcPlayer::GetUiStatusJson() const
     MlSettings ml{};        GetLiveMlSettings(ml);
     OutSettings out{};      GetLiveOutSettings(out);
 
+    // Measured per-scene peak/avg from the renderer's own ML snapshot ("scene:
+    // peak=... avg=..." in GetMLStats). These are PQ code (0..1 = 0..10000 nits),
+    // the same unit the panel's Frame peak / APL rows convert from -> the row can
+    // show what the renderer actually measured, not a re-grid of the settings.
+    float scPeak = 0.0f, scAvg = 0.0f;
+    {
+        std::wstring mlw;   GetLiveMlStats(mlw);
+        const wchar_t* sp = wcsstr(mlw.c_str(), L"scene: peak=");
+        if (sp) {
+            wchar_t* end = nullptr;
+            scPeak = (float)wcstod(sp + 12, &end);   // "scene: peak=" is 12 chars
+            const wchar_t* av = end ? wcsstr(end, L"avg=") : nullptr;
+            if (av) scAvg = (float)wcstod(av + 4, nullptr);
+        }
+    }
+
     char b1[2300];
     snprintf(b1, sizeof(b1),
         "{\"gen\":%u,\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
@@ -2110,13 +2220,15 @@ std::string MpcPlayer::GetUiStatusJson() const
         // warnings visible, not filtered to "error".
         "\"hdrMeta\":%d,\"maxCLL\":%.0f,\"maxFALL\":%.0f,\"masterMax\":%.0f,\"masterMin\":%.4f},"
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"chroma\":%d,\"il\":%d},"
-        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d},"
-        "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d}",
+        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d},"
+        "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"scPeak\":%.4f,\"scAvg\":%.4f,"
+        "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}}",
         (unsigned)graphGen_,
         st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
         rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
         dl.streaming, dl.width, dl.height, dl.fpsNum, dl.fpsDen, dl.colorspace, dl.eotf,
-        (unsigned long long)dl.framesArrived, (unsigned long long)dl.framesDelivered,
+        (unsigned long long)dl.framesArrived,
+        (unsigned long long)(dl.streaming ? dl.framesDelivered : rs.framesReceived),
         (unsigned long long)dl.framesSkipped, (unsigned long long)dl.gateDropped,
         (unsigned long long)dl.droppedQueue, (unsigned long long)dl.renegotiations,
         (unsigned long long)dl.lastRefUs,
@@ -2124,8 +2236,14 @@ std::string MpcPlayer::GetUiStatusJson() const
         sigLocked, sigW, sigH, sigNum, sigDen, sigCs, sigDr, sigDepth, sigChroma, sigIl,
         vs.valid ? 1 : 0, vs.width, vs.height,
         vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
-        vs.subtypeName.c_str(), vs.hdr ? 1 : 0,
-        s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits);
+        vs.subtypeName.c_str(),
+        (vs.hdr || m_liveRenderTf == MFVideoTransFunc_2084 || m_liveRenderTf == MFVideoTransFunc_HLG) ? 1 : 0,
+        (vs.transferFunction != 0) ? vs.transferFunction : m_liveRenderTf,
+        (vs.colorspace != 0) ? vs.colorspace : m_liveRenderPrim,
+        vs.pixelFormat,
+        s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits,
+        scPeak, scAvg,
+        m_liveMdrCll, m_liveMdrFall, m_liveMdrMmax, m_liveMdrMmin);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
     char b2[4096];
@@ -2229,6 +2347,8 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "softKneeRatio") hdr.softKneeRatio = (float)vd(v);
             else if (name == "softKneeWidth") hdr.softKneeWidth = (float)vd(v);
             else if (name == "refWhite")      hdr.refWhiteNits  = (float)vd(v);
+            else if (name == "highlightNeutral")  hdr.highlightNeutral = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "chromaExp")          hdr.chromaExp = (float)std::clamp(vd(v), -1.0, 3.5);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);

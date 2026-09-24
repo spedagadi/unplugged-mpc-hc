@@ -270,6 +270,29 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
     // Live capture has nothing to stop — the engine owns start/stop and the
     // self-healing monitor drives transitions, so "stop" stays a benign pause.
     if (a == "stop")  return (int)g_player()->Pause();
+    if (a == "open") {
+        // Media Player mode — a real FILE, not a DeckLink device. This was the
+        // route previously taken: the UI called s3_start_device with the file path
+        // as if it were a capture device, no lock ever arrived, no fact fired, and
+        // the graph never launched — state sat at "opening" forever.
+        // {"a":"open","url":"C:\\Movies\\x.mkv"}
+        const std::string url = JsonField(s, "url");
+        std::wstring wurl;
+        if (!url.empty()) {
+            const int n = MultiByteToWideChar(CP_UTF8, 0, url.c_str(),
+                                              (int)url.size(), nullptr, 0);
+            wurl.resize((size_t)(n > 0 ? n : 0));
+            if (n > 0) MultiByteToWideChar(CP_UTF8, 0, url.c_str(),
+                                           (int)url.size(), &wurl[0], n);
+        }
+        const HRESULT hr = g_player()->Open(wurl);
+        if (SUCCEEDED(hr)) g_player()->Play();
+        char why[512];
+        _snprintf_s(why, sizeof(why), _TRUNCATE, "[S3] open url='%S' hr=0x%08X",
+                    wurl.c_str(), (unsigned)hr);
+        EngineLog(why);
+        return (int)hr;
+    }
     if (a == "seek") {
         const std::string pos = JsonField(s, "pos");
         long long n = 0;
