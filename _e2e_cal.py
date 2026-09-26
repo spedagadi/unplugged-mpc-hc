@@ -31,6 +31,7 @@ csvp  = args[1] if len(args) > 1 else r"C:\Users\satee\Pictures\calibrate\patche
 out   = Path(args[2]) if len(args) > 2 else Path(out_root) / "e2e_out"
 count = int(args[3]) if len(args) > 3 else 16
 psec  = float(args[4]) if len(args) > 4 else 1.0
+sdr_nits = int(args[5]) if len(args) > 5 else None   # push this sdrNits before the pass
 out.mkdir(parents=True, exist_ok=True)
 
 engine = S3Engine()
@@ -62,6 +63,9 @@ QTimer.singleShot(int(7000 + count * psec) * 100 + 20000,
 
 print(f"[e2e] playing {video}", flush=True)
 engine.play(video)
+if sdr_nits is not None:
+    engine.apply_settings({"hdr": {"sdrNits": sdr_nits, "convSdr": 1}})
+    print(f"[e2e] pushed hdr.sdrNits={sdr_nits} convSdr=1", flush=True)
 session.start(engine, video, out, expected, profile_name="e2e",
               patch_count=count, patch_sec=psec)
 t0 = time.time()

@@ -226,6 +226,8 @@ KEY_MAP = {
     "hdr.refWhite":      ("hdr", "refWhite"),
     "hdr.highlightNeutral": ("hdr", "highlightNeutral"),
     "hdr.chromaExp":      ("hdr", "chromaExp"),
+    "hdr.gtBlend":        ("hdr", "gtBlend"),
+    "hdr.gtFade":         ("hdr", "gtFade"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -259,11 +261,14 @@ KEY_MAP = {
 # Rows whose panel option INDEX is not MPCVR's enum value (IVideoRenderer.h).
 # Cycle rows absent here send their index straight through.
 #   zion.toneMode    panel Auto/Manual/Off  -> iMLMode 2/1/0 (0 = Disable)
-#   hdr.toneMapCurve panel ACES..Reference  -> iHdrLocalToneMappingType 1..5,7
+#   hdr.toneMapCurve panel ACES..GT7        -> iHdrLocalToneMappingType 1..5,7,8
 #   out.texFormat    panel Auto/8/10/16f    -> iTexFormat 0/8/10/16
 VALUE_MAP = {
     "zion.toneMode":    [2, 1, 0],
-    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7],
+    # 6 (ST.2094-10) has no panel entry — it is unreachable from this rail, as it
+    # always was. GT7 is 8; the renderer's discard() clamp upper bound has to cover
+    # it or the selection is silently rewritten to Hable.
+    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7, 8],
     "out.texFormat":    [0, 8, 10, 16],
 }
 
@@ -344,7 +349,12 @@ def build_rows():
     add("Mask overlay", TOGGLE, Z, "zion.personOverlay", "PERSON SKIN")
     add("Tone preserve", SLIDER, Z, "zion.skinPreserve", "PERSON SKIN", max_=1.0, val=0, default=0)
 
-    add("Prefer DV over PQ/HLG", TOGGLE, H, "hdr.preferDoVi", "TONE MAPPING")
+    # ON by default (PotPlayer parity). A DV Profile 5 file's base layer is
+    # IPTPQc2 with no colour description in the VUI; the decoder tags it PQ, which
+    # makes the renderer's HDR10/HLG branch win unless preferDoVi is set, and then
+    # the RPU — the only thing that yields correct colour for P5 — is never read.
+    # Inert on non-DV sources (no RPU to consume).
+    add("Prefer DV over PQ/HLG", TOGGLE, H, "hdr.preferDoVi", "TONE MAPPING", on=True)
     add("Convert to SDR", TOGGLE, H, "hdr.convertToSdr", "TONE MAPPING", on=True, live=False)
     add("SDR display nits", SLIDER, H, "hdr.sdrNits", "TONE MAPPING", min_=25, max_=400, val=50, default=50, uncheck=False)
     # Index 4 = BT-2390, which is iHdrLocalToneMappingType's default (IVideoRenderer.h
@@ -358,8 +368,13 @@ def build_rows():
     # "Reference" the change is in the machinery around the curve, not in Hable.
     # It outranks the experimental mapper and ignores the knee; the Zion rows
     # (Gamma top-up) still apply — zero them for a clean A/B.
+    # "GT7" (index 6 -> TONE_CURVE_GT7 8) is Polyphony Digital's operator: a game
+    # tonemapper that takes luminance from a per-channel pass and chroma from the
+    # ORIGINAL colour, fading it across the highlight band. It is the curve that
+    # desaturates a warm head instead of carrying the source's grade at full
+    # strength, which is what the I-channel + uniform-gain paths do.
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
-        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference"], 4, uncheck=False)
+        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7"], 4, uncheck=False)
     # Content peak: the top of the range the tone curves map FROM. NOT the display's
     # peak (that is "Static nits (max)", and it belongs to the HDR-output path).
     #
@@ -412,6 +427,24 @@ def build_rows():
     # NOT applied in the shader yet (application is the next stage).
     add("Chroma desat (exp)", SLIDER, H, "hdr.chromaExp", "TONE MAPPING",
         min_=-1.0, max_=3.5, val=1.35, default=1.35, uncheck=False)
+    # --- GT7 (Tone curve = GT7) -------------------------------------------------
+    # Only read when curve 8 is selected. GT7 carries its OWN chroma management, so
+    # "Chroma desat (exp)" and "Highlight neutral (head)" do nothing on it — this is
+    # the pair that replaces them. Both are Polyphony's shipped constants by default.
+    #
+    # Blend: 0 = the raw per-channel curve (strongest de-warming of a highlight, and
+    # the side that rotates hue elsewhere), 1 = luminance from that pass with the
+    # source's chroma handed back. Measured on the warm-head sample, 0.6 sits at
+    # yellow-delta +15 vs Hable's +25 at 400 nits.
+    add("GT7 blend (ch<->UCS)", SLIDER, H, "hdr.gtBlend", "TONE MAPPING",
+        min_=0.0, max_=1.0, val=0.6, default=0.6, uncheck=False)
+    # The chroma fade window START. The width is fixed at GT's 0.18 on the engine
+    # side, so one rail moves the whole window. NOTE the units: this is a ratio of
+    # the ceiling's ICtCp I in PQ CODES, so 0.98 is ~201 nits and 1.16 is ~546 nits
+    # at a 225-nit reference white — i.e. the window covers ordinary video
+    # highlights, not the last 2% of the range the numbers imply.
+    add("GT7 chroma fade from", SLIDER, H, "hdr.gtFade", "TONE MAPPING",
+        min_=0.3, max_=2.0, val=0.98, default=0.98, uncheck=False)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:
@@ -682,6 +715,10 @@ class S3ShellPanel(QWidget):
             return
         grp, name = mp
         val = self._engine_value(r)
+        # UI-layer correlation line: WHAT the rail sent, timestamped, so it can be
+        # lined up ms-for-ms with the engine's "[SETTINGS] received <key> = <val>"
+        # and the renderer's "[SHADER-CB] push ..." — three layers, one value.
+        log(f"ui-corr: apply {r.key} -> {val}")
         try:
             self.engine.apply_settings({grp: {name: val}})
         except Exception:

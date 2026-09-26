@@ -1345,7 +1345,20 @@ bool HoldBackNegotiationFields(Settings_t& dst, const Settings_t& live)
     };
 
     // Configure() -> changeHDR (media-type re-derivation)
-    hold(dst.iHdrLocalToneMappingType, live.iHdrLocalToneMappingType);
+    //
+    // iHdrLocalToneMappingType was HERE, and did not belong: it was held back only
+    // because a curve change set changeHDR. It no longer does — the renderer treats
+    // the SELECTION as a constant-buffer write (DX11VideoProcessor.cpp Configure(),
+    // the bEnableChanged split), and being in this list was worse than wasteful:
+    // `hold` overwrites dst with the live value, so a curve picked during a rebuild
+    // was silently DROPPED, not delayed, and then rebuilt for.
+    //
+    // bHdrLocalToneMapping is the ENABLE toggle, which genuinely does gate creation
+    // of the HDR10 tone-map shader in InitMediaType. Stated plainly: this line is
+    // INERT today — the engine has no row for that toggle and never writes the
+    // field, so dst and live always agree here. It is a guard for whoever adds the
+    // row, not a live behaviour.
+    hold(dst.bHdrLocalToneMapping,     live.bHdrLocalToneMapping);
     hold(dst.iHdrToggleDisplay,        live.iHdrToggleDisplay);
     hold(dst.bHdrPassthrough,          live.bHdrPassthrough);
     // Configure() -> changeVP (video-processor re-init)
@@ -1389,6 +1402,9 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrRefWhiteNits = h.refWhiteNits;
     s.fHdrHighlightNeutral = h.highlightNeutral;
     s.fHdrChromaExp = h.chromaExp;
+    s.fHdrGt7Blend     = h.gt7Blend;
+    s.fHdrGt7FadeStart = h.gt7FadeStart;
+    s.fHdrGt7FadeEnd   = h.gt7FadeEnd;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
@@ -1413,6 +1429,9 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.refWhiteNits  = s.fHdrRefWhiteNits;
     h.highlightNeutral = s.fHdrHighlightNeutral;
     h.chromaExp = s.fHdrChromaExp;
+    h.gt7Blend     = s.fHdrGt7Blend;
+    h.gt7FadeStart = s.fHdrGt7FadeStart;
+    h.gt7FadeEnd   = s.fHdrGt7FadeEnd;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
@@ -1704,9 +1723,12 @@ void MpcPlayer::ApplyPendingSettings()
     if (!m_inGraphBuild) {
         needRebuild = HoldBackNegotiationFields(s, live);
         if (needRebuild) {
-            Log("[ENGINE] settings: a rebuild-only row changed (curve/toggle/dovi/swap/"
-                "scaling/tex/dither/osd). Held back from the live renderer and rebuilding "
-                "instead — BuildGraph re-applies it before the pins connect.");
+            // The Tone curve is deliberately NOT in this list any more — it is a
+            // constant-buffer write now. If a curve change ever prints this line
+            // again, something has put changeHDR back on the SELECTION.
+            Log("[ENGINE] settings: a rebuild-only row changed (hdrToggle/passthrough/"
+                "dovi/swap/scaling/tex/dither/osd). Held back from the live renderer and "
+                "rebuilding instead — BuildGraph re-applies it before the pins connect.");
         }
     }
 
@@ -1718,8 +1740,9 @@ void MpcPlayer::ApplyPendingSettings()
 
     if (needRebuild) RequestSettingsRebuild();
     // Media (file) path: there is no executor to rebuild onto, so a held-back
-    // renegotiation-shaping row (e.g. the Tone curve) could never apply. Defer a
-    // re-open; the live tick consumes it (pre-connect push applies everything).
+    // renegotiation-shaping row (e.g. Texture format, or the Display toggle) could
+    // never apply. Defer a re-open; the live tick consumes it (pre-connect push
+    // applies everything). The Tone curve no longer lands here at all.
     if (needRebuild && !m_gopThread.joinable()) {
         m_fileRebuildPending = true;
         Log("[ENGINE] settings: a rebuild-only row changed on the FILE path — re-open "
@@ -2045,6 +2068,14 @@ void MpcPlayer::RefreshLive()
             if (t) m_liveRenderTf = (int)wcstol(t + 3, nullptr, 10);
             const wchar_t* p = wcsstr(pipe.c_str(), L"prim=");
             if (p) m_liveRenderPrim = (int)wcstol(p + 5, nullptr, 10);
+            // The renderer consumed a valid DV RPU on this source (m_Dovi.bValid).
+            // The token is "dovi=", and it must be read from the FULL pipeline line
+            // — NOT with a bare wcsstr on "dovi" — because "Dolby Vision" appears in
+            // other fields; anchor on the exact "dovi=" key. This is the one bit
+            // that distinguishes a reshaped DV signal from a plain PQ/HDR10 one whose
+            // base layer carries DV metadata the renderer then ignored.
+            const wchar_t* dv = wcsstr(pipe.c_str(), L"dovi=");
+            if (dv) m_liveDovi = (int)wcstol(dv + 5, nullptr, 10);
         }
         // ...and the file's ST 2086 (MaxCLL/MaxFALL/mastering) the renderer read
         // from the decoded sample side data. These feed the panel's card rows in
@@ -2220,7 +2251,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // warnings visible, not filtered to "error".
         "\"hdrMeta\":%d,\"maxCLL\":%.0f,\"maxFALL\":%.0f,\"masterMax\":%.0f,\"masterMin\":%.4f},"
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"chroma\":%d,\"il\":%d},"
-        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d},"
+        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d,\"dovi\":%d},"
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"scPeak\":%.4f,\"scAvg\":%.4f,"
         "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}}",
         (unsigned)graphGen_,
@@ -2237,10 +2268,11 @@ std::string MpcPlayer::GetUiStatusJson() const
         vs.valid ? 1 : 0, vs.width, vs.height,
         vs.avgTimePerFrame100ns > 0 ? 10000000.0 / vs.avgTimePerFrame100ns : 0.0,
         vs.subtypeName.c_str(),
-        (vs.hdr || m_liveRenderTf == MFVideoTransFunc_2084 || m_liveRenderTf == MFVideoTransFunc_HLG) ? 1 : 0,
+        (vs.hdr || m_liveRenderTf == MFVideoTransFunc_2084 || m_liveRenderTf == MFVideoTransFunc_HLG || m_liveDovi) ? 1 : 0,
         (vs.transferFunction != 0) ? vs.transferFunction : m_liveRenderTf,
         (vs.colorspace != 0) ? vs.colorspace : m_liveRenderPrim,
         vs.pixelFormat,
+        m_liveDovi,
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits,
         scPeak, scAvg,
         m_liveMdrCll, m_liveMdrFall, m_liveMdrMmax, m_liveMdrMmin);
@@ -2250,7 +2282,7 @@ std::string MpcPlayer::GetUiStatusJson() const
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
-        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f},"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
@@ -2270,6 +2302,9 @@ std::string MpcPlayer::GetUiStatusJson() const
         hdr.displayMinNits, hdr.outputGamut,
         hdr.titlePeakNits, hdr.hableKnee, hdr.softKnee, hdr.softKneeRatio, hdr.softKneeWidth, hdr.refWhiteNits,
         hdr.experimentalToneMapper, hdr.toneLutContrast,
+        // Two new specifiers above, two new args here — a mismatch corrupts the
+        // whole status JSON and the panel renders blank.
+        hdr.gt7Blend, hdr.gt7FadeStart,
         ml.enable ? 1 : 0, ml.mode,
         ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
         ml.hunt, ml.chNeutral, ml.chFire, ml.chKnee, ml.chSkin,
@@ -2325,6 +2360,10 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
         if (eq == std::string::npos) continue;
         const std::string key = s.substr(0, eq);
         const std::string v   = s.substr(eq + 1);
+        // Delivery proof: EVERY settings pair the engine receives is logged, so a
+        // row that "does nothing" can be told apart from "never arrived" in one
+        // run (each push prints its key and value verbatim).
+        Log("[SETTINGS] received %s = %s", key.c_str(), v.c_str());
         const size_t dot = key.find('.');
         if (dot == std::string::npos) continue;
         const std::string grp  = key.substr(0, dot);
@@ -2349,6 +2388,14 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "refWhite")      hdr.refWhiteNits  = (float)vd(v);
             else if (name == "highlightNeutral")  hdr.highlightNeutral = std::clamp((float)vd(v), 0.0f, 1.0f);
             else if (name == "chromaExp")          hdr.chromaExp = (float)std::clamp(vd(v), -1.0, 3.5);
+            else if (name == "gtBlend")            hdr.gt7Blend = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "gtFade") {
+                // ONE row for the fade window: the rail sets its START and the width
+                // stays Polyphony's 0.18. Sending both edges as separate rails invites
+                // the inverted pair the shader has to fall back on.
+                hdr.gt7FadeStart = std::clamp((float)vd(v), 0.05f, 3.0f);
+                hdr.gt7FadeEnd   = hdr.gt7FadeStart + 0.18f;
+            }
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);

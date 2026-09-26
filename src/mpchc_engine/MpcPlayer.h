@@ -132,7 +132,14 @@ public:
     };
 
     struct HdrSettings {
-        bool preferDoVi = false;
+        // Consume a Dolby Vision RPU whenever one is present, preferring it over
+        // HDR10 static metadata. Default true (PotPlayer parity): the renderer's
+        // DV-ingest gate is `m_bHdrPreferDoVi || !SourceIsHDR10orHLG()`, and a DV
+        // Profile 5 file is tagged PQ so SourceIsHDR10orHLG() is true — the gate
+        // only opens through the first term. For a Profile 5 (IPTPQc2) source the
+        // RPU is the ONLY thing that yields correct colour, so the default has to
+        // be true. For non-DV sources it is inert (the side-data GetSideData fails).
+        bool preferDoVi = true;
         bool convertToSdr = true;
         int  sdrDisplayNits = 50;
         int  toggleDisplay = 0;            // HDRTD_Disabled..HDRTD_OnOff
@@ -172,8 +179,18 @@ public:
     float refWhiteNits  = 203.0f;
     float highlightNeutral = 0.9f;   // 0..1: PQ->SDR head pulls toward neutral
     float chromaExp = 1.35f;         // STAGE 1 delivery-only: value carried, not applied
+    // GT7 operator (toneMapCurve 8). Defaults are Polyphony's own constants; the
+    // curve's shape parameters are NOT exposed because they are what make it GT7.
+    //   gt7Blend: 0 = raw per-channel "skewed" curve, 1 = luminance from that pass
+    //   with chroma from the original colour. The hue dial.
+    //   gt7Fade*: the chroma fade window, in units of the ceiling's ICtCp I (PQ
+    //   codes, so the window sits far lower in nits than the numbers suggest).
+    // Only read when curve 8 is selected; softKnee* is reused as GT7's pre-fit.
+    float gt7Blend     = 0.6f;
+    float gt7FadeStart = 0.98f;
+    float gt7FadeEnd   = 1.16f;
         int  osdBrightness = 0;
-        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390
+        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
         // Experimental tone mapping (libplacebo port). A separate axis from the
         // shipped tone mapping: 0 leaves every existing curve untouched, which is
@@ -528,6 +545,13 @@ private:
     // this is the fallback that fills the panel's Transfer/Primaries/HDR rows.
     int m_liveRenderTf   = 0;
     int m_liveRenderPrim = 0;
+    // Whether the renderer consumed a Dolby Vision RPU (m_Dovi.bValid) on this
+    // source — parsed from the pipeline dump's dovi= token. A DV Profile 5 file
+    // carries no colour description in its VUI, so the panel's tf=/prim= rows read
+    // "PQ / BT.2020" — technically what the base layer is ANNOTATED as after the
+    // decoder's promotion — while the real EOTF is IPTPQc2 reshaped by the RPU.
+    // The panel labels the signal "Dolby Vision" from this flag, not from tf.
+    int m_liveDovi = 0;
     // The file's own ST 2086 (MaxCLL/MaxFALL / mastering max/min) as the
     // RENDERER read it from the decoded sample side data (its m_lastHdr10.hdr10)
     // — parsed from the pipeline dump's cll=/fall=/mmax=/mmin= tokens in
