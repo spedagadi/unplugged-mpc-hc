@@ -96,6 +96,12 @@ public:
     // crushed shadow at all — measured, crushFrac was identical before and after the
     // whole grade. This is the actuator for that; 0 = off = the previous picture.
     float shadowPedestal = 0.0f;
+    // RELATIVE mid-tone target: the encoded level (0..1) the scene average should end
+    // up at after the grade, whatever the tone curve delivered. The renderer solves
+    // for the gamma that gets there, which decouples luminosity from refWhite (that
+    // control sets how hard the shoulder works, i.e. highlight safety).
+    // 0 = off: the manual gammaTopUp behaves exactly as before.
+    float targetMid = 0.0f;
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;

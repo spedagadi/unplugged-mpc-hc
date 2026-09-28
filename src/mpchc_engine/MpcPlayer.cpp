@@ -1327,6 +1327,7 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLHighlightRolloffCtrl = m.highlightRolloffCtrl;
     s.fMLGammaTopUp = m.gammaTopUp;
     s.fMLShadowPedestal = m.shadowPedestal;
+    s.fMLTargetMid = m.targetMid;
     s.bMLHighlightEnabled = m.highlightEnabled;
     s.fMLHighlight = m.highlight;
     s.bMLChromaEnabled = m.chromaEnabled;
@@ -1396,6 +1397,7 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.highlightRolloffCtrl = s.fMLHighlightRolloffCtrl;
     m.gammaTopUp = s.fMLGammaTopUp;
     m.shadowPedestal = s.fMLShadowPedestal;
+    m.targetMid = s.fMLTargetMid;
     m.highlightEnabled = s.bMLHighlightEnabled;
     m.highlight = s.fMLHighlight;
     m.chromaEnabled = s.bMLChromaEnabled;
@@ -2486,7 +2488,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
         "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
-        "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"shPed\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
+        "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"shPed\":%.3f,\"tgtMid\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
         "\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
         "\"face\":%d,\"faceStr\":%.3f,\"faceFeather\":%.3f,\"faceExpand\":%.3f,"
@@ -2512,7 +2514,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // One specifier per field, in this order — a mismatch corrupts the whole
         // status JSON and the panel renders blank.
         ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
-        ml.shadowPedestal,
+        ml.shadowPedestal, ml.targetMid,
         ml.hunt, ml.chNeutral, ml.chFire, ml.chKnee, ml.chSkin,
         ml.contrastEnabled ? 1 : 0, ml.contrast,
         ml.contrastZoneLo, ml.contrastRatioCap, ml.contrastSkinProtect,
@@ -2642,6 +2644,9 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "gammaTopUp")     ml.gammaTopUp = (float)vd(v);
             // 0 is the meaningful "off" value, so clamp — never treat it as unset.
             else if (name == "shPed")          ml.shadowPedestal = std::clamp((float)vd(v), 0.0f, 0.08f);
+            // RELATIVE mid-tone target. 0 = OFF (manual top-up only), so this clamp
+            // must not treat 0 as "unset" — it is the disable value.
+            else if (name == "tgtMid")         ml.targetMid = std::clamp((float)vd(v), 0.0f, 0.95f);
             else if (name == "hunt")           ml.hunt = (float)vd(v);
             else if (name == "chN")            ml.chNeutral = (float)vd(v);
             else if (name == "chF")            ml.chFire = (float)vd(v);
