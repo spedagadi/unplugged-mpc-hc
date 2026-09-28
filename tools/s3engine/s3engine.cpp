@@ -313,6 +313,13 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
         }
         return (int)g_player()->ApplySettingsFlat(sets);
     }
+    if (a == "track") {
+        // {"a":"track","index":N} — select the Nth AUDIO stream (audio-relative
+        // index, same as the status JSON's audio.tracks[].i). Live via IAMStreamSelect.
+        const std::string idx = JsonField(s, "index");
+        return (int)g_player()->SetAudioTrack(idx.empty() ? -1 : atoi(idx.c_str()));
+    }
+    // Audio mode (PCM↔Bitstream) rides the "set" path as audio.mode — no action here.
     // Persist the renderer's live settings to MPCVR's own registry key. SetSettings
     // is live-only, so without this a graph rebuild re-reads a stale key and every
     // pushed setting is silently lost. The UI sends this once a change settles.

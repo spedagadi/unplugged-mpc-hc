@@ -95,9 +95,16 @@ struct CaptureState {
     HANDLE restartEvent = nullptr;
     HANDLE firstDataEvent = nullptr;   // auto-reset: first format/frame detected
     LONG   metaProbe = 0;              // one-shot per session: dump SDK signal/metadata
-    LONG   hdrMetaTick = 0;            // countdown to the next ST 2086 read (1 Hz)
+    LONG   hdrMetaTick = 0;            // countdown to the next ST 2086 hand-off (1 Hz)
     LONG   hdrMetaLogged = 0;          // values logged once, then only when they change
     double hdrCll = 0.0, hdrFall = 0.0, hdrMaxMLL = 0.0, hdrMinMLL = 0.0;  // last read
+    // ST 2086 is read OFF the SDK callback: the callback hands a ref-held frame to
+    // the worker (which owns all SDK calls), so no metadata COM work runs on the
+    // delivery thread. hdrSampleFrame is AddRef'd by the callback, Release'd by the
+    // worker (or teardown); hdrSamplePending guards one-in-flight.
+    IDeckLinkVideoInputFrame* hdrSampleFrame = nullptr;
+    LONG   hdrSamplePending = 0;
+    HANDLE hdrSampleEvent = nullptr;   // auto-reset: callback → worker
     LONG   twelve = 0;                 // 1 while the 12-bit probe stream is the active capture
     LONG   twelveProbe = 0;            // one-shot per session: ask for a 12-bit capture, measure, revert
     LONG   modeApplied = 0;            // detected display mode has been applied once
@@ -109,14 +116,19 @@ struct CaptureState {
 
     CaptureState() {
         InitializeCriticalSection(&lock);
-        // restartEvent manual-reset (wake), firstDataEvent auto-reset (one-shot).
+        // restartEvent manual-reset (wake), firstDataEvent auto-reset (one-shot),
+        // hdrSampleEvent auto-reset (callback hands a frame to the worker).
         restartEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         firstDataEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        hdrSampleEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     }
     ~CaptureState() {
+        // Release any frame still held for the worker before tearing down.
+        if (hdrSampleFrame) { hdrSampleFrame->Release(); hdrSampleFrame = nullptr; }
         DeleteCriticalSection(&lock);
         if (restartEvent) CloseHandle(restartEvent);
         if (firstDataEvent) CloseHandle(firstDataEvent);
+        if (hdrSampleEvent) CloseHandle(hdrSampleEvent);
     }
 
     void Lock()   { EnterCriticalSection(&lock); }
@@ -229,6 +241,7 @@ private:
     std::thread m_forwarder;
     void WorkerLoop();          // negotiate + start/stop (never in callback)
     void ForwardLoop();         // pop + Deliver + Release (never in callback)
+    void SampleHdrMetadata();   // ST 2086 read of a callback-handed frame (worker only)
 };
 
 // ---------------------------------------------------------------------------
@@ -638,6 +651,47 @@ void CDeckLinkOutputPin::StopCaptureSession()
     JoinCaptureThreads();
 }
 
+// Read ST 2086 from the frame the callback handed off. Runs on the worker thread
+// (CoInit MTA), never in the SDK delivery callback — this is the whole point of the
+// hand-off. Takes ownership of the held frame ref and releases it here.
+void CDeckLinkOutputPin::SampleHdrMetadata()
+{
+    IDeckLinkVideoInputFrame* frame = (IDeckLinkVideoInputFrame*)InterlockedExchangePointer(
+        (PVOID*)&m_st.hdrSampleFrame, nullptr);
+    InterlockedExchange(&m_st.hdrSamplePending, 0);
+    if (!frame) return;
+
+    CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
+    if (SUCCEEDED(frame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta)) && meta) {
+        double cll = 0.0, fall = 0.0, mMax = 0.0, mMin = 0.0;
+        const HRESULT hCll  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel, &cll);
+        const HRESULT hFall = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel, &fall);
+        const HRESULT hMax  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance, &mMax);
+        const HRESULT hMin  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance, &mMin);
+
+        // Only publish if the content-light pair came back; a failed read must not
+        // overwrite a good one with zeros.
+        if (SUCCEEDED(hCll) && SUCCEEDED(hFall) && cll > 1.0 && cll <= 10000.0) {
+            m_st.Lock();
+            const bool changed = (m_st.hdrMetaLogged == 0)
+                || cll != m_st.hdrCll || fall != m_st.hdrFall
+                || mMax != m_st.hdrMaxMLL || mMin != m_st.hdrMinMLL;
+            m_st.hdrCll = cll;     m_st.hdrFall = fall;
+            m_st.hdrMaxMLL = mMax; m_st.hdrMinMLL = mMin;
+            if (changed) {
+                m_st.hdrMetaLogged = 1;
+                StateLog(&m_st, "[HDRMETA] frame %llu  MaxCLL=%g  MaxFALL=%g  masteringMax=%g  masteringMin=%g",
+                    m_st.frames, cll, fall, mMax, mMin);
+            }
+            m_st.Unlock();
+        } else if (m_st.hdrMetaLogged == 0) {
+            StateLog(&m_st, "[HDRMETA] read failed (hr cll/fall/max/min = 0x%08X/0x%08X/0x%08X/0x%08X) — frame flagged HDR but no usable values",
+                (unsigned)hCll, (unsigned)hFall, (unsigned)hMax, (unsigned)hMin);
+        }
+    }
+    frame->Release();
+}
+
 // ---------------------------------------------------------------------------
 // Worker loop: owns Enable/Start/Stop and idempotent renegotiation
 // ---------------------------------------------------------------------------
@@ -659,11 +713,22 @@ void CDeckLinkOutputPin::WorkerLoop()
         const bool retryPending = (m_st.enableRetry != 0);
         m_st.Unlock();
         const DWORD waitMs = retryPending ? 500 : INFINITE;
-        const DWORD wr = WaitForSingleObject(m_st.restartEvent, waitMs);
-        if (wr != WAIT_TIMEOUT) ResetEvent(m_st.restartEvent);
+        // Wait on both the restart cue and the ST 2086 hand-off. The metadata read
+        // belongs here (worker thread), never in the SDK delivery callback.
+        HANDLE waits[2] = { m_st.restartEvent, m_st.hdrSampleEvent };
+        const DWORD wr = WaitForMultipleObjects(2, waits, FALSE, waitMs);
+        if (wr == WAIT_OBJECT_0 + 1) {                 // a frame was handed off → read it
+            SampleHdrMetadata();
+            continue;                                   // no restart work; keep waiting
+        }
+        if (wr == WAIT_OBJECT_0) ResetEvent(m_st.restartEvent);
 
         m_st.Lock();
-        if (m_st.quit) { StateLog(&m_st, "[DECKLINK][src] worker quit"); m_st.Unlock(); break; }
+        if (m_st.quit) {
+            if (m_st.hdrSampleFrame) { m_st.hdrSampleFrame->Release(); m_st.hdrSampleFrame = nullptr; }
+            m_st.hdrSamplePending = 0;
+            StateLog(&m_st, "[DECKLINK][src] worker quit"); m_st.Unlock(); break;
+        }
         if (!m_input)  { m_st.Unlock(); continue; }   // only between spawn+set
         StateLog(&m_st, "[DECKLINK][src] worker woke: active=%d stop=%d started=%d retry=%d",
             m_st.active, m_st.stopPending, m_st.started, m_st.enableRetry);
@@ -1286,48 +1351,20 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
         }
     }
 
-    // HDR static metadata (ST 2086) from the HDMI HDR InfoFrame — deliberately NOT
-    // behind the one-shot gate above, because that probe fires on frame 1, which is
-    // exactly when these reads return E_UNEXPECTED.
-    //
-    // Sampled at ~1 Hz rather than per frame: these are COM calls on the SDK capture
-    // callback thread, and this driver is documented as sensitive to work in there.
-    // ST 2086 is static per title, so a 1 Hz sample misses nothing and costs 1/24th
-    // of a per-frame read at 24 fps.
-    //
-    // Gated on bmdFrameContainsHDRMetadata, so the cost is paid only on frames the
-    // card says actually carry an HDR block. Values are logged once and then only
-    // when they change.
-    if (kInCallbackDriverQueries && videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)) {
-        const LONG tick = InterlockedDecrement(&m_st->hdrMetaTick);
-        if (tick <= 0) {
-            InterlockedExchange(&m_st->hdrMetaTick, 24);   // next sample in ~1 s at 24 fps
-            CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
-            if (SUCCEEDED(videoFrame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta)) && meta) {
-                double cll = 0.0, fall = 0.0, mMax = 0.0, mMin = 0.0;
-                const HRESULT hCll  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel, &cll);
-                const HRESULT hFall = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel, &fall);
-                const HRESULT hMax  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance, &mMax);
-                const HRESULT hMin  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance, &mMin);
-
-                // Only publish a reading if the content-light pair actually came back.
-                // A failed read must not overwrite a good one with zeros.
-                if (SUCCEEDED(hCll) && SUCCEEDED(hFall) && cll > 1.0 && cll <= 10000.0) {
-                    const bool changed = (m_st->hdrMetaLogged == 0)
-                        || cll != m_st->hdrCll || fall != m_st->hdrFall
-                        || mMax != m_st->hdrMaxMLL || mMin != m_st->hdrMinMLL;
-                    m_st->hdrCll = cll;     m_st->hdrFall = fall;
-                    m_st->hdrMaxMLL = mMax; m_st->hdrMinMLL = mMin;
-                    if (changed) {
-                        m_st->hdrMetaLogged = 1;
-                        StateLog(m_st, "[HDRMETA] frame %llu  MaxCLL=%g  MaxFALL=%g  masteringMax=%g  masteringMin=%g",
-                            m_st->frames, cll, fall, mMax, mMin);
-                    }
-                } else if (m_st->hdrMetaLogged == 0) {
-                    StateLog(m_st, "[HDRMETA] read failed (hr cll/fall/max/min = 0x%08X/0x%08X/0x%08X/0x%08X) — frame flagged HDR but no usable values",
-                        (unsigned)hCll, (unsigned)hFall, (unsigned)hMax, (unsigned)hMin);
-                }
-            }
+    // HDR static metadata (ST 2086) — handed off to the worker, NOT read here. The
+    // SDK delivery callback is documented-sensitive to work (this driver dropped
+    // frames when metadata COM calls ran in it), so the callback does only O(1):
+    // notice an HDR-flagged frame ~1 Hz, AddRef it, and wake the worker to do the
+    // QI/GetFloat reads. ST 2086 is static per title, so 1 Hz misses nothing. Not
+    // gated on kInCallbackDriverQueries (that flag is for the in-callback *probe*);
+    // this is a hand-off, not a query.
+    if (videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)
+            && InterlockedDecrement(&m_st->hdrMetaTick) <= 0) {
+        InterlockedExchange(&m_st->hdrMetaTick, 24);            // next hand-off ~1 s at 24 fps
+        if (InterlockedCompareExchange(&m_st->hdrSamplePending, 1, 0) == 0) {
+            videoFrame->AddRef();                               // keep alive for the worker
+            m_st->hdrSampleFrame = videoFrame;                  // one in flight (guarded above)
+            SetEvent(m_st->hdrSampleEvent);
         }
     }
 

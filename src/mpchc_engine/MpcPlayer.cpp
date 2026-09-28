@@ -1,4 +1,5 @@
 ﻿#include "MpcPlayer.h"
+#include "PostFxShaders.h"
 
 #include <windows.h>
 #include <versionhelpers.h>
@@ -124,10 +125,88 @@ MpcPlayer::TrackKind ClassifyStreamName(const std::wstring& name)
     return MpcPlayer::TrackKind::Video;
 }
 
+// IAMStreamSelect::Info hands back the stream's AM_MEDIA_TYPE, whose majortype is the
+// reliable discriminator (LAV sets MEDIATYPE_Audio / MEDIATYPE_Video). The stream NAME is
+// a human title ("English (E-AC-3)") that rarely carries the "A:"/"S:" pin prefixes
+// ClassifyStreamName looks for — so prefer the media type and fall back to the name only
+// when there is none. (Fixes audio tracks being mis-sorted as Video.)
+MpcPlayer::TrackKind ClassifyStream(const AM_MEDIA_TYPE* pmt, const std::wstring& name)
+{
+    if (pmt) {
+        if (pmt->majortype == MEDIATYPE_Audio) return MpcPlayer::TrackKind::Audio;
+        if (pmt->majortype == MEDIATYPE_Video) return MpcPlayer::TrackKind::Video;
+    }
+    return ClassifyStreamName(name);
+}
+
+// IAMStreamSelect::Info returns the stream language as an LCID. LAV's stream NAME is
+// often just the format string ("48000 Hz, 7l, s24") — unreadable as a track label —
+// so map the LCID's primary language to a short name the rail can show. "" for
+// neutral/unknown (the UI then falls back to "Track N").
+static std::wstring LangName(LCID lcid)
+{
+    switch (PRIMARYLANGID(lcid)) {
+    case LANG_NEUTRAL:      return L"";
+    case LANG_ENGLISH:      return L"English";
+    case LANG_FRENCH:       return L"French";
+    case LANG_GERMAN:       return L"German";
+    case LANG_SPANISH:      return L"Spanish";
+    case LANG_ITALIAN:      return L"Italian";
+    case LANG_PORTUGUESE:   return L"Portuguese";
+    case LANG_RUSSIAN:      return L"Russian";
+    case LANG_CHINESE:      return L"Chinese";
+    case LANG_JAPANESE:     return L"Japanese";
+    case LANG_KOREAN:       return L"Korean";
+    case LANG_HINDI:        return L"Hindi";
+    case LANG_ARABIC:       return L"Arabic";
+    case LANG_DUTCH:        return L"Dutch";
+    case LANG_POLISH:       return L"Polish";
+    case LANG_SWEDISH:      return L"Swedish";
+    case LANG_NORWEGIAN:    return L"Norwegian";
+    case LANG_DANISH:       return L"Danish";
+    case LANG_FINNISH:      return L"Finnish";
+    case LANG_TURKISH:      return L"Turkish";
+    case LANG_CZECH:        return L"Czech";
+    case LANG_HUNGARIAN:    return L"Hungarian";
+    case LANG_ROMANIAN:     return L"Romanian";
+    case LANG_BULGARIAN:    return L"Bulgarian";
+    case LANG_GREEK:        return L"Greek";
+    case LANG_HEBREW:       return L"Hebrew";
+    case LANG_THAI:         return L"Thai";
+    case LANG_VIETNAMESE:   return L"Vietnamese";
+    case LANG_INDONESIAN:   return L"Indonesian";
+    case LANG_UKRAINIAN:    return L"Ukrainian";
+    default:                return L"";
+    }
+}
+
+// LAV's splitter stamps each audio stream's media subtype with a WAVE/FOURCC code
+// (LAVFilters demuxer/Demuxers/LAVFAudioHelper.h + common/includes/moreuuids.h).
+// Map the ones worth naming so the rail shows "E-AC-3"/"TrueHD" instead of LAV's raw
+// format string. Unknown -> "" (the UI then omits the codec). NOTE: this names the
+// codec FAMILY; distinguishing Dolby Atmos from plain E-AC-3/TrueHD needs parsing the
+// JOC/Atmos flag in the bitstream, which the media type does not carry.
+static std::wstring CodecName(DWORD sub)
+{
+    switch (sub) {
+    case 0x2000:     return L"AC-3";      // WAVE_FORMAT_DOLBY_AC3
+    case 0x2001:     return L"DTS";       // WAVE_FORMAT_DTS
+    case 0x33434145: return L"E-AC-3";    // MKTAG('E','A','C','3')
+    case 0x20504C4D: return L"TrueHD";    // MKTAG('M','L','P',' ')
+    case 0x00FF:     return L"AAC";
+    case 0x0055:     return L"MP3";
+    case 0x0050:     return L"MPEG";
+    case 0x0001:     return L"PCM";
+    case 0xF1AC:     return L"FLAC";
+    case 0x704F:     return L"Opus";
+    default:         return L"";
+    }
+}
+
 }   // namespace
 
 
-void MpcPlayer::Log(const char* fmt, ...)
+void MpcPlayer::Log(const char* fmt, ...) const
 {
     if (!logSink_) return;
     char buf[512];
@@ -286,6 +365,10 @@ HRESULT MpcPlayer::Play()
         snapshot_.state = State::Playing;
         UpdateSnapshot();
         Notify("state");
+        // Belt-and-suspenders: if the renderer's device only came up on the first
+        // sample (not at graph render), the BuildGraph-time inject was a no-op;
+        // retry now. Idempotent — commits only if it had not already succeeded.
+        ApplyPostFx();
     }
     return hr;
 }
@@ -368,6 +451,34 @@ void MpcPlayer::Shutdown()
     Log("[SHUTDOWN] graph stop done");
 
     if (m_gopThread.joinable()) m_gopThread.join();
+
+    // Release the graph + filters so the renderer's present thread and the
+    // splitter/decoder threads actually EXIT. mediaControl_->Stop() alone leaves
+    // the graph object and its filters alive — the window closes but the process
+    // lingers (threads running) until the 15 s force-exit watchdog, which reads as
+    // "not shutting down properly". Safe here: the snapshot thread is joined, the
+    // decider is stopped, the executor is armed-stopped AND joined, and the decklink
+    // feeder was halted above — nothing else can touch the graph now. This mirrors
+    // TeardownDecklinkGraph step 4 (which the re-open path uses but final shutdown
+    // did not). CComPtr::Release is null-safe, so the idempotent second Shutdown
+    // call is a no-op.
+    Log("[SHUTDOWN] release graph + filters — enter");
+    if (renderer_) {
+        if (CComQIPtr<IVideoWindow> pVW = renderer_) {
+            pVW->put_Visible(OAFALSE);
+            pVW->put_Owner(0);
+        }
+    }
+    graph_.Release();
+    mediaControl_.Release();
+    mediaSeeking_.Release();
+    mediaEvent_.Release();
+    splitter_.Release();
+    renderer_.Release();
+    audioDecoder_.Release();
+    audioRenderer_.Release();
+    Log("[SHUTDOWN] release graph + filters — done");
+
     if (decklinkMonitor_) {
         decklinkMonitor_->Stop();
         decklinkMonitor_.reset();
@@ -922,6 +1033,17 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         if (CComQIPtr<IVideoWindow> pVW = renderer_) pVW->put_Visible(OATRUE);
         ResizeVideo();
     }
+
+    // Post-fx shaders need the renderer's D3D device, which is set when the
+    // decoder's allocator connects to MPCVR's input pin during the graph render
+    // above — so this, not the pre-connect push at the top of BuildGraph, is where
+    // the first injection lands. ApplyPostFx is idempotent and fail-soft (it only
+    // commits when the renderer accepts the blob), so the extra calls from
+    // ApplyPendingSettings / Play are cheap no-ops once this has succeeded.
+    ApplyPostFx();
+    // Audio tracks are enumerable now that the splitter has negotiated its streams
+    // and the audio decoder connected. Cache the list + mode for the UI to poll.
+    RebuildAudioJson();
     return S_OK;
 }
 
@@ -1405,11 +1527,17 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrGt7Blend     = h.gt7Blend;
     s.fHdrGt7FadeStart = h.gt7FadeStart;
     s.fHdrGt7FadeEnd   = h.gt7FadeEnd;
+    s.fHdrGt7Adapt     = h.gt7Adapt;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
+    // The experimental spline is now a first-class Tone-curve value (9), mutually
+    // exclusive with the named curves: the curve selection alone decides whether the
+    // spline runs. expTm is derived from it, so the old separate "Mapper" axis (and
+    // its silently-ignored-when-GT7/REFERENCE behaviour) is gone.
+    s.iExperimentalToneMapper = (h.toneMapCurve == 9) ? 1 : 0;
     s.bHDRPassthroughRaw = h.hdrPassthroughRaw;
-    s.iExperimentalToneMapper = h.experimentalToneMapper;
     s.fToneLutContrast = h.toneLutContrast;
+    s.fToneLutPivotScale = h.toneLutPivotScale;
 }
 
 void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
@@ -1432,11 +1560,13 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.gt7Blend     = s.fHdrGt7Blend;
     h.gt7FadeStart = s.fHdrGt7FadeStart;
     h.gt7FadeEnd   = s.fHdrGt7FadeEnd;
+    h.gt7Adapt     = s.fHdrGt7Adapt;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
     h.experimentalToneMapper = s.iExperimentalToneMapper;
     h.toneLutContrast = s.fToneLutContrast;
+    h.toneLutPivotScale = s.fToneLutPivotScale;
 }
 
 void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)
@@ -1748,6 +1878,67 @@ void MpcPlayer::ApplyPendingSettings()
         Log("[ENGINE] settings: a rebuild-only row changed on the FILE path — re-open "
             "queued so it applies pre-connect");
     }
+
+    // Post-fx reach the renderer through IExFilterConfig, not Settings_t, so they
+    // are pushed here (the sanctioned mutation path) rather than in the block
+    // above — this is the live dial-change path. During BuildGraph the device is
+    // not up yet, so skip: the end-of-BuildGraph ApplyPostFx handles first injection.
+    if (!m_inGraphBuild) ApplyPostFx();
+}
+
+void MpcPlayer::ApplyPostFx()
+{
+    if (!renderer_) return;
+    CComQIPtr<IExFilterConfig> cfg = renderer_;
+    if (!cfg) return;
+
+    const PostFxState& p = pendingPostFx_;
+    std::string sharpen = p.sharpenEnabled ? postfx::AdaptiveSharpen(p.sharpenStrength) : std::string();
+    std::string deband  = p.debandEnabled  ? postfx::Deband(p.debandThreshold, p.debandRange,
+                                                            p.debandIterations, p.debandGrain) : std::string();
+
+    // Dedup: only touch the renderer when the picture-defining source changed or
+    // the renderer instance is new. An unrelated settings push must not recompile.
+    const bool freshRenderer = (m_postFxGraphGen != graphGen_);
+    if (!freshRenderer && sharpen == m_lastSharpenSrc && deband == m_lastDebandSrc)
+        return;
+
+    // Rebuild the whole post-scale list from current intent: clear, then add
+    // Deband first (clean the gradients) and Adaptive Sharpen last (detail on the
+    // debanded base). Both are skipped when disabled.
+    //
+    // AddPostScaleShader needs a live D3D device and returns E_ABORT before the
+    // renderer has one (it is created during window setup / first-sample pin
+    // connect). So we only COMMIT the dedup cache when every requested inject
+    // succeeded; otherwise the next call (post-ConfigureRendererWindow, post-Play,
+    // or the next dial touch) retries. This is why the cache is not written on a
+    // failed attempt — a fresh graph built before the device exists must not be
+    // marked "done" and then never injected.
+    //
+    // The clear is a Flt_SetBool command (VideoRenderer.cpp:1870 handles it in
+    // Flt_SetBool, NOT Flt_SetString). Sending it via SetString returns E_INVALIDARG
+    // and the old shaders stay in the list, so every re-inject APPENDS another pass —
+    // the sharpen compounds frame-over-frame and "spoils" the image over time.
+    cfg->Flt_SetBool("cmd_clearPostScaleShaders", true);
+
+    bool allOk = true;
+    auto inject = [&](const wchar_t* name, const std::string& code) {
+        if (code.empty()) return;
+        std::string blob = postfx::MakeShaderBlob(name, code);
+        const HRESULT hr = cfg->Flt_SetBin("cmd_addPostScaleShader",
+                                           (LPVOID)blob.data(), (int)blob.size());
+        if (FAILED(hr)) allOk = false;   // no device yet — retry later
+        Log("[POSTFX] inject %ls (%zu bytes) hr=%08x",
+            name, code.size(), (unsigned)hr);
+    };
+    inject(L"Deband", deband);
+    inject(L"Adaptive Sharpen", sharpen);
+
+    if (!allOk) return;   // leave the cache stale so a later attempt retries
+
+    m_lastSharpenSrc = sharpen;
+    m_lastDebandSrc  = deband;
+    m_postFxGraphGen = graphGen_;
 }
 
 // Ask the graph owner to rebuild, which is how a rebuild-only setting reaches the
@@ -2017,6 +2208,15 @@ void MpcPlayer::RefreshLive()
     // access until the graph exists: the worker can race the UI's renderer_
     // assignment at init (a CComPtr read + AddRef on a mid-create object AVs).
     if (!m_liveReady) return;
+
+    // The splitter only exposes its streams once the graph is running (it parses
+    // the header on first read), so the end-of-BuildGraph enumeration is usually
+    // empty. Retry from here until audio tracks appear. m_liveReady is false during
+    // any rebuild, so splitter_ is stable; this is a read (IAMStreamSelect Count/
+    // Info), not a renderer mutation, so it cannot stall the playback clock.
+    if (snapshot_.state == State::Playing && m_audioTrackCount == 0)
+        RebuildAudioJson();
+
     // Reads may block on the renderer during a signal blip; that cost belongs
     // here, not the UI.
     RenderStats         r;
@@ -2282,7 +2482,7 @@ std::string MpcPlayer::GetUiStatusJson() const
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
-        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f},"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
@@ -2302,9 +2502,10 @@ std::string MpcPlayer::GetUiStatusJson() const
         hdr.displayMinNits, hdr.outputGamut,
         hdr.titlePeakNits, hdr.hableKnee, hdr.softKnee, hdr.softKneeRatio, hdr.softKneeWidth, hdr.refWhiteNits,
         hdr.experimentalToneMapper, hdr.toneLutContrast,
-        // Two new specifiers above, two new args here — a mismatch corrupts the
-        // whole status JSON and the panel renders blank.
-        hdr.gt7Blend, hdr.gt7FadeStart,
+        // One specifier added per field, in this order — a mismatch corrupts the
+        // whole status JSON and the panel renders blank. gtFade reports the window's
+        // START (the engine derives End = Start + 0.18, so one rail moves both).
+        hdr.gt7Blend, hdr.gt7FadeStart, hdr.gt7Adapt,
         ml.enable ? 1 : 0, ml.mode,
         ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
         ml.hunt, ml.chNeutral, ml.chFire, ml.chKnee, ml.chSkin,
@@ -2329,7 +2530,18 @@ std::string MpcPlayer::GetUiStatusJson() const
         out.vBlank ? 1 : 0, out.adjustPresent ? 1 : 0, out.reinitDisplay ? 1 : 0,
         out.showStats ? 1 : 0, out.trayIcon ? 1 : 0);
 
-    return std::string(b1) + std::string(b2);
+    // Splice the cached audio fragment in before the root object's closing brace.
+    // m_audioJson already begins with a leading comma (,"audio":{…}); read it under
+    // the live-cache lock because the capture path rebuilds it on the executor.
+    std::string audio;
+    { std::lock_guard<std::mutex> lk(m_liveMtx); audio = m_audioJson; }
+    std::string result = std::string(b1) + std::string(b2);
+    if (!audio.empty() && !result.empty() && result.back() == '}') {
+        result.pop_back();
+        result += audio;
+        result += '}';
+    }
+    return result;
 }
 
 // P2: apply flat "grp.name=value" pairs. Groups hdr/ml/out map to the structs
@@ -2339,6 +2551,10 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     HdrSettings hdr{};   bool hAny = false;
     MlSettings  ml{};    bool mAny = false;
     OutSettings out{};   bool oAny = false;
+    // Post-fx has no Settings_t mirror to read back from the renderer (it lives in
+    // the injected shader, not a settings field), so it always seeds from the
+    // remembered intent — a partial push merges onto the last full intent.
+    PostFxState pfx = pendingPostFx_;  bool pAny = false;
     // Seed from the live renderer when there is one, because that IS the current
     // intent; otherwise seed from the remembered intent, because there is nothing
     // live to read. The old code seeded only from the renderer and then dropped the
@@ -2396,12 +2612,16 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
                 hdr.gt7FadeStart = std::clamp((float)vd(v), 0.05f, 3.0f);
                 hdr.gt7FadeEnd   = hdr.gt7FadeStart + 0.18f;
             }
+            // GT7 Adapt's scene-peak weight. 0 is a LEGAL value (it makes curve 10
+            // identical to curve 8), so clamp — never treat 0 as "unset".
+            else if (name == "gtAdapt")        hdr.gt7Adapt = std::clamp((float)vd(v), 0.0f, 1.0f);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);
             else if (name == "raw")        hdr.hdrPassthroughRaw = vb(v);
             else if (name == "expTm")      hdr.experimentalToneMapper = (int)vd(v);
             else if (name == "tmContrast") hdr.toneLutContrast = (float)vd(v);
+            else if (name == "tmPivot")    hdr.toneLutPivotScale = std::clamp((float)vd(v), 0.0f, 1.0f);
             else hit = false;
             hAny = hAny || hit;
         } else if (grp == "ml") {
@@ -2476,6 +2696,32 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "tray")          out.trayIcon = vb(v);
             else hit = false;
             oAny = oAny || hit;
+        } else if (grp == "postfx") {
+            bool hit = true;
+            if      (name == "sharpen")    pfx.sharpenEnabled = vb(v);
+            else if (name == "sharpenStr") pfx.sharpenStrength = std::clamp((float)vd(v), 0.0f, 3.0f);
+            else if (name == "deband")     pfx.debandEnabled = vb(v);
+            else if (name == "dbThresh")   pfx.debandThreshold = std::clamp((float)vd(v), 0.0f, 4096.0f);
+            else if (name == "dbRange")    pfx.debandRange = std::clamp((float)vd(v), 1.0f, 64.0f);
+            else if (name == "dbIter")     pfx.debandIterations = (int)std::clamp(vd(v), 1.0, 4.0);
+            else if (name == "dbGrain")    pfx.debandGrain = std::clamp((float)vd(v), 0.0f, 128.0f);
+            else hit = false;
+            pAny = pAny || hit;
+        } else if (grp == "audio") {
+            bool hit = true;
+            if (name == "mode") {
+                // PCM(0) ↔ Bitstream(1). LAV decides bitstream-vs-PCM at pin connect, so a
+                // change can't be applied live — set the intent and queue a re-open of the
+                // current file (the same rebuild path the HDR rebuild-only rows use).
+                const AudioMode want = ((int)vd(v) != 0) ? AudioMode::Bitstream : AudioMode::PCM;
+                if (want != audioMode_) {
+                    audioMode_ = want;
+                    m_fileRebuildPending = true;
+                    Log("[ENGINE] audio mode -> %s; re-open queued to apply at connect",
+                        want == AudioMode::Bitstream ? "Bitstream" : "PCM");
+                }
+            }
+            else hit = false;
         }
     }
 
@@ -2485,6 +2731,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     if (hAny) { pendingHdr_ = hdr; hasHdr_ = true; }
     if (mAny) { pendingMl_  = ml;  hasMl_  = true; }
     if (oAny) { pendingOut_ = out; hasOut_ = true; }
+    if (pAny) { pendingPostFx_ = pfx; hasPostFx_ = true; }
     // UI-thread entry point: remember, and let the graph owner apply. Never
     // write the renderer from here — see QueueSettingsApply().
     QueueSettingsApply();
@@ -2793,8 +3040,20 @@ HRESULT MpcPlayer::GetTracks(std::vector<TrackInfo>& out) const
         if (FAILED(sel->Info(i, &pmt, &flags, &lcid, &groupNr, &pName, &pObj, &pUnk))) continue;
         TrackInfo t;
         t.name = pName ? pName : L"";
+        t.lang = LangName(lcid);
+        // LAV's compressed-audio streams are WAVEFORMATEXTENSIBLE: the subtype's
+        // Data1 is 0xFFFE (EXTENSIBLE) and the real codec fourcc lives in the
+        // format block's SubFormat GUID. Read it from there when extensible.
+        DWORD sub = pmt ? pmt->subtype.Data1 : 0;
+        DWORD subFmt = 0;
+        if (pmt && pmt->pbFormat && pmt->cbFormat >= sizeof(WAVEFORMATEXTENSIBLE)) {
+            const WAVEFORMATEXTENSIBLE* we = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pmt->pbFormat);
+            if (we->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                subFmt = we->SubFormat.Data1;
+        }
+        t.codec = CodecName(subFmt ? subFmt : sub);
         t.active = (flags & AMSTREAMSELECTINFO_ENABLED) != 0;
-        t.kind = ClassifyStreamName(t.name);
+        t.kind = ClassifyStream(pmt, t.name);   // pmt still valid here; freed just below
         out.push_back(t);
         if (pmt) { if (pmt->pbFormat) CoTaskMemFree(pmt->pbFormat); CoTaskMemFree(pmt); }
         if (pName) CoTaskMemFree(pName);
@@ -2823,12 +3082,13 @@ HRESULT MpcPlayer::SelectStream(TrackKind kind, int posIndex)
         IUnknown* pUnk = nullptr;
         HRESULT hr = sel->Info(i, &pmt, &flags, &lcid, &groupNr, &pName, &pObj, &pUnk);
         std::wstring name = (SUCCEEDED(hr) && pName) ? pName : L"";
+        TrackKind got = ClassifyStream(pmt, name);   // classify while pmt is still alive
         if (pmt) { if (pmt->pbFormat) CoTaskMemFree(pmt->pbFormat); CoTaskMemFree(pmt); }
         if (pName) CoTaskMemFree(pName);
         if (pObj) pObj->Release();
         if (pUnk) pUnk->Release();
         if (FAILED(hr)) continue;
-        if (ClassifyStreamName(name) != kind) continue;
+        if (got != kind) continue;
         if (nth == posIndex) {
             return sel->Enable(i, AMSTREAMSELECTENABLE_ENABLE);
         }
@@ -2839,12 +3099,56 @@ HRESULT MpcPlayer::SelectStream(TrackKind kind, int posIndex)
 
 HRESULT MpcPlayer::SetAudioTrack(int posIndex)
 {
-    return SelectStream(TrackKind::Audio, posIndex);
+    const HRESULT hr = SelectStream(TrackKind::Audio, posIndex);
+    if (SUCCEEDED(hr)) RebuildAudioJson();   // refresh the cached active flag for the UI
+    return hr;
 }
 
 HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
 {
     return SelectStream(TrackKind::Subtitle, posIndex);
+}
+
+// Rebuild the cached audio fragment the UI polls. Called on graph-safe threads only
+// (end of BuildGraph, after SetAudioTrack) — GetTracks reads the splitter's
+// IAMStreamSelect directly, so it must not run from the snapshot worker. Emits the
+// audio-only tracks with their audio-relative index (what SetAudioTrack expects),
+// the active flag, and the current PCM/Bitstream mode.
+void MpcPlayer::RebuildAudioJson()
+{
+    std::vector<TrackInfo> tracks;
+    GetTracks(tracks);
+
+    auto esc = [](std::string s) {
+        std::string o; o.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '"' || c == '\\') { o += '\\'; o += c; }
+            else if ((unsigned char)c < 0x20) o += ' ';   // control chars → space
+            else o += c;
+        }
+        return o;
+    };
+
+    std::string j = ",\"audio\":{\"mode\":";
+    j += (audioMode_ == AudioMode::Bitstream ? "1" : "0");
+    j += ",\"tracks\":[";
+    int idx = 0;
+    for (const auto& t : tracks) {
+        if (t.kind != TrackKind::Audio) continue;
+        if (idx) j += ",";
+        j += "{\"i\":" + std::to_string(idx)
+           + ",\"name\":\"" + esc(Utf8(t.name)) + "\""
+           + ",\"lang\":\"" + esc(Utf8(t.lang)) + "\""
+           + ",\"codec\":\"" + esc(Utf8(t.codec)) + "\""
+           + ",\"active\":" + (t.active ? "1" : "0") + "}";
+        ++idx;
+    }
+    j += "]}";
+    // Build unlocked (GetTracks does COM calls), then publish under the live-cache
+    // lock — the capture path rebuilds on the executor while the poll reads on the UI thread.
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    m_audioJson = std::move(j);
+    m_audioTrackCount = idx;
 }
 
 // ── Audio endpoints (WASAPI MMDevice) ────────────────────────────────────────

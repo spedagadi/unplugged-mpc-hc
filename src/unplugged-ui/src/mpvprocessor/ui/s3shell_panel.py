@@ -165,7 +165,7 @@ GLYPH_OPTICAL = {"▶": 25}
 # (int)vd(v), so a fractional value is silently truncated on the way in. The
 # rail must not show (or store) precision the renderer will discard. Every other
 # slider maps to a float.
-INT_SLIDERS = {"hdr.sdrNits", "hdr.maxNits", "hdr.osdBright", "hdr.titlePeak"}
+INT_SLIDERS = {"hdr.sdrNits", "hdr.maxNits", "hdr.osdBright", "hdr.titlePeak", "postfx.debandIter"}
 
 # The value column is only 42px wide, so a long float overflows and becomes
 # unreadable. Same rule as s3_shell.cpp's FmtNum(): whole numbers print bare,
@@ -228,10 +228,26 @@ KEY_MAP = {
     "hdr.chromaExp":      ("hdr", "chromaExp"),
     "hdr.gtBlend":        ("hdr", "gtBlend"),
     "hdr.gtFade":         ("hdr", "gtFade"),
+    "hdr.gtAdapt":        ("hdr", "gtAdapt"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
     "hdr.tmContrast": ("hdr", "tmContrast"),
+    "hdr.tmPivot": ("hdr", "tmPivot"),
+    # Post-render effects — delivered as MPCVR post-scale custom shaders, not
+    # Settings_t. The engine's "postfx" group parses these names.
+    "postfx.sharpen":      ("postfx", "sharpen"),
+    "postfx.sharpenStr":   ("postfx", "sharpenStr"),
+    "postfx.deband":       ("postfx", "deband"),
+    "postfx.debandThresh": ("postfx", "dbThresh"),
+    "postfx.debandRange":  ("postfx", "dbRange"),
+    "postfx.debandIter":   ("postfx", "dbIter"),
+    "postfx.debandGrain":  ("postfx", "dbGrain"),
+    # pb.hdAudio is deliberately NOT here: it is a state-echo row (the engine owns the
+    # mode and reports it), so push_all re-sending it on every graph generation made
+    # the rail push a stale opposite value → mode flip → re-open → gen bump → push
+    # again → infinite re-open loop. It is routed imperatively in _apply_engine so it
+    # is only sent when the USER clicks it. Same reason pb.audioTrack is absent.
     "out.useD3D11": ("out", "d3d11"),
     "out.texFormat": ("out", "tex"),
     "out.vpNV12": ("out", "nv12"),
@@ -266,22 +282,48 @@ KEY_MAP = {
 VALUE_MAP = {
     "zion.toneMode":    [2, 1, 0],
     # 6 (ST.2094-10) has no panel entry — it is unreachable from this rail, as it
-    # always was. GT7 is 8; the renderer's discard() clamp upper bound has to cover
-    # it or the selection is silently rewritten to Hable.
-    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7, 8],
+    # always was. GT7 is 8; SPLINE is 9 (the experimental mapper, now a first-class
+    # tone-curve option — mutually exclusive with the named curves by construction).
+    # GT7 ADAPT is 10: the same operator with the scene peak blended into its peak.
+    # Appended last so every existing panel index keeps meaning what it meant.
+    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7, 8, 9, 10],
     "out.texFormat":    [0, 8, 10, 16],
 }
+
+# Tone-curve engine values (IVideoRenderer.h TONE_CURVE_*), for the curve-
+# conditional "CURVE SETTINGS" rows. Which dial feeds which curve was traced from
+# ps_convert_pq_to_sdr.hlsl: maxCLL<-{GT7,BT2390,ST2094,Hable-fallback}, softKnee<-
+# {Hable,GT7}, highlightNeutral<-{Hable}, refWhite<-{Hable,GT7}, chromaExp<-
+# {Hable + the normalised curves}. ACES/Reinhard/Mobius normalise by sdrNits (not
+# maxCLL); REFERENCE reads nothing; SPLINE reads only the scene stats.
+CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS = 1, 2, 3, 4
+CURVE_BT2390, CURVE_ST2094, CURVE_REF, CURVE_GT7, CURVE_SPLINE = 5, 6, 7, 8, 9
+CURVE_GT7_ADAPT = 10
+# GT7 Adapt shares the whole GT7 branch, so it reads everything GT7 reads — the
+# metadata peak (as the static half of its blend), the soft-knee pre-compressor and
+# ref white — plus gt7Adapt, which plain GT7 ignores.
+CURVES_GT7BOTH  = {CURVE_GT7, CURVE_GT7_ADAPT}
+CURVES_MAXCLL   = {CURVE_HABLE, CURVE_BT2390, CURVE_ST2094, CURVE_GT7, CURVE_GT7_ADAPT}
+CURVES_SOFTKNEE = {CURVE_HABLE, CURVE_GT7, CURVE_GT7_ADAPT}
+CURVES_REFWHITE = {CURVE_HABLE, CURVE_GT7, CURVE_GT7_ADAPT}
+CURVES_NEUTRAL  = {CURVE_HABLE}
+CURVES_CHROMA   = {CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS,
+                   CURVE_BT2390, CURVE_ST2094}
 
 
 class Row:
     def __init__(self, label, type_, group, key, section=None, options=None,
                  opt=0, min_=0, max_=100, val=50, default=50, gate=0,
-                 on=False, live=True, uncheck=True):
+                 on=False, live=True, uncheck=True, curves=None):
         self.label = label; self.type = type_; self.group = group; self.key = key
         self.section = section; self.options = options or []
         self.opt = opt; self.min = min_; self.max = max_; self.val = val
         self.default = default; self.gate = gate; self.on = on; self.live = live
         self.has_uncheck = uncheck
+        # curves: set of TONE-CURVE engine values for which this row is VISIBLE.
+        # None = always visible. Lets a dial that only matters for some curves
+        # (e.g. highlight-neutral = Hable-only) hide itself otherwise.
+        self.curves = curves
         self.text = ""               # FILE rows: the chosen path
         self.enabled = True          # per-control checkbox state
 
@@ -295,9 +337,9 @@ def build_rows():
 
     def add(label, type_, group, key, section=None, options=None, opt=0,
             min_=0, max_=100, val=50, default=50, gate=0, on=False,
-            live=True, uncheck=True):
+            live=True, uncheck=True, curves=None):
         r.append(Row(label, type_, group, key, section, options, opt, min_, max_,
-                     val, default, gate, on, live, uncheck))
+                     val, default, gate, on, live, uncheck, curves))
 
     # ── PLAYBACK — media-playback surface ────────────────────────────────────
     # Track rows have no engine backing yet (no track-list API across the C ABI);
@@ -373,60 +415,52 @@ def build_rows():
     # ORIGINAL colour, fading it across the highlight band. It is the curve that
     # desaturates a warm head instead of carrying the source's grade at full
     # strength, which is what the I-channel + uniform-gain paths do.
+    # "GT7 Adapt" (index 8 -> TONE_CURVE_GT7_ADAPT 10) is the GT7 operator with one
+    # different input: the peak it maps FROM is the metadata peak blended toward the
+    # measured scene peak. Use it where the peak is a guess (HDMI capture, DV, no
+    # MaxCLL); where MaxCLL is real, plain GT7 is the stable choice and is unchanged.
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
-        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7"], 4, uncheck=False)
-    # Content peak: the top of the range the tone curves map FROM. NOT the display's
-    # peak (that is "Static nits (max)", and it belongs to the HDR-output path).
+        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7", "Spline",
+         "GT7 Adapt"], 4, uncheck=False)
+    # ── CURVE SETTINGS — dials that only matter for specific tone curves ─────
+    # Collapsible like any section; each row HIDES itself unless the selected Tone
+    # curve actually reads it (see the CURVES_* sets above, traced from
+    # ps_convert_pq_to_sdr.hlsl). This stops the rail offering dials that silently
+    # do nothing for the active curve.
     #
-    # The scene-referred curves — ACES, Reinhard, Mobius, BT.2390 — normalise the
-    # signal by this value, so it decides how bright they land. At 1000 (the HDR10
-    # nominal default) a title whose content actually peaks near 200 nits is mapped
-    # as though its range were five times larger, and those curves come out
-    # correspondingly dark. Drop this to the disc's real peak and they brighten
-    # substantially. It also sets the experimental Spline's index axis.
-    #
-    # On this capture path the card cannot supply MaxCLL (its ST.2086 HDMI metadata
-    # is unsupported), so this control is the only source — the HDFury's readout of
-    # the source's InfoFrame will tell you the real number.
-    add("Title peak (nits)", SLIDER, H, "hdr.titlePeak", "TONE MAPPING",
-        min_=100, max_=4000, val=1000, default=1000, uncheck=False)
-    # Hable knee: display-relative light below which the Hable curve is REPLACED
-    # BY IDENTITY. Hable has no knee of its own — it is a global rational curve
-    # and compresses everywhere, which is what makes it highlight-safe and also
-    # why the whole picture sits low: the shadows and lower mids pay compression
-    # that only the top of the range needs.
-    #
-    # Below the knee the value passes through untouched; above it Hable applies
-    # unchanged, still normalised by the measured per-scene peak, so the content
-    # peak still lands on white. The transition is a smooth band, not a corner.
-    # 0 = pure Hable, i.e. exactly the previous behaviour.
-    add("Hable knee", SLIDER, H, "hdr.hableKnee", "TONE MAPPING",
-        max_=0.80, val=0, default=0, uncheck=False)
-    # Soft-plus pre-compressor: re-spreads the highlight band Hable compresses
-    # least (the sky). 0 = off (identical to before it existed).
-    add("Soft knee (0=off)", SLIDER, H, "hdr.softKnee", "TONE MAPPING",
-        min_=0, max_=4, val=0.6, default=0.6, uncheck=False)
-    add("Soft knee ratio", SLIDER, H, "hdr.softKneeRatio", "TONE MAPPING",
-        min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False)
-    add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "TONE MAPPING",
-        min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False)
-    # Scene reference white: the Hable curve's 1.0, decoupled from display white.
-    # 203 = libplacebo's SDR diffuse white — clouds at 150-200 nits are content,
-    # not highlight. Punch above clouds via the soft knee / ratio.
-    add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "TONE MAPPING",
-        min_=50, max_=400, val=203, default=203, uncheck=False)
-    # Highlight neutral (head): pulls the top of the PQ->SDR output toward its own
-    # luma, level-dependently (the measured fix for the warm-white head on warm
-    # sources — Everest vs madVR, verified 2026-09-23; 0.9 matched madVR's own
-    # warm head). 0 = exactly the pre-feature picture. Live cbuffer re-push: the
-    # picture changes while the slider is dragged.
-    add("Highlight neutral (head)", SLIDER, H, "hdr.highlightNeutral", "TONE MAPPING",
-        min_=0.0, max_=1.0, val=0.9, default=0.9, uncheck=False)
-    # Chroma compensation exponent — STAGE 1 (delivery only): the value is
-    # carried to the renderer and reported as clE= in the pipeline dump, but
-    # NOT applied in the shader yet (application is the next stage).
-    add("Chroma desat (exp)", SLIDER, H, "hdr.chromaExp", "TONE MAPPING",
-        min_=-1.0, max_=3.5, val=1.35, default=1.35, uncheck=False)
+    # Title peak = the content peak (maxCLL) the curves map FROM — NOT the display's
+    # peak. Only GT7 / BT.2390 / ST.2094 read it directly; Hable uses it as the
+    # fallback when the measured scene peak is unavailable. ACES/Reinhard/Mobius
+    # normalise by sdrNits instead, and Reference/Spline read neither.
+    add("Title peak (nits)", SLIDER, H, "hdr.titlePeak", "CURVE SETTINGS",
+        min_=100, max_=4000, val=1000, default=1000, uncheck=False,
+        curves=CURVES_MAXCLL)
+    # Soft-plus pre-compressor (Hable + GT7): re-spreads the highlight band Hable
+    # compresses least (the sky). 0 = off. The LOW default knee (0.21) is deliberate:
+    # ultra-bright DV/HDR masters need compression to start early or the sky clips.
+    # It is safe at a low knee because the compressor is detail-preserving (local base
+    # + restored residual), so mid-tone texture no longer "oil-paints" at ratio>1.
+    add("Soft knee (0=off)", SLIDER, H, "hdr.softKnee", "CURVE SETTINGS",
+        min_=0, max_=4, val=0.21, default=0.21, uncheck=False, curves=CURVES_SOFTKNEE)
+    add("Soft knee ratio", SLIDER, H, "hdr.softKneeRatio", "CURVE SETTINGS",
+        min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False, curves=CURVES_SOFTKNEE)
+    add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "CURVE SETTINGS",
+        min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False, curves=CURVES_SOFTKNEE)
+    # Scene reference white (Hable + GT7): the curve's 1.0 in nits, decoupled from
+    # display white. 203 = libplacebo's SDR diffuse white.
+    add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "CURVE SETTINGS",
+        min_=50, max_=400, val=203, default=203, uncheck=False, curves=CURVES_REFWHITE)
+    # Highlight neutral (Hable ONLY): pulls the top of the PQ->SDR output toward its
+    # own luma (the measured warm-white-head fix). 0 = pre-feature picture.
+    add("Highlight neutral (head)", SLIDER, H, "hdr.highlightNeutral", "CURVE SETTINGS",
+        min_=0.0, max_=1.0, val=0.9, default=0.9, uncheck=False, curves=CURVES_NEUTRAL)
+    # Chroma compensation exponent (Hable + the normalised curves). GT7 / Reference /
+    # Spline carry their own chroma management and ignore it.
+    add("Chroma desat (exp)", SLIDER, H, "hdr.chromaExp", "CURVE SETTINGS",
+        min_=-1.0, max_=3.5, val=1.35, default=1.35, uncheck=False, curves=CURVES_CHROMA)
+    # NOTE: the old "Hable knee" row is REMOVED. Its cbuffer slot (hableKnee,
+    # cbuffer[14]) is declared but never read by any shader branch — dead since the
+    # mobius-knee removal — so the dial could never do anything.
     # --- GT7 (Tone curve = GT7) -------------------------------------------------
     # Only read when curve 8 is selected. GT7 carries its OWN chroma management, so
     # "Chroma desat (exp)" and "Highlight neutral (head)" do nothing on it — this is
@@ -436,15 +470,28 @@ def build_rows():
     # the side that rotates hue elsewhere), 1 = luminance from that pass with the
     # source's chroma handed back. Measured on the warm-head sample, 0.6 sits at
     # yellow-delta +15 vs Hable's +25 at 400 nits.
-    add("GT7 blend (ch<->UCS)", SLIDER, H, "hdr.gtBlend", "TONE MAPPING",
-        min_=0.0, max_=1.0, val=0.6, default=0.6, uncheck=False)
+    add("GT7 blend (ch<->UCS)", SLIDER, H, "hdr.gtBlend", "CURVE SETTINGS",
+        min_=0.0, max_=1.0, val=0.6, default=0.6, uncheck=False, curves=CURVES_GT7BOTH)
     # The chroma fade window START. The width is fixed at GT's 0.18 on the engine
     # side, so one rail moves the whole window. NOTE the units: this is a ratio of
     # the ceiling's ICtCp I in PQ CODES, so 0.98 is ~201 nits and 1.16 is ~546 nits
     # at a 225-nit reference white — i.e. the window covers ordinary video
     # highlights, not the last 2% of the range the numbers imply.
-    add("GT7 chroma fade from", SLIDER, H, "hdr.gtFade", "TONE MAPPING",
-        min_=0.3, max_=2.0, val=0.98, default=0.98, uncheck=False)
+    add("GT7 chroma fade from", SLIDER, H, "hdr.gtFade", "CURVE SETTINGS",
+        min_=0.3, max_=2.0, val=0.98, default=0.98, uncheck=False, curves=CURVES_GT7BOTH)
+    # GT7 ADAPT only (Tone curve = GT7 Adapt): how far the peak this curve maps FROM
+    # moves from the metadata toward the measured scene peak.
+    #   peak = maxCLL*(1-w) + measuredScenePeak*w
+    # The measurement snaps on a detected scene cut (one frame) and then LOCKS, so
+    # this tracks at cuts and never breathes inside a shot.
+    # The endpoints are both pictures this box has already shown: 0.0 is plain GT7
+    # (metadata alone — the stable HDR10-with-MaxCLL path), 1.0 is full scene
+    # tracking, which is the auto-gain failure that blew the Everest night scenes.
+    # 0.25 keeps a bad estimate to a quarter of the way, and a peak that is too HIGH
+    # only costs a little exposure while one too LOW slams the highlights.
+    add("GT7 adapt to scene peak", SLIDER, H, "hdr.gtAdapt", "CURVE SETTINGS",
+        min_=0.0, max_=1.0, val=0.25, default=0.25, uncheck=False,
+        curves={CURVE_GT7_ADAPT})
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:
@@ -461,24 +508,45 @@ def build_rows():
         min_=0.0, max_=2.0, val=0, default=0, uncheck=False)
     add("Subtitle/OSD brightness", SLIDER, H, "hdr.osdBright", "DISPLAY TARGET", max_=100, val=0, default=0, uncheck=False)
 
-    # ── HDR — experimental tone mappers ──────────────────────────────────────
-    # A SEPARATE axis from "Tone curve" above, not a replacement for it. "Off"
-    # leaves the shipped PQ/HLG->SDR converters bit-identical, so the existing
-    # picture and the existing grade stay exactly as they are and the new curves
-    # can be A/B'd against them on a calibrated display — which is the only way
-    # to judge a tone curve, and the reason this is a section of its own rather
-    # than another entry in the Tone curve list.
-    #
-    # These are ports of libplacebo's tone mapping (src/tone_mapping.c), built on
-    # the CPU into a 1D table per scene from the same statistics the Zion grade
-    # already extracts. Option order IS the engine value: 0 = off, 1 = spline.
-    add("Mapper", CYCLE, H, "hdr.expTm", "EXPERIMENTAL TONE MAPPERS",
-        ["Off (existing)", "Spline"], 0, uncheck=False)
-    # pl_tone_map_spline's "Contrast": higher is steeper (closer to clip),
-    # preserving midtones at the cost of shadow and highlight detail. libplacebo
-    # range and default, 0.00 .. 1.50.
-    add("Contrast", SLIDER, H, "hdr.tmContrast", "EXPERIMENTAL TONE MAPPERS",
-        max_=1.50, val=0.50, default=0.50, uncheck=False)
+    # ── Spline (experimental) tone-curve parameter ───────────────────────────
+    # The spline is now a first-class "Tone curve" option (value 9), mutually
+    # exclusive with the named curves — no separate on/off. This is its one real
+    # dial: pl_tone_map_spline's "Contrast" (higher = steeper, closer to clip,
+    # preserving midtones at the cost of shadow/highlight detail). libplacebo
+    # range/default 0.00..1.50. Only meaningful when Tone curve = Spline.
+    add("Spline contrast", SLIDER, H, "hdr.tmContrast", "CURVE SETTINGS",
+        max_=1.50, val=0.50, default=0.50, uncheck=False, curves={CURVE_SPLINE})
+    # LITMUS dial for the spline's black floor. The spline places its knee/pivot from
+    # the SCENE AVERAGE; a bright average lifts the whole shadow band (high black
+    # floor) and "Contrast" does not move it. This scales that average: 1.0 =
+    # libplacebo as-is, drag DOWN to drop the pivot and deepen blacks. If lowering it
+    # visibly drops the floor, the pivot is confirmed as the culprit and it becomes
+    # the actuator the shadow model later drives.
+    add("Spline shadow pivot", SLIDER, H, "hdr.tmPivot", "CURVE SETTINGS",
+        min_=0.0, max_=1.0, val=1.0, default=1.0, uncheck=False, curves={CURVE_SPLINE})
+
+    # ── POST-FX — post-render shaders (engine injection, not Settings_t) ──────
+    # These run as MPCVR post-scale custom shaders: AFTER the tone-map + grade, on
+    # the final SDR gamma image, before subtitles/dither — so they behave the same
+    # on SDR, HDR10 and Dolby Vision. Strength is baked into the shader source, so
+    # moving a dial regenerates + re-injects it (the engine dedups unchanged values).
+    # Adaptive Sharpen (bacondither): edge-adaptive, tanh-limited against local
+    # min/max, so it adds detail without ringing. 0.3..1.5; 1.0 is a strong default.
+    add("Adaptive sharpen", TOGGLE, H, "postfx.sharpen", "POST-FX")
+    add("Sharpen strength", SLIDER, H, "postfx.sharpenStr", "POST-FX",
+        min_=0.3, max_=1.5, val=1.0, default=1.0, uncheck=False)
+    # Deband (SmartDeband): flatten gradient banding the 10->8-bit tone-map creates,
+    # then dither it with grain. Threshold is the cut-off (higher = stronger but eats
+    # detail); Grain adds the covering noise (0 = none, pairs with the final dither).
+    add("Deband", TOGGLE, H, "postfx.deband", "POST-FX")
+    add("Deband threshold", SLIDER, H, "postfx.debandThresh", "POST-FX",
+        min_=0, max_=256, val=32, default=32, uncheck=False)
+    add("Deband range", SLIDER, H, "postfx.debandRange", "POST-FX",
+        min_=1, max_=64, val=16, default=16, uncheck=False)
+    add("Deband iterations", SLIDER, H, "postfx.debandIter", "POST-FX",
+        min_=1, max_=4, val=1, default=1, uncheck=False)
+    add("Deband grain", SLIDER, H, "postfx.debandGrain", "POST-FX",
+        min_=0, max_=128, val=24, default=24, uncheck=False)
 
     # Defaults below are Settings_t::SetDefault() (IVideoRenderer.h:221), NOT
     # invented here: the shell populates its rows by PULLING the renderer at
@@ -710,6 +778,22 @@ class S3ShellPanel(QWidget):
         if r.key in (_LUT_PATH_KEY, _LUT_MODE_KEY):
             self._push_lut()
             return
+        # Audio track is imperative (s3_cmd "track"), not a settings key — the
+        # option index IS the audio-relative track index the engine expects.
+        if r.key == "pb.audioTrack":
+            try:
+                self.engine.select_audio_track(int(r.opt))
+                log(f"ui-corr: apply {r.key} -> track {r.opt}")
+            except (TypeError, ValueError):
+                pass
+            return
+        # Audio mode likewise: only sent on a real user click (options are
+        # ["Bitstream","PCM"] → engine 1/0). Kept out of KEY_MAP so push_all never
+        # re-sends it and re-triggers the mode→re-open→gen→push feedback loop.
+        if r.key == "pb.hdAudio":
+            self.engine.set_audio_mode(1 if int(r.opt) == 0 else 0)
+            log(f"ui-corr: apply {r.key} -> mode {1 if int(r.opt) == 0 else 0}")
+            return
         mp = KEY_MAP.get(r.key)
         if not mp:
             return
@@ -723,6 +807,41 @@ class S3ShellPanel(QWidget):
             self.engine.apply_settings({grp: {name: val}})
         except Exception:
             log_exc(f"apply_engine {r.key}")
+
+    def _row(self, key):
+        for r in self.rows:
+            if r.key == key:
+                return r
+        return None
+
+    def set_audio_state(self, tracks, current_i, mode):
+        """Refresh the PLAYBACK audio rotate rows from the engine's audio block.
+        Sets options + current WITHOUT pushing to the engine (no feedback loop) —
+        the engine is the source of truth for which track is active and the mode."""
+        at = self._row("pb.audioTrack")
+        if at is not None and tracks:
+            import re
+            def _label(t, i):
+                # LAV's stream name is descriptive, e.g.
+                #   "A: Deutsch TrueHD Atmos 7.1 NIMA4K [ger] (truehd atmos, 48000 Hz, 7.1, s24) [default]"
+                # Strip the pin prefix, the "(format)" parenthetical and the "[lang]/
+                # [default]" tags to get a readable "Deutsch TrueHD Atmos 7.1".
+                nm = (t.get("name") or "").strip()
+                if nm:
+                    s = re.sub(r'^[A-Za-z]:\s*', '', nm)   # "A: " / "S: " / "V: "
+                    s = re.sub(r'\([^)]*\)', '', s)         # drop "(truehd atmos, 48000 Hz, …)"
+                    s = re.sub(r'\[[^\]]*\]', '', s)        # drop "[ger]" "[default]"
+                    s = " ".join(s.split()).strip()
+                    if s:
+                        return s
+                lang = (t.get("lang") or "").strip()        # fallback if name is empty
+                return lang or f"Track {i + 1}"
+            at.options = [_label(t, i) for i, t in enumerate(tracks)]
+            at.opt = max(0, min(int(current_i), len(at.options) - 1))
+        hd = self._row("pb.hdAudio")
+        if hd is not None:
+            hd.opt = 0 if int(mode) == 1 else 1     # options ["Bitstream", "PCM"]
+        self.update()   # repaint the custom-drawn rail
 
     def push_all(self):
         """Push every mapped INI value to the engine once (engine startup)."""
@@ -745,13 +864,30 @@ class S3ShellPanel(QWidget):
         self._push_lut()
 
     # ------------------------------------------------------------ layout
+    def _active_curve(self):
+        """The engine value of the currently selected Tone curve (or None)."""
+        row = self._row("hdr.toneMapCurve")
+        if row is None:
+            return None
+        table = VALUE_MAP.get(row.key)
+        if table and 0 <= row.opt < len(table):
+            return table[row.opt]
+        return row.opt
+
     def _rebuild(self):
+        active = self._active_curve()
         rows = [r for r in self.rows if r.group == self.group]
         self._layout = []
         y = LIST_TOP + 60
         prev = None
         skip = False
         for r in rows:
+            # Curve-conditional rows: a dial that only matters for some curves
+            # (highlight-neutral = Hable-only, soft-knee = Hable+GT7, …) hides
+            # itself otherwise. Checked BEFORE the section header so a section
+            # whose rows are all hidden emits no header.
+            if r.curves is not None and active not in r.curves:
+                continue
             # A section header is emitted only for rows that HAVE a section
             # (shell: `r->section && wcscmp(...)` — "Enable ML grade" has none).
             if r.section is not None and r.section != prev:
@@ -941,6 +1077,10 @@ class S3ShellPanel(QWidget):
         elif r.type == CYCLE:
             r.opt = (r.opt + 1) % len(r.options); self._set(r)
             log(f"cycle {r.key} -> {r.opt}")
+            # Changing the tone curve changes which dials are relevant — re-lay
+            # out so the CURVE SETTINGS rows show/hide immediately.
+            if r.key == "hdr.toneMapCurve":
+                self._rebuild()
         elif r.type == FILE:
             self._pick_lut_file(r)
         elif r.type == ACTION:

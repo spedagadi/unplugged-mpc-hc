@@ -68,6 +68,8 @@ public:
     struct TrackInfo {
         TrackKind kind = TrackKind::Video;
         std::wstring name;
+        std::wstring lang;    // human language from the stream LCID ("" if none)
+        std::wstring codec;   // friendly codec ("E-AC-3", "TrueHD", …) from the subtype
         bool active = false;
     };
 
@@ -171,7 +173,13 @@ public:
         float hableKnee = 0.0f;
     // Soft-plus pre-compressor on the Hable path. knee <= 0 = off (identical to
     // before it existed); knee/width are display-relative (1.0 = display white).
-    float softKnee      = 0.60f;
+    // Soft-knee pre-compressor. The LOW knee (0.21) is deliberate and is the default
+    // for all content: ultra-bright DV/HDR masters (e.g. Furiosa) need compression to
+    // start early or the sky/cloud band clips and loses clarity. It is safe at a low
+    // knee because the compressor is detail-preserving (it compresses a local base
+    // and restores the per-pixel residual), so mid-tone texture no longer collapses
+    // into 8-bit "oil-painting" patches the way the old pointwise form did at ratio>1.
+    float softKnee      = 0.21f;
     float softKneeRatio = 2.48f;
     float softKneeWidth = 0.42f;
     // The Hable curve's 1.0 in nits, decoupled from display white. 203 = libplacebo's
@@ -185,12 +193,16 @@ public:
     //   with chroma from the original colour. The hue dial.
     //   gt7Fade*: the chroma fade window, in units of the ceiling's ICtCp I (PQ
     //   codes, so the window sits far lower in nits than the numbers suggest).
-    // Only read when curve 8 is selected; softKnee* is reused as GT7's pre-fit.
+    // Read when curve 8 (GT7) or 10 (GT7 Adapt) is selected; softKnee* is reused as
+    // GT7's pre-fit. gt7Adapt is Adapt's only extra input: how much of the peak the
+    // curve maps FROM comes from the measured scene peak instead of static metadata.
+    // 0 = identical to plain GT7, 1 = scene peak alone. See TONE_CURVE_GT7_ADAPT.
     float gt7Blend     = 0.6f;
     float gt7FadeStart = 0.98f;
     float gt7FadeEnd   = 1.16f;
+    float gt7Adapt     = 0.25f;
         int  osdBrightness = 0;
-        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7
+        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
         // Experimental tone mapping (libplacebo port). A separate axis from the
         // shipped tone mapping: 0 leaves every existing curve untouched, which is
@@ -200,6 +212,10 @@ public:
         // pl_tone_map_spline "Contrast": higher is steeper (closer to clip).
         // 0.00 .. 1.50, default 0.50.
         float toneLutContrast = 0.50f;
+        // Spline shadow-pivot scale (litmus dial for the spline's black floor):
+        // scales the scene average that drives the spline's knee/pivot. 1.0 =
+        // libplacebo as-is; lower = deeper blacks. 0.00 .. 1.00.
+        float toneLutPivotScale = 1.0f;
     };
 
     struct OutSettings {
@@ -227,6 +243,20 @@ public:
         bool reinitDisplay = false;
         bool showStats = false;
         bool trayIcon = true;
+    };
+
+    // Post-render effects delivered as MPCVR post-scale custom shaders (see
+    // PostFxShaders.h). NOT part of Settings_t — they reach the renderer through
+    // IExFilterConfig, so this crosses no binary boundary with the .ax. Defaults
+    // are conservative for film (the shader authors' values were game-tuned).
+    struct PostFxState {
+        bool  sharpenEnabled   = false;
+        float sharpenStrength  = 1.0f;   // Adaptive Sharpen curve_height, 0.3..1.5
+        bool  debandEnabled    = false;
+        float debandThreshold  = 32.0f;  // cut-off; higher = stronger, eats detail
+        float debandRange      = 16.0f;  // initial radius (px), grows per iteration
+        int   debandIterations = 1;      // 1..4 (>4 useless)
+        float debandGrain      = 24.0f;  // dither added over residual bands
     };
 
     using EventCallback = std::function<void(std::string_view eventName, const Snapshot&)>;
@@ -312,8 +342,24 @@ public:
     HdrSettings pendingHdr_{};
     MlSettings  pendingMl_{};
     OutSettings pendingOut_{};
-    bool hasHdr_ = false, hasMl_ = false, hasOut_ = false;
+    PostFxState pendingPostFx_{};
+    bool hasHdr_ = false, hasMl_ = false, hasOut_ = false, hasPostFx_ = false;
     void ApplyPendingSettings();
+
+    // Cached audio status for the UI: a `,"audio":{"mode":N,"tracks":[…]}` JSON
+    // fragment, rebuilt on graph-safe threads (end of BuildGraph, after a track
+    // select) — never read from the poll worker, which must not touch the graph.
+    std::string m_audioJson;
+    int m_audioTrackCount = 0;   // audio tracks in m_audioJson; 0 → retry on the live tick
+    void RebuildAudioJson();
+
+    // Inject (or clear+re-inject) the post-scale post-fx shaders through
+    // IExFilterConfig. Idempotent: it re-injects only when the generated source
+    // changed or the renderer instance is new (graphGen_ moved), so an unrelated
+    // settings push or a live tick does not trigger a recompile.
+    void ApplyPostFx();
+    std::string m_lastSharpenSrc, m_lastDebandSrc;   // dedup cache
+    unsigned    m_postFxGraphGen = 0xFFFFFFFF;        // graph generation last injected on
     // Write the frame the renderer is currently producing to a 32-bit BMP.
     // Goes through the real pipeline, so an A/B of two settings is a byte
     // comparison rather than a memory of what the picture looked like.
@@ -566,6 +612,6 @@ private:
     std::atomic<bool>     m_liveReady{ false };   // graph exists — safe to touch the renderer
     std::thread           m_liveThread;
     LogSink logSink_;
-    void Log(const char* fmt, ...);          // routes to logSink_
+    void Log(const char* fmt, ...) const;    // routes to logSink_
     mutable Snapshot snapshot_;
 };
