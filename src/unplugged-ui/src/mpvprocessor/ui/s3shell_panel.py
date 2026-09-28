@@ -234,6 +234,7 @@ KEY_MAP = {
     "hdr.gtFade":         ("hdr", "gtFade"),
     "hdr.gtAdapt":        ("hdr", "gtAdapt"),
     "hdr.gtAlpha":        ("hdr", "gtAlpha"),
+    "hdr.gtDesat":        ("hdr", "gtDesat"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -545,6 +546,22 @@ def build_rows():
     # sooner. 0.25 is exactly today's picture.
     add("GT7 shoulder reach (low = more headroom)", SLIDER, H, "hdr.gtAlpha", "CURVE SETTINGS",
         min_=0.02, max_=0.90, val=0.25, default=0.25, uncheck=False,
+        curves=CURVES_GT7BOTH)
+    # GT7 DESATURATION — chroma follows the compression, not the gamut.
+    #
+    # A cobalt HDR sky is comfortably INSIDE the BT.709 triangle, so gamut mapping has
+    # no jurisdiction over it and nothing overflowed to fix. The problem is different:
+    # SDR at 85 nits cannot carry that much chroma at that luminance without it reading
+    # garish. What has to give is saturation, in proportion to how hard the tone curve
+    # compressed the luminance — which is what madVR does and we did not.
+    #
+    # This passes a fraction of the shoulder's own compression through to chroma by
+    # moving each pixel toward its neutral point, so HUE is preserved and only
+    # saturation is removed. Below the shoulder's knee the compression is 1, so
+    # midtones are untouched — it cannot become a global wash.
+    # 0 = off (today's picture). Raise it until the sky sits where you want it.
+    add("GT7 desaturation", SLIDER, H, "hdr.gtDesat", "CURVE SETTINGS",
+        min_=0.0, max_=1.0, val=0.0, default=0.0, uncheck=False,
         curves=CURVES_GT7BOTH)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards

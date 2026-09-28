@@ -222,6 +222,11 @@ public:
     // highlights flattening, which is the coupling that has blocked the luminosity
     // work. 0.25 = Polyphony's value = today's picture exactly.
     float gt7Alpha     = 0.25f;
+    // Luminance-linked desaturation: how much of the shoulder's luminance compression
+    // is passed through to chroma. A saturated HDR sky is inside the BT.709 triangle
+    // and still looks garish at SDR luminance — gamut mapping can't touch it, because
+    // nothing overflowed. 0 = off = the previous picture.
+    float gt7Desat     = 0.0f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
