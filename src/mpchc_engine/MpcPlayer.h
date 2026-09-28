@@ -189,7 +189,11 @@ public:
     float softKneeWidth = 0.42f;
     // The Hable curve's 1.0 in nits, decoupled from display white. 203 = libplacebo's
     // SDR diffuse white (clouds are content below that), 0 = sdrNits (legacy).
-    float refWhiteNits  = 203.0f;
+    // See the rail's "Scene ref white" row: in the adapted GT7 form only
+    // 2.2*refWhite/sdrNits matters (maxCLL cancels), so this is the shoulder's
+    // workload, not a per-title brightness. 105 at an 85-nit target = 2.7x,
+    // validated on Everest (991/220) and Furiosa (909/140). Rule: ~1.24 * sdrNits.
+    float refWhiteNits  = 105.0f;
     float highlightNeutral = 0.9f;   // 0..1: PQ->SDR head pulls toward neutral
     float chromaExp = 1.35f;         // STAGE 1 delivery-only: value carried, not applied
     // GT7 operator (toneMapCurve 8). Defaults are Polyphony's own constants; the

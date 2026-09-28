@@ -457,10 +457,23 @@ def build_rows():
         min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False, curves=CURVES_SOFTKNEE)
     add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "CURVE SETTINGS",
         min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False, curves=CURVES_SOFTKNEE)
-    # Scene reference white (Hable + GT7): the curve's 1.0 in nits, decoupled from
-    # display white. 203 = libplacebo's SDR diffuse white.
+    # Scene reference white (Hable + GT7 + GT7 Adapt): the input-gain numerator.
+    #
+    # Default is 105, not libplacebo's 203, and the reason is measured rather than
+    # inherited. In the adapted GT7 form only ONE quantity matters:
+    #     peak compression = 2.2 * refWhite / sdrNits
+    # (maxCLL cancels, because the gain divides by it), so refWhite is not a
+    # per-title brightness knob -- it sets how hard the shoulder has to work, for
+    # every title. 105 at an 85-nit target is 2.7x, and that single value was
+    # validated on two of the most differently-distributed HDR masters available:
+    # Everest (991 maxCLL / 220 maxFALL, ratio 4.5) and Furiosa (909 / 140, ratio
+    # 6.5), both good, both with cloud texture intact.
+    #
+    # So the rule is refWhite ~= 1.24 * sdrNits -- 105 at 85, 248 at 200. The
+    # libplacebo 203 is the value for a display with headroom; at 85 nits it asks
+    # the shoulder for 5.2x and flattens the top of the range.
     add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "CURVE SETTINGS",
-        min_=50, max_=400, val=203, default=203, uncheck=False, curves=CURVES_REFWHITE)
+        min_=50, max_=400, val=105, default=105, uncheck=False, curves=CURVES_REFWHITE)
     # Highlight neutral (Hable ONLY): pulls the top of the PQ->SDR output toward its
     # own luma (the measured warm-white-head fix). 0 = pre-feature picture.
     add("Highlight neutral (head)", SLIDER, H, "hdr.highlightNeutral", "CURVE SETTINGS",
