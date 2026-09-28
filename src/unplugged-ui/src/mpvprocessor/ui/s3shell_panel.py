@@ -233,6 +233,7 @@ KEY_MAP = {
     "hdr.gtBlend":        ("hdr", "gtBlend"),
     "hdr.gtFade":         ("hdr", "gtFade"),
     "hdr.gtAdapt":        ("hdr", "gtAdapt"),
+    "hdr.gtAlpha":        ("hdr", "gtAlpha"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -529,6 +530,22 @@ def build_rows():
     add("GT7 adapt to scene peak", SLIDER, H, "hdr.gtAdapt", "CURVE SETTINGS",
         min_=0.0, max_=1.0, val=0.25, default=0.25, uncheck=False,
         curves={CURVE_GT7_ADAPT})
+    # GT7 SHOULDER REACH — the control that unblocks brightness.
+    #
+    # GT7's shoulder lands on the display ceiling at a fixed multiple of it and
+    # destroys everything above that point: 1.21x at 0.50, 1.47x at 0.25 (Polyphony's
+    # value), 1.87x at 0.10. "Scene ref white" puts the content peak at
+    # 2.2*refWhite/sdrNits times the ceiling — so raising refWhite to brighten the
+    # picture walks content straight past that point and flattens the highlights.
+    # That is why brightening has kept costing clouds all day: the two controls were
+    # the same decision.
+    #
+    # LOWER = longer shoulder = more headroom before the clamp, so refWhite can rise
+    # with the highlights intact. Raise it and the curve gets punchier but clips
+    # sooner. 0.25 is exactly today's picture.
+    add("GT7 shoulder reach (low = more headroom)", SLIDER, H, "hdr.gtAlpha", "CURVE SETTINGS",
+        min_=0.02, max_=0.90, val=0.25, default=0.25, uncheck=False,
+        curves=CURVES_GT7BOTH)
     # SDR output gamut. BT.709 is the standard target. BT.2020 keeps the source's
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:

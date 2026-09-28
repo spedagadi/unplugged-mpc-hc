@@ -1532,6 +1532,7 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrGt7FadeStart = h.gt7FadeStart;
     s.fHdrGt7FadeEnd   = h.gt7FadeEnd;
     s.fHdrGt7Adapt     = h.gt7Adapt;
+    s.fHdrGt7Alpha     = h.gt7Alpha;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     // The experimental spline is now a first-class Tone-curve value (9), mutually
@@ -1565,6 +1566,7 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.gt7FadeStart = s.fHdrGt7FadeStart;
     h.gt7FadeEnd   = s.fHdrGt7FadeEnd;
     h.gt7Adapt     = s.fHdrGt7Adapt;
+    h.gt7Alpha     = s.fHdrGt7Alpha;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
@@ -2486,7 +2488,7 @@ std::string MpcPlayer::GetUiStatusJson() const
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
-        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f},"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f,\"gtAlpha\":%.2f},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"shPed\":%.3f,\"tgtMid\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
@@ -2509,7 +2511,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // One specifier added per field, in this order — a mismatch corrupts the
         // whole status JSON and the panel renders blank. gtFade reports the window's
         // START (the engine derives End = Start + 0.18, so one rail moves both).
-        hdr.gt7Blend, hdr.gt7FadeStart, hdr.gt7Adapt,
+        hdr.gt7Blend, hdr.gt7FadeStart, hdr.gt7Adapt, hdr.gt7Alpha,
         ml.enable ? 1 : 0, ml.mode,
         // One specifier per field, in this order — a mismatch corrupts the whole
         // status JSON and the panel renders blank.
@@ -2622,6 +2624,10 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             // GT7 Adapt's scene-peak weight. 0 is a LEGAL value (it makes curve 10
             // identical to curve 8), so clamp — never treat 0 as "unset".
             else if (name == "gtAdapt")        hdr.gt7Adapt = std::clamp((float)vd(v), 0.0f, 1.0f);
+            // Shoulder reach. Clamped away from 1.0 (k divides by alpha-1) and from 0
+            // (the shader reads 0 as "unset" and reverts to Polyphony's 0.25, so a
+            // literal 0 would mean the OPPOSITE of the minimum the slider implies).
+            else if (name == "gtAlpha")        hdr.gt7Alpha = std::clamp((float)vd(v), 0.02f, 0.90f);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);

@@ -216,6 +216,12 @@ public:
     float gt7FadeStart = 0.98f;
     float gt7FadeEnd   = 1.16f;
     float gt7Adapt     = 0.25f;
+    // GT7 shoulder REACH (the curve's alpha). Not a shape knob — it sets how far the
+    // shoulder gets before it lands on the ceiling and clamps (1.47x at 0.25, 1.87x at
+    // 0.10). Lower it and "Scene ref white" can buy real exposure without the
+    // highlights flattening, which is the coupling that has blocked the luminosity
+    // work. 0.25 = Polyphony's value = today's picture exactly.
+    float gt7Alpha     = 0.25f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
