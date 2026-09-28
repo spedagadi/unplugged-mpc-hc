@@ -189,6 +189,7 @@ KEY_MAP = {
     "zion.highlight": ("ml", "highlight"),
     "zion.highlightRolloffCtrl": ("ml", "hiRoll"),
     "zion.gammaTopUp": ("ml", "gammaTopUp"),
+    "zion.shPedestal": ("ml", "shPed"),
     "zion.chN": ("ml", "chN"),
     "zion.chF": ("ml", "chF"),
     "zion.knee": ("ml", "knee"),
@@ -364,6 +365,16 @@ def build_rows():
     # keep it a midtone move — the highlights do not move.
     add("Gamma top-up", SLIDER, Z, "zion.gammaTopUp", "TONE CURVE",
         min_=-0.50, max_=0.50, val=0, default=0, gate=1)
+    # Shadow PEDESTAL — the offset the shadow toe cannot be. The toe's lift is
+    # proportional to the pixel's own value, so it is a GAIN: measured, crushFrac was
+    # identical (0.454 -> 0.454) before and after the whole grade while mean rose 34%.
+    # pow(0, g) = 0, so no amount of gamma or toe can raise a shadow that has already
+    # reached code 0-4. This adds a constant instead, tapered to zero at the shadow
+    # knee so midtones and highlights are untouched, and gated to the content rect so
+    # the letterbox matte stays black. Start at 0 (off = today's picture) and bring it
+    # up only as far as the crushed detail needs.
+    add("Shadow pedestal", SLIDER, Z, "zion.shPedestal", "TONE CURVE",
+        min_=0.0, max_=0.08, val=0, default=0, gate=1)
     add("Highlight", SLIDER, Z, "zion.highlight", "TONE CURVE", min_=-0.3, max_=0.4, val=0, gate=1)
     add("Highlight shoulder", SLIDER, Z, "zion.highlightRolloffCtrl", "TONE CURVE",
         min_=-0.2, max_=0.2, val=0, gate=1)

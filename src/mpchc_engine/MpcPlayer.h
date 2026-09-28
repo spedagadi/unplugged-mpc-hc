@@ -91,6 +91,11 @@ public:
         float shadowDehaze = 0.0f;       // 0..1 scale-down of the model shadow-toe lift (lifted-black haze control)
         float highlightRolloffCtrl = 0.0f; // signed offset on the model's rolloff in Auto (rim highlight softening); 0 = model as-is
         float gammaTopUp = 0.0f;           // signed offset ADDED to the model's gamma in Auto (midtone lift); 0 = model as-is
+    // Shadow PEDESTAL: a true offset in the toe, independent of the pixel's value.
+    // The shadow toe is a GAIN (lift proportional to x), so it cannot raise a
+    // crushed shadow at all — measured, crushFrac was identical before and after the
+    // whole grade. This is the actuator for that; 0 = off = the previous picture.
+    float shadowPedestal = 0.0f;
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;
