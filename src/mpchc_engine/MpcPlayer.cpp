@@ -1535,6 +1535,7 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrGt7Alpha     = h.gt7Alpha;
     s.fHdrGt7Desat     = h.gt7Desat;
     s.fGamutCap        = h.gamutCap;
+    s.fHdrGt7Dbg       = h.gt7Dbg;
     s.iHdrOsdBrightness = h.osdBrightness;
     s.iHdrLocalToneMappingType = h.toneMapCurve;
     // The experimental spline is now a first-class Tone-curve value (9), mutually
@@ -1571,6 +1572,7 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.gt7Alpha     = s.fHdrGt7Alpha;
     h.gt7Desat     = s.fHdrGt7Desat;
     h.gamutCap     = s.fGamutCap;
+    h.gt7Dbg       = s.fHdrGt7Dbg;
     h.osdBrightness = s.iHdrOsdBrightness;
     h.toneMapCurve = s.iHdrLocalToneMappingType;
     h.hdrPassthroughRaw = s.bHDRPassthroughRaw;
@@ -2492,7 +2494,7 @@ std::string MpcPlayer::GetUiStatusJson() const
     snprintf(b2, sizeof(b2),
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
-        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f,\"gtAlpha\":%.2f,\"gtDesat\":%.2f,\"gamutCap\":%.2f},"
+        "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f,\"gtAlpha\":%.2f,\"gtDesat\":%.2f,\"gamutCap\":%.2f,\"gt7Dbg\":%d},"
         "\"ml\":{\"enable\":%d,\"mode\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"shPed\":%.3f,\"tgtMid\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
@@ -2516,6 +2518,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // whole status JSON and the panel renders blank. gtFade reports the window's
         // START (the engine derives End = Start + 0.18, so one rail moves both).
         hdr.gt7Blend, hdr.gt7FadeStart, hdr.gt7Adapt, hdr.gt7Alpha, hdr.gt7Desat, hdr.gamutCap,
+        (int)hdr.gt7Dbg,
         ml.enable ? 1 : 0, ml.mode,
         // One specifier per field, in this order — a mismatch corrupts the whole
         // status JSON and the panel renders blank.
@@ -2636,6 +2639,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "gtDesat")        hdr.gt7Desat = std::clamp((float)vd(v), 0.0f, 1.0f);
             // Capacity target: 1.0 = no mapping inside the gamut, lower compresses.
             else if (name == "gamutCap")       hdr.gamutCap = std::clamp((float)vd(v), 0.20f, 1.0f);
+            else if (name == "gt7Dbg")         hdr.gt7Dbg = std::clamp((float)vd(v), 0.0f, 4.0f);
             else if (name == "curve")      hdr.toneMapCurve = (int)vd(v);
             else if (name == "toggle")     hdr.toggleDisplay = (int)vd(v);
             else if (name == "osdBrt")     hdr.osdBrightness = (int)vd(v);

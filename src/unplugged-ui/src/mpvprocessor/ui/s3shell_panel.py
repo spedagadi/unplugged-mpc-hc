@@ -236,6 +236,7 @@ KEY_MAP = {
     "hdr.gtAlpha":        ("hdr", "gtAlpha"),
     "hdr.gtDesat":        ("hdr", "gtDesat"),
     "hdr.gamutCap":       ("hdr", "gamutCap"),
+    "hdr.gt7Dbg":         ("hdr", "gt7Dbg"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -545,6 +546,17 @@ def build_rows():
     # LOWER = longer shoulder = more headroom before the clamp, so refWhite can rise
     # with the highlights intact. Raise it and the curve gets punchier but clips
     # sooner. 0.25 is exactly today's picture.
+    # GT7 DEBUG VIEW — diagnostic. Replaces the picture with one internal quantity of
+    # the operator, as greyscale, so a spatial seam shows up as a visible edge instead
+    # of having to be inferred from the finished frame. Set it, look at where the seam
+    # is, set it back to Off.
+    #   chroma scale   the fade's actual output (banding source if it edges)
+    #   fade ratio     position inside the fade window
+    #   knee crossing  BINARY: where the toe hands to the shoulder (hard contour)
+    #   ceiling cross  BINARY: where the pre-clamp value exceeds the ceiling
+    add("GT7 debug view", CYCLE, H, "hdr.gt7Dbg", "CURVE SETTINGS",
+        ["Off", "Chroma scale", "Fade ratio", "Knee crossing", "Ceiling crossing"], 0,
+        uncheck=False, curves=CURVES_GT7BOTH)
     add("GT7 shoulder reach (low = more headroom)", SLIDER, H, "hdr.gtAlpha", "CURVE SETTINGS",
         min_=0.02, max_=0.90, val=0.25, default=0.25, uncheck=False,
         curves=CURVES_GT7BOTH)

@@ -234,6 +234,10 @@ public:
     // distance to the boundary instead of on it, so pale colours are untouched at any
     // setting and only edge-crowded ones compress. 1.0 = no mapping; ~0.55 = madVR-ish.
     float gamutCap     = 1.0f;
+    // GT7 debug view (diagnostic): 0 off, 1 chromaScale, 2 fade ratio, 3 knee
+    // crossing, 4 ceiling crossing. Renders that quantity as greyscale so a spatial
+    // seam in the operator is visible directly.
+    float gt7Dbg       = 0.0f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
