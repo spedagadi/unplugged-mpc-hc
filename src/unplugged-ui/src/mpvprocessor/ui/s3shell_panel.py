@@ -501,8 +501,12 @@ def build_rows():
     # cut-gated and slew-limited so it moves at scene changes and holds inside a shot.
     # When ON this row's slider is an OVERRIDE and is ignored; when OFF it is the whole
     # story, as it always was. GT7 / GT7 Adapt only — Hable normalises differently.
+    # OFF by default, deliberately. The solver is bounded by the shoulder reach now,
+    # but its input can lock onto a dark opening frame and set a whole title's
+    # exposure from it. Opt in once the anchor is trustworthy; until then the
+    # refWhite dial is the honest tool.
     add("Auto exposure", TOGGLE, H, "hdr.autoRefW", "CURVE SETTINGS",
-        on=True, curves=CURVES_GT7BOTH)
+        on=False, curves=CURVES_GT7BOTH)
     # Where the scene average should land, as a fraction of display white. 0.42 is a
     # conventional bright-scene average for SDR; raise for a brighter house look,
     # lower for a darker one. This is the ONE number that replaces per-title refWhite.
