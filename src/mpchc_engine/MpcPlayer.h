@@ -238,6 +238,11 @@ public:
     // crossing, 4 ceiling crossing. Renders that quantity as greyscale so a spatial
     // seam in the operator is visible directly.
     float gt7Dbg       = 0.0f;
+    // Auto exposure: solve refWhite per scene from the measured average so a dark
+    // indoor master and a bright outdoor one each get the exposure they need, with no
+    // per-title dial. refWhiteNits becomes the override when this is off.
+    bool  autoRefWhite   = true;
+    float refWhiteTarget = 0.42f;   // where the scene average should land, 0..1 of white
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR

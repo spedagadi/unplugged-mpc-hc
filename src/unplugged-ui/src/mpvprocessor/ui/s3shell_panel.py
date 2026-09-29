@@ -237,6 +237,8 @@ KEY_MAP = {
     "hdr.gtDesat":        ("hdr", "gtDesat"),
     "hdr.gamutCap":       ("hdr", "gamutCap"),
     "hdr.gt7Dbg":         ("hdr", "gt7Dbg"),
+    "hdr.autoRefW":       ("hdr", "autoRefW"),
+    "hdr.refWTgt":        ("hdr", "refWTgt"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -491,6 +493,22 @@ def build_rows():
     # the shoulder for 5.2x and flattens the top of the range.
     add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "CURVE SETTINGS",
         min_=50, max_=400, val=105, default=105, uncheck=False, curves=CURVES_REFWHITE)
+    # AUTO EXPOSURE. refWhite was a per-title hand dial: Everest wants ~80, a dark
+    # indoor master ~200, and nothing in the metadata says which (one title's MaxFALL
+    # of 944 on an indoor drama predicted 20 where 200 was right). What separates them
+    # is the measured scene average, so the renderer now solves refWhite from it:
+    #     refWhite = T^2.2 * sdrNits * peak / (2.2 * sceneAvg)
+    # cut-gated and slew-limited so it moves at scene changes and holds inside a shot.
+    # When ON this row's slider is an OVERRIDE and is ignored; when OFF it is the whole
+    # story, as it always was. GT7 / GT7 Adapt only — Hable normalises differently.
+    add("Auto exposure", TOGGLE, H, "hdr.autoRefW", "CURVE SETTINGS",
+        on=True, curves=CURVES_GT7BOTH)
+    # Where the scene average should land, as a fraction of display white. 0.42 is a
+    # conventional bright-scene average for SDR; raise for a brighter house look,
+    # lower for a darker one. This is the ONE number that replaces per-title refWhite.
+    add("Exposure target", SLIDER, H, "hdr.refWTgt", "CURVE SETTINGS",
+        min_=0.20, max_=0.70, val=0.42, default=0.42, uncheck=False,
+        curves=CURVES_GT7BOTH)
     # Highlight neutral (Hable ONLY): pulls the top of the PQ->SDR output toward its
     # own luma (the measured warm-white-head fix). 0 = pre-feature picture.
     add("Highlight neutral (head)", SLIDER, H, "hdr.highlightNeutral", "CURVE SETTINGS",
