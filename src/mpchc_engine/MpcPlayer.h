@@ -227,6 +227,13 @@ public:
     // and still looks garish at SDR luminance — gamut mapping can't touch it, because
     // nothing overflowed. 0 = off = the previous picture.
     float gt7Desat     = 0.0f;
+    // BT.709 gamut MAPPING capacity target. Our sky measured gamut fill 1.00 (red
+    // pinned to zero, i.e. sitting exactly ON the 709 edge) where madVR measured
+    // 0.48-0.60 with red present — a colour with no red is maximally saturated at its
+    // lightness, which is the cobalt. This lands colours at a fraction of their own
+    // distance to the boundary instead of on it, so pale colours are untouched at any
+    // setting and only edge-crowded ones compress. 1.0 = no mapping; ~0.55 = madVR-ish.
+    float gamutCap     = 1.0f;
         int  osdBrightness = 0;
         int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR

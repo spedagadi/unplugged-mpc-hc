@@ -235,6 +235,7 @@ KEY_MAP = {
     "hdr.gtAdapt":        ("hdr", "gtAdapt"),
     "hdr.gtAlpha":        ("hdr", "gtAlpha"),
     "hdr.gtDesat":        ("hdr", "gtDesat"),
+    "hdr.gamutCap":       ("hdr", "gamutCap"),
     "hdr.outputGamut": ("hdr", "gamut"),
     "hdr.osdBright": ("hdr", "osdBrt"),
     "hdr.expTm": ("hdr", "expTm"),
@@ -569,6 +570,23 @@ def build_rows():
     # the conversion shader does not run for SDR input.
     add("Output gamut", CYCLE, H, "hdr.outputGamut", "TONE MAPPING",
         ["BT.709 (standard)", "BT.2020 (wide)"], 0, uncheck=False)
+    # GAMUT CAPACITY — only does anything when Output gamut is BT.709.
+    #
+    # Measured on the Everest sky: we rendered R=0, G=64, B=119 at a gamut fill of
+    # exactly 1.00 — sitting ON the edge of the 709 triangle — while madVR rendered
+    # the same patch at fill 0.48..0.60 with red present at 25..40. A colour with no
+    # red is maximally saturated for its lightness, so that edge position IS the
+    # cobalt. "Inside the gamut" was never the safe state: the edge is inside the
+    # gamut, and a clamp cannot see it because zero is not below zero.
+    #
+    # This lands each colour at a fraction of its OWN distance to the boundary. Pale
+    # colours have a long distance and are untouched at any setting, so this cannot
+    # become a global desaturation; only colours crowded against the edge get pulled
+    # in, proportionally to how crowded they are.
+    #
+    # 1.00 = off (no mapping inside the gamut). ~0.55 is what madVR's sky measures at.
+    add("Gamut capacity (709)", SLIDER, H, "hdr.gamutCap", "TONE MAPPING",
+        min_=0.20, max_=1.00, val=1.00, default=1.00, uncheck=False)
     add("Windows HDR", CYCLE, H, "hdr.toggleDisplay", "DISPLAY TARGET",
         ["Do not change", "On (fullscreen)", "On", "On/off (fullscreen)", "On/off"], 0, uncheck=False)
     add("Static nits (max)", SLIDER, H, "hdr.maxNits", "DISPLAY TARGET", min_=200, max_=10000, val=1000, default=1000, uncheck=False)
