@@ -194,6 +194,7 @@ KEY_MAP = {
     # and ml.shPed parse name remain, at 0, for a future black-point control.
     "zion.tgtMid": ("ml", "tgtMid"),
     "zion.ctl": ("ml", "ctl"),
+    "zion.ctlWhite": ("ml", "ctlWhite"),
     "zion.chN": ("ml", "chN"),
     "zion.chF": ("ml", "chF"),
     "zion.knee": ("ml", "knee"),
@@ -377,6 +378,15 @@ def build_rows():
     #      and the manual top-up stand down, because stacking them would double-act.
     # OFF: today's behaviour exactly.
     add("Band controller", TOGGLE, Z, "zion.ctl", "TONE CURVE", on=False)
+    # HOUSE WHITE — the controller's one taste parameter. Its targets are
+    # scene-referred: target = 1 - exp(-srcNits / W), so a source luminance always
+    # lands in the same place no matter what else is in the frame. A CONSTANT
+    # delivered target would be auto-gain (night into noon); this is not.
+    #   203 = the HDR mastering convention (diffuse white maps to display white)
+    #   ~335 = the cloud-safe taste measured on Everest/Furiosa this week
+    # Lower = brighter house look, higher = more headroom and a darker mid.
+    add("House white (nits)", SLIDER, Z, "zion.ctlWhite", "TONE CURVE",
+        min_=100, max_=400, val=203, default=203, gate=1)
     add("Mode",  CYCLE,  Z, "zion.toneMode", "TONE CURVE", ["Auto", "Manual", "Off"], 0)
     add("Shadow", SLIDER, Z, "zion.shadowToe", "TONE CURVE", max_=0.40, val=0, default=0, gate=2)
     add("Shadow dehaze", SLIDER, Z, "zion.shadowDehaze", "TONE CURVE", max_=1.0, val=0, gate=1)

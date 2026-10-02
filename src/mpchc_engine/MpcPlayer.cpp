@@ -1329,6 +1329,7 @@ void ApplyMlToSettings(const MpcPlayer::MlSettings& m, Settings_t& s)
     s.fMLShadowPedestal = m.shadowPedestal;
     s.fMLTargetMid = m.targetMid;
     s.bMLController = m.controller;
+    s.fCtlWhiteNits = m.ctlWhite;
     s.bMLHighlightEnabled = m.highlightEnabled;
     s.fMLHighlight = m.highlight;
     s.bMLChromaEnabled = m.chromaEnabled;
@@ -1400,6 +1401,7 @@ void ReadMlFromSettings(const Settings_t& s, MpcPlayer::MlSettings& m)
     m.shadowPedestal = s.fMLShadowPedestal;
     m.targetMid = s.fMLTargetMid;
     m.controller = s.bMLController;
+    m.ctlWhite = s.fCtlWhiteNits;
     m.highlightEnabled = s.bMLHighlightEnabled;
     m.highlight = s.fMLHighlight;
     m.chromaEnabled = s.bMLChromaEnabled;
@@ -2501,7 +2503,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         ",\"hdr\":{\"preferDoVi\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"dispNits\":%d,"
         "\"curve\":%d,\"toggle\":%d,\"osdBrt\":%d,\"raw\":%d,\"blackNits\":%.3f,\"gamut\":%d,"
         "\"titlePeak\":%.1f,\"hableKnee\":%.3f,\"softKnee\":%.3f,\"softKneeRatio\":%.3f,\"softKneeWidth\":%.3f,\"refWhite\":%.1f,\"expTm\":%d,\"tmContrast\":%.3f,\"gtBlend\":%.2f,\"gtFade\":%.2f,\"gtAdapt\":%.2f,\"gtAlpha\":%.2f,\"gtDesat\":%.2f,\"gamutCap\":%.2f,\"gt7Dbg\":%d,\"autoRefW\":%d,\"refWTgt\":%.2f},"
-        "\"ml\":{\"enable\":%d,\"mode\":%d,\"ctl\":%d,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
+        "\"ml\":{\"enable\":%d,\"mode\":%d,\"ctl\":%d,\"ctlWhite\":%.1f,\"gamma\":%.3f,\"shadow\":%.3f,\"shDehaze\":%.3f,"
         "\"highlight\":%.3f,\"hiRoll\":%.3f,\"gammaTopUp\":%.3f,\"shPed\":%.3f,\"tgtMid\":%.3f,\"hunt\":%.3f,\"chN\":%.3f,\"chF\":%.3f,"
         "\"knee\":%.3f,\"skin\":%.3f,\"contrastEnable\":%d,\"contrast\":%.3f,"
         "\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
@@ -2525,7 +2527,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // START (the engine derives End = Start + 0.18, so one rail moves both).
         hdr.gt7Blend, hdr.gt7FadeStart, hdr.gt7Adapt, hdr.gt7Alpha, hdr.gt7Desat, hdr.gamutCap,
         (int)hdr.gt7Dbg, (int)(hdr.autoRefWhite ? 1 : 0), hdr.refWhiteTarget,
-        ml.enable ? 1 : 0, ml.mode, (int)(ml.controller ? 1 : 0),
+        ml.enable ? 1 : 0, ml.mode, (int)(ml.controller ? 1 : 0), ml.ctlWhite,
         // One specifier per field, in this order — a mismatch corrupts the whole
         // status JSON and the panel renders blank.
         ml.gamma, ml.shadow, ml.shadowDehaze, ml.highlight, ml.highlightRolloffCtrl, ml.gammaTopUp,
@@ -2669,6 +2671,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "hiRoll")         ml.highlightRolloffCtrl = (float)vd(v);
             else if (name == "gammaTopUp")     ml.gammaTopUp = (float)vd(v);
             else if (name == "ctl")            ml.controller = vb(v);
+            else if (name == "ctlWhite")       ml.ctlWhite = std::clamp((float)vd(v), 100.0f, 400.0f);
             // 0 is the meaningful "off" value, so clamp — never treat it as unset.
             else if (name == "shPed")          ml.shadowPedestal = std::clamp((float)vd(v), 0.0f, 0.08f);
             // RELATIVE mid-tone target. 0 = OFF (manual top-up only), so this clamp

@@ -107,6 +107,9 @@ public:
     // Off = today's stacked models and dials. On = the controller owns those three
     // actuators and the legacy toe/top-up stand down.
     bool  controller = false;
+    // House white for the controller's scene-referred target law: source nits that
+    // approach display white. 203 = mastering convention, ~335 = cloud-safe taste.
+    float ctlWhite   = 203.0f;
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;
