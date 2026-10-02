@@ -102,6 +102,11 @@ public:
     // control sets how hard the shoulder works, i.e. highlight safety).
     // 0 = off: the manual gammaTopUp behaves exactly as before.
     float targetMid = 0.0f;
+    // Joint band controller: solves pedestal/gamma/rolloff TOGETHER so the delivered
+    // p25/p50/p95 land on house targets, inverting the grade's closed-form chain.
+    // Off = today's stacked models and dials. On = the controller owns those three
+    // actuators and the legacy toe/top-up stand down.
+    bool  controller = false;
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
         bool  chromaEnabled = true;

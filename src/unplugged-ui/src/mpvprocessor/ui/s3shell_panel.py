@@ -193,6 +193,7 @@ KEY_MAP = {
     # out to be letterbox geometry, and ungated it greys the matte. The renderer term
     # and ml.shPed parse name remain, at 0, for a future black-point control.
     "zion.tgtMid": ("ml", "tgtMid"),
+    "zion.ctl": ("ml", "ctl"),
     "zion.chN": ("ml", "chN"),
     "zion.chF": ("ml", "chF"),
     "zion.knee": ("ml", "knee"),
@@ -362,6 +363,20 @@ def build_rows():
     add("Track", CYCLE, P, "pb.subTrack", "SUBTITLES", ["Off"], 0, uncheck=False)
 
     add("Enable ML grade", TOGGLE, Z, "zion.enabled", on=True)
+    # JOINT BAND CONTROLLER. Solves the three grade actuators (shadow pedestal, gamma,
+    # highlight rolloff) TOGETHER so the delivered p25/p50/p95 land on house targets,
+    # inverting the grade's own closed-form chain per frame.
+    #
+    # This replaces stacking three independently-trained corrections: in the shader
+    # they compose sequentially (toe, then gamma, then rolloff) while each model was
+    # trained as if it acted alone on the source, so a power applied after an additive
+    # lift rescales that lift and neither knows. The solver accounts for the
+    # composition exactly.
+    #
+    # ON:  the controller owns pedestal/gamma/rolloff. The legacy multiplicative toe
+    #      and the manual top-up stand down, because stacking them would double-act.
+    # OFF: today's behaviour exactly.
+    add("Band controller", TOGGLE, Z, "zion.ctl", "TONE CURVE", on=False)
     add("Mode",  CYCLE,  Z, "zion.toneMode", "TONE CURVE", ["Auto", "Manual", "Off"], 0)
     add("Shadow", SLIDER, Z, "zion.shadowToe", "TONE CURVE", max_=0.40, val=0, default=0, gate=2)
     add("Shadow dehaze", SLIDER, Z, "zion.shadowDehaze", "TONE CURVE", max_=1.0, val=0, gate=1)
