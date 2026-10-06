@@ -721,26 +721,26 @@ class MainWindow(QMainWindow):
                                   has_meta: bool = True) -> None:
         """Per-source tone-curve DEFAULT (the user can still change it on the fly).
 
-        The decision is about ONE quantity: does this source declare its content peak?
+        DV (any profile, file or player) -> REFERENCE, i.e. Hable. Validated by the user
+        across DV content: no other curve maps highlights to the target sdr nits as
+        well. On PLAYER-mapped DV over HDMI the renderer's fingerprint makes Reference
+        transfer instead of grade (one scalar, sdrNits/identityPeak), so the same
+        default is right for both DV flavours — Hable where the signal is source-
+        referred, identity where it is already display-referred.
 
-        MaxCLL present -> GT7. Its adapted gain is sized by that metadata and it is
-        what has been tuned and watched (Everest 991/220, Furiosa 909/140). Unchanged.
+        HDR10, with or without static metadata -> GT7 ADAPT. With metadata its adapted
+        gain is sized by MaxCLL (Everest 991/220, Furiosa 909/140); without — the case
+        where the card reads nothing — the peak it maps FROM falls to the guarded
+        measured scene peak, which is the only peak available there.
 
-        HDR with NO metadata (the Oppo/UB820-over-HDMI case: DV keeps its mastering
-        in the RPU and the card reads nothing) -> GT7 ADAPT. Same operator, same
-        shoulder and chroma management, but the peak it maps FROM is nudged toward
-        the measured scene peak, which is the only peak available here. This is the
-        case that previously fell to the spline.
-
-        DV from the FILE path -> SPLINE, unchanged: the RPU is being consumed there,
-        which is a different situation from having no information at all, and the
-        spline is what the P5 picture was tuned against.
+        Taste (exposure trim, shadow detail, punch) is available on both defaults and
+        is how the user offsets either; all three are exact no-ops at 0.
 
         SDR -> leave the curve alone.
         """
         if not is_hdr:
             return
-        want = 9 if is_dv else (8 if has_meta else 10)   # Spline : GT7 : GT7 Adapt
+        want = 7 if is_dv else 10   # Reference : GT7 Adapt
         row = next((r for r in self._s3_settings.rows
                     if r.key == "hdr.toneMapCurve"), None)
         if row is None:
