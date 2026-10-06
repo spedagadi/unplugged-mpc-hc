@@ -165,7 +165,8 @@ GLYPH_OPTICAL = {"▶": 25}
 # (int)vd(v), so a fractional value is silently truncated on the way in. The
 # rail must not show (or store) precision the renderer will discard. Every other
 # slider maps to a float.
-INT_SLIDERS = {"hdr.sdrNits", "hdr.maxNits", "hdr.osdBright", "hdr.titlePeak", "postfx.debandIter"}
+INT_SLIDERS = {"hdr.sdrNits", "hdr.maxNits", "hdr.osdBright", "hdr.titlePeak", "postfx.debandIter",
+               "hdr.exposureTrim", "hdr.shadowLift", "hdr.punch"}
 
 # The value column is only 42px wide, so a long float overflows and becomes
 # unreadable. Same rule as s3_shell.cpp's FmtNum(): whole numbers print bare,
@@ -239,6 +240,9 @@ KEY_MAP = {
     "hdr.gtDesat":        ("hdr", "gtDesat"),
     "hdr.gamutCap":       ("hdr", "gamutCap"),
     "hdr.gt7Dbg":         ("hdr", "gt7Dbg"),
+    "hdr.exposureTrim":   ("hdr", "expTrim"),
+    "hdr.shadowLift":     ("hdr", "shLift"),
+    "hdr.punch":          ("hdr", "punch"),
     "hdr.autoRefW":       ("hdr", "autoRefW"),
     "hdr.refWTgt":        ("hdr", "refWTgt"),
     "hdr.outputGamut": ("hdr", "gamut"),
@@ -483,6 +487,23 @@ def build_rows():
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
         ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7", "Spline",
          "GT7 Adapt", "Dynamic & Auto"], 4, uncheck=False)
+    # Exposure trim: -3..+3 in thirds of a stop, an INPUT gain applied before the curve
+    # on Reference and on the DV identity transfer. Stepped and small on purpose — it is
+    # a taste control, and the moment a brightness lever needs a nits value it stops
+    # being one. Input gain rather than output: brightening after the curve clips,
+    # brightening before it is absorbed by the shoulder.
+    add("Exposure trim (1/3 stops)", SLIDER, H, "hdr.exposureTrim", "TONE MAPPING",
+        min_=-5, max_=5, val=0, default=0, uncheck=False)
+    # S-curve taste, on Reference and the DV identity transfer only.
+    # Shadow DETAIL, not shadow lift: it redistributes slope (c' = 1-(1-c)^q), so +
+    # spreads dark values apart and reveals their texture while black stays pinned at
+    # zero. An additive lift was tried first and rejected — it greys the image and buys
+    # no detail. Punch blends toward (or away from) an S about mid code. 0 on both is an
+    # exact no-op, so every existing look is safe.
+    add("Shadow detail", SLIDER, H, "hdr.shadowLift", "TONE MAPPING",
+        min_=-5, max_=5, val=0, default=0, uncheck=False)
+    add("Punch", SLIDER, H, "hdr.punch", "TONE MAPPING",
+        min_=-5, max_=5, val=0, default=0, uncheck=False)
     # ── CURVE SETTINGS — dials that only matter for specific tone curves ─────
     # Collapsible like any section; each row HIDES itself unless the selected Tone
     # curve actually reads it (see the CURVES_* sets above, traced from

@@ -252,7 +252,16 @@ public:
     bool  autoRefWhite   = false;   // opt-in: see Settings_t::bHdrAutoRefWhite
     float refWhiteTarget = 0.42f;   // where the scene average should land, 0..1 of white
         int  osdBrightness = 0;
-        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt
+        // Exposure trim in thirds of a stop, -3..+3, applied as an input gain before
+        // the curve (Reference and the DV identity transfer). A taste control, not a
+        // calibration value: it is the answer to "a bit brighter / a bit darker" that
+        // does not require knowing a nits number.
+        int  exposureTrim = 0;
+        // S-curve taste, -5..5 each: shadow lift and punch. Reference and the DV
+        // identity transfer only; 0 = exact no-op.
+        int  shadowLift   = 0;
+        int  punch        = 0;
+        int  toneMapCurve = 5;             // 1=ACES 2=Reinhard 3=Hable 4=Mobius 5=BT.2390 7=Reference 8=GT7 9=Spline 10=GT7 Adapt 11=Dynamic&Auto
         bool hdrPassthroughRaw = false;    // demo: show raw HDR/DV on SDR
         // Experimental tone mapping (libplacebo port). A separate axis from the
         // shipped tone mapping: 0 leaves every existing curve untouched, which is
