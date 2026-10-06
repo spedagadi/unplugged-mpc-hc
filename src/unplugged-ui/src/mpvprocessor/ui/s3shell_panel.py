@@ -298,7 +298,7 @@ VALUE_MAP = {
     # tone-curve option — mutually exclusive with the named curves by construction).
     # GT7 ADAPT is 10: the same operator with the scene peak blended into its peak.
     # Appended last so every existing panel index keeps meaning what it meant.
-    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7, 8, 9, 10],
+    "hdr.toneMapCurve": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11],
     "out.texFormat":    [0, 8, 10, 16],
 }
 
@@ -474,9 +474,15 @@ def build_rows():
     # different input: the peak it maps FROM is the metadata peak blended toward the
     # measured scene peak. Use it where the peak is a guess (HDMI capture, DV, no
     # MaxCLL); where MaxCLL is real, plain GT7 is the stable choice and is unchanged.
+    # "Dynamic & Auto" (index 9 -> TONE_CURVE_DYNAMIC_AUTO 11) is not a curve with
+    # settings — the curve itself is SOLVED per scene from the source distribution
+    # against fixed house targets, so there is no content peak to enter and no
+    # reference white to choose. It ignores Title peak, refWhite, shoulder reach, the
+    # knee dials and Adapt entirely. This is the one to use for DV P7 over HDMI, where
+    # the stream carries no ST 2086 at all and every other curve is guessing.
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
         ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7", "Spline",
-         "GT7 Adapt"], 4, uncheck=False)
+         "GT7 Adapt", "Dynamic & Auto"], 4, uncheck=False)
     # ── CURVE SETTINGS — dials that only matter for specific tone curves ─────
     # Collapsible like any section; each row HIDES itself unless the selected Tone
     # curve actually reads it (see the CURVES_* sets above, traced from

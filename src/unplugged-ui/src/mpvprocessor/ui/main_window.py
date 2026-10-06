@@ -26,7 +26,7 @@ from typing import Optional
 _log   = logging.getLogger("unplugged.main_window")
 _audit = logging.getLogger("unplugged.audit")
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSlot
+from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, pyqtSlot
 from PyQt6.QtWidgets import QWidget, QFileDialog, QMainWindow, QMessageBox, QApplication, QLabel
 from .confirm_dialog import ConfirmDialog
 from ..core.calibrate import (CalibrationSession, CALIBRATE_VIDEO, CALIBRATE_CSV,
@@ -150,6 +150,10 @@ class MainWindow(QMainWindow):
         self._mouse_hide_timer.setSingleShot(True)
         self._mouse_hide_timer.setInterval(3000)
         self._mouse_hide_timer.timeout.connect(self._hide_cursor)
+        self._cursor_hidden = False
+        # App-level input filter — see eventFilter for why the window's own
+        # mouseMoveEvent cannot carry this.
+        QApplication.instance().installEventFilter(self)
 
         # Polls video-out-params (APL / frame peak) once per second while playing
         # _peak_poll_timer removed — video-out-params is already observed via
@@ -244,19 +248,47 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._relayout()
 
-    def mouseMoveEvent(self, event) -> None:
-        super().mouseMoveEvent(event)
+    def eventFilter(self, obj, event) -> bool:
+        # WHY AN APPLICATION-LEVEL FILTER AND NOT mouseMoveEvent.
+        #
+        # QMainWindow.mouseMoveEvent only fires for the window's OWN area — the part not
+        # covered by a child. In WATCH the viewport child covers the entire window, and a
+        # child without mouse tracking receives no move events at all unless a button is
+        # held. So the hide/show logic that used to live in mouseMoveEvent never ran over
+        # the video: the timer started once on WATCH entry, the cursor hid after 3 s, and
+        # then no amount of mouse movement could bring it back, because the events were
+        # being delivered to the viewport and dropped. The auto-hide looked "broken" in
+        # both directions from the user's chair — sometimes never hiding, sometimes
+        # vanishing for good — depending on where the pointer happened to be.
+        #
+        # Watching every object's input events at the application level is the one place
+        # that sees all of them, wherever in the window they land.
+        t = event.type()
+        if t in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
+                 QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress,
+                 QEvent.Type.Wheel):
+            self._on_user_input()
+        return super().eventFilter(obj, event)
+
+    def _on_user_input(self) -> None:
         self._show_cursor()
         if self._mode == AppMode.WATCH:
             self._mouse_hide_timer.start()
 
     def _show_cursor(self) -> None:
-        from PyQt6.QtGui import QCursor
-        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        # An application OVERRIDE cursor, not setCursor on the window. setCursor is
+        # per-widget, and every child that sets its own cursor — the panels, the bars,
+        # the sliders all set PointingHandCursor — defeats it: the blank never reaches
+        # the pointer while it is over one of them, which is most of the screen. The
+        # override cursor wins over every widget cursor, app-wide.
+        if self._cursor_hidden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_hidden = False
 
     def _hide_cursor(self) -> None:
-        if self._mode == AppMode.WATCH:
-            self.setCursor(Qt.CursorShape.BlankCursor)
+        if self._mode == AppMode.WATCH and not self._cursor_hidden:
+            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+            self._cursor_hidden = True
 
 
     def keyPressEvent(self, event) -> None:
@@ -326,6 +358,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         from .confirm_dialog import ConfirmDialog
+        # The confirm dialog is a real dialog the user must click. If the cursor is
+        # hidden when X is pressed it would appear with an invisible pointer.
+        self._show_cursor()
         if not ConfirmDialog.ask("Close Unplugged", "Are you sure you want to exit?",
                                  confirm_label="Exit", parent=self):
             event.ignore()
