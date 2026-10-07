@@ -959,6 +959,12 @@ class S3ShellPanel(QWidget):
             # spelling changes, and the file becomes readable.
             if self.ini.get(r.key) != str(v):
                 want[r.key] = v
+        # The hidden flag is seeded as well, defaulting to false, so the escape hatch is
+        # DISCOVERABLE by reading the file instead of known only from documentation or
+        # from someone telling you. It has no row and the app never sets it true; an
+        # existing value wins, exactly like every other key here.
+        if self.ini.get(CURVE_ALL_INI_KEY) is None:
+            want[CURVE_ALL_INI_KEY] = False
         if want:
             self.ini.update(want)
             log(f"ini: seeded/normalised {len(want)} keys -> {self.ini.path}")
