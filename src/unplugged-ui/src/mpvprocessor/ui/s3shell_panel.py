@@ -333,6 +333,12 @@ CURVE_ALL_LABELS = ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference
 CURVE_SIMPLE = [7, 10]
 CURVE_SIMPLE_LABELS = ["Reference", "GT7 Adapt"]
 CURVE_ALL_INI_KEY = "ui.showAllTonemappers"
+# Marks the INI's hdr.toneMapCurve value as an ENGINE value rather than an option
+# index. Needed because the two formats overlap on eight of ten values: a stored 5 was
+# "Reference" as an index (the sixth option) but is BT-2390 as an engine value. Guessing
+# between them silently changes the curve, which is the one thing this row must never
+# do. Written by seed_ini the first time the new format is saved; absent means legacy.
+CURVE_FMT_KEY = "ui.curveValueIsEngine"
 # GT7 Adapt shares the whole GT7 branch, so it reads everything GT7 reads — the
 # metadata peak (as the static half of its blend), the soft-knee pre-compressor and
 # ref white — plus gt7Adapt, which plain GT7 ignores.
@@ -896,16 +902,19 @@ class S3ShellPanel(QWidget):
 
         engine = None
         raw = self.ini.get(CURVE_KEY) if self.ini else None
+        as_engine = self._ini_flag(CURVE_FMT_KEY)
         if raw is not None:
             try:
                 v = int(str(raw).strip())
             except (TypeError, ValueError):
                 v = None
             if v is not None:
-                if v in CURVE_ALL:
-                    engine = v                      # stored as an engine value
+                if as_engine:
+                    engine = v if v in CURVE_ALL else None
                 elif 0 <= v < len(CURVE_ALL):
-                    engine = CURVE_ALL[v]           # legacy: an index into the full list
+                    engine = CURVE_ALL[v]                   # legacy: index into the list
+                elif v in CURVE_ALL:
+                    engine = v                              # already an engine value
         if engine is None or engine not in table:
             engine = CURVE_GT7_ADAPT if CURVE_GT7_ADAPT in table else table[0]
 
@@ -965,6 +974,10 @@ class S3ShellPanel(QWidget):
         # existing value wins, exactly like every other key here.
         if self.ini.get(CURVE_ALL_INI_KEY) is None:
             want[CURVE_ALL_INI_KEY] = False
+        # From this run on the curve row's stored value is an engine value; say so in
+        # the file so the next run does not have to guess between the two formats.
+        if self.ini.get(CURVE_FMT_KEY) is None:
+            want[CURVE_FMT_KEY] = True
         if want:
             self.ini.update(want)
             log(f"ini: seeded/normalised {len(want)} keys -> {self.ini.path}")
