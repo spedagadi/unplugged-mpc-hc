@@ -1,0 +1,33 @@
+LAV FILTERS — GNU GENERAL PUBLIC LICENSE, VERSION 2 (AND 3 WHERE APPLICABLE)
+SOURCE OFFER AND NOTICE
+
+This product bundles LAV Filters (LAVSplitter.ax, LAVVideo.ax, LAVAudio.ax) and
+the FFmpeg-derived libraries they link (avcodec, avformat, avutil, swscale,
+swresample, avdevice, avfilter), which are free software licensed under the GNU
+General Public License, version 2 or (at your option) any later version. Some
+components are under the GNU Lesser General Public License version 2.1 or later.
+
+The copies bundled here are MODIFIED: they are built from the "unplugged" fork,
+which adds a DeckLink capture source path to LAVSplitter among other changes.
+The GPL therefore requires that the corresponding source for those modifications
+be available to you.
+
+SOURCE OFFER
+------------
+The complete corresponding source code for the modified LAV Filters bundled in
+this product, including the modifications, is offered for a charge no more than
+the cost of physically performing distribution, and is also available at:
+
+    SOURCE_OFFER_URL_PLACEHOLDER
+
+This offer is valid for at least three years from the date of this product's
+distribution, and for as long as spare parts or support for this product are
+offered, to anyone in possession of this product.
+
+You should have received a copy of the GNU General Public License along with
+this program; if not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt>
+and <https://www.gnu.org/licenses/gpl-3.0.txt>.
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+This product is not affiliated with or endorsed by the FFmpeg or LAV Filters
+projects.

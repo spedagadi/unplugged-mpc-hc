@@ -1,0 +1,43 @@
+THIRD-PARTY COMPONENTS AND LICENCES
+
+Bundled in this product, each under its own licence. Where a licence requires
+more than attribution (source offer, notices in documentation), that requirement
+is met in this directory or in the installer's licence pages.
+
+  MPC Video Renderer (MpcVideoRenderer64.ax), modified ("unplugged" fork)
+      MIT licence. Copyright the MPC-HC / MPCVR contributors.
+      Modifications in this fork are likewise MIT.
+
+  LAV Filters and FFmpeg-derived libraries
+      GPL v2+ / LGPL v2.1+. Modified fork. See lav_gpl_source_offer.txt in this
+      directory for the source offer that the GPL requires.
+
+  DeckLinkSource.ax, built against the Blackmagic DeckLink SDK
+      The SDK is licensed by Blackmagic Design; its licence text is in
+      decklink_sdk_license.txt in this directory and was presented for
+      acceptance during installation. This product is not affiliated with or
+      endorsed by Blackmagic Design.
+
+  ONNX Runtime (onnxruntime.dll)
+      MIT licence. Copyright (c) Microsoft Corporation.
+
+  LightGBM model files (*.plxgb) and ONNX model files (*.onnx)
+      Produced by this project's own training runs from licensed reference
+      data; the model weights are distributed under the same terms as this
+      product. The LightGBM library itself is MIT (Microsoft).
+
+  Qt 6 / PyQt6 (bundled in the application)
+      LGPL v3. The application links Qt dynamically; the Qt libraries and their
+      LGPL terms travel inside the application bundle. See
+      https://www.qt.io/licensing/ and the LGPL v3 text at
+      https://www.gnu.org/licenses/lgpl-3.0.txt.
+
+  Python (bundled interpreter)
+      PSF licence. Copyright (c) the Python Software Foundation.
+
+  PyInstaller (build-time bootloader bundled in the executable)
+      GPL v2+ with a bootloader exception; the exception permits bundling in
+      frozen applications such as this one.
+
+Full texts are available at the URLs cited above. Where this product modifies a
+component, the modifications carry the component's own licence.

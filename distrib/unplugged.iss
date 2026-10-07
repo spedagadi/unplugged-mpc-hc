@@ -118,6 +118,15 @@ Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit reg
 Source: "redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 #endif
 
+; ---- the terms, twice: once as a wizard page, once as files that travel -------
+; dontcopy keeps the EULA out of the installed tree as a stray root file; the
+; wizard page extracts it to {tmp} and shows it. The licenses directory is the
+; durable copy, because obligations that live only in an installer vanish the
+; moment someone copies the folder to another machine.
+Source: "unplugged_eula.txt"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "decklink_sdk_license.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
@@ -134,11 +143,67 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch Unplugged"; Flags: nowai
 Type: filesandordirs; Name: "{app}\logs"
 
 [Code]
-// Refuse to install over a running copy of the OLD registered filter path if
-// it is held open: regserver on a loaded .ax fails silently and leaves the old
-// binary registered. CloseApplications covers the app; this covers a stray
-// player process that loaded the filters.
-function InitializeSetup(): Boolean;
+// ---------------------------------------------------------------------------
+// SECOND, MANDATORY ACCEPTANCE PAGE.
+//
+// Inno's LicenseFile page carries the third-party licences (Blackmagic's among
+// them). This page carries OUR terms — responsibility for captured content, the
+// no-circumvention statement, the independence disclaimer — because those are
+// the points a user must actually confront, and burying them in a combined
+// licence blob is how they stop being read.
+//
+// It is enforced in NextButtonClick, not by hiding the Next button: a disabled
+// button invites "why is this stuck", while a refused advance with a message
+// states the requirement.
+// ---------------------------------------------------------------------------
+var
+  EulaPage: TWizardPage;
+  EulaMemo: TNewMemo;
+  EulaCheck: TNewCheckBox;
+
+procedure InitializeWizard;
+var
+  lines: TArrayOfString;
+  i: Integer;
+begin
+  EulaPage := CreateCustomPage(wpLicense,
+    'End-User Terms',
+    'Read the terms under which this software is provided, then accept to continue.');
+
+  EulaMemo := TNewMemo.Create(EulaPage);
+  EulaMemo.Parent := EulaPage.Surface;
+  EulaMemo.Left := 0;
+  EulaMemo.Top := 0;
+  EulaMemo.Width := EulaPage.SurfaceWidth;
+  EulaMemo.Height := ScaleY(190);
+  EulaMemo.ReadOnly := True;
+  EulaMemo.WordWrap := True;
+  EulaMemo.ScrollBars := ssVertical;
+
+  EulaCheck := TNewCheckBox.Create(EulaPage);
+  EulaCheck.Parent := EulaPage.Surface;
+  EulaCheck.Left := 0;
+  EulaCheck.Top := ScaleY(200);
+  EulaCheck.Width := EulaPage.SurfaceWidth;
+  EulaCheck.Height := ScaleY(46);
+  EulaCheck.WordWrap := True;
+  EulaCheck.Caption := 'I have read and accept the End-User Terms, including that I am '
+    + 'solely responsible for what I capture with this software, and that it does not '
+    + 'and cannot circumvent copy protection.';
+
+  // The text ships inside the setup so it can never drift from what was accepted.
+  ExtractTemporaryFile('unplugged_eula.txt');
+  if LoadStringsFromFile(ExpandConstant('{tmp}\unplugged_eula.txt'), lines) then
+    for i := 0 to GetArrayLength(lines) - 1 do
+      EulaMemo.Lines.Add(lines[i]);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  if (CurPageID = EulaPage.ID) and (not EulaCheck.Checked) then
+  begin
+    MsgBox('You must accept the End-User Terms to install this software.', mbError, MB_OK);
+    Result := False;
+  end;
 end;

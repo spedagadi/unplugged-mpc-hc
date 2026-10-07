@@ -34,6 +34,20 @@ if (-not $text -or $text -match 'PLACEHOLDER-REPLACE-WITH') {
     exit 1
 }
 
+# 2b. GPL source offer must be real -------------------------------------------
+# Bundling modified LAV Filters makes the corresponding source a condition of
+# distribution. An offer that points at a placeholder is not an offer; shipping
+# it would be a GPL violation presented as compliance, which is worse than an
+# honest absence.
+$offer = Join-Path $here 'licenses\lav_gpl_source_offer.txt'
+$offerText = if (Test-Path $offer) { Get-Content $offer -Raw } else { '' }
+if (-not $offerText -or $offerText -match 'SOURCE_OFFER_URL_PLACEHOLDER') {
+    Write-Host "ERROR: licenses\lav_gpl_source_offer.txt still has the placeholder URL." -ForegroundColor Red
+    Write-Host "       Put the public location of the modified LAV source there, or remove the" -ForegroundColor Red
+    Write-Host "       LAV binaries from the installer. There is no third option under the GPL." -ForegroundColor Red
+    exit 1
+}
+
 # 3. source paths --------------------------------------------------------------
 $iss = Get-Content (Join-Path $here 'unplugged.iss') -Raw
 $missing = @()
