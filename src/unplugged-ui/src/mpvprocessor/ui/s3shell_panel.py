@@ -315,6 +315,24 @@ VALUE_MAP = {
 CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS = 1, 2, 3, 4
 CURVE_BT2390, CURVE_ST2094, CURVE_REF, CURVE_GT7, CURVE_SPLINE = 5, 6, 7, 8, 9
 CURVE_GT7_ADAPT = 10
+
+# ---- the Tone curve row's two faces -----------------------------------------
+# By default the rail offers exactly the two curves that are supported and
+# validated: Reference (Hable) for DV of any provenance, GT7 Adapt for HDR10. The
+# other eight exist, work, and are a maintenance and mis-selection surface — ten
+# options for what is in practice a two-way decision.
+#
+# `ui.showAllTonemappers=true` in the INI (hand-edited; no row, no UI, never
+# written by the app) restores the full list for development and A/B work. That is
+# the whole mechanism: a config-only escape hatch, invisible to everyone who does
+# not go looking in the file.
+CURVE_KEY = "hdr.toneMapCurve"
+CURVE_ALL = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
+CURVE_ALL_LABELS = ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference",
+                    "GT7", "Spline", "GT7 Adapt", "Dynamic & Auto"]
+CURVE_SIMPLE = [7, 10]
+CURVE_SIMPLE_LABELS = ["Reference", "GT7 Adapt"]
+CURVE_ALL_INI_KEY = "ui.showAllTonemappers"
 # GT7 Adapt shares the whole GT7 branch, so it reads everything GT7 reads — the
 # metadata peak (as the static half of its blend), the soft-knee pre-compressor and
 # ref white — plus gt7Adapt, which plain GT7 ignores.
@@ -810,6 +828,11 @@ class S3ShellPanel(QWidget):
         self._active_slider = None
         for r in self.rows:
             self._apply_ini(r)
+        # The Tone curve row's option list depends on a hidden INI flag, so it is
+        # configured AFTER the generic INI pass (which would otherwise interpret the
+        # stored value against the wrong table).
+        self.show_all_curves = self._ini_flag(CURVE_ALL_INI_KEY)
+        self._configure_curve_row()
         self.setFixedWidth(RIGHT_W)
         self.setMouseTracking(True)          # section hover highlight + sliders
         saved = self.group
@@ -836,11 +859,59 @@ class S3ShellPanel(QWidget):
             if r.type == TOGGLE:
                 r.on = v.strip() in ("1", "true", "True", "on")
             elif r.type == CYCLE:
+                if r.key == CURVE_KEY:
+                    return   # interpreted against the active table, below
                 r.opt = int(v)
             else:
                 r.val = float(v)
         except (TypeError, ValueError):
             pass
+
+    def _ini_flag(self, key) -> bool:
+        """A hand-edited INI boolean. Never written by the app, never shown as a row:
+        the point of these flags is configuration without a surface."""
+        if not self.ini:
+            return False
+        v = self.ini.get(key)
+        if v is None:
+            return False
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    def _configure_curve_row(self) -> None:
+        """Point the Tone curve row at the table the hidden flag selected, and resolve
+        whatever the INI holds — engine value (current format) or option index (legacy)
+        — into an option of THAT table.
+
+        A value the active table does not offer falls back to GT7 Adapt rather than to
+        the nearest neighbour: silently substituting one curve for another is exactly
+        the class of surprise this rail has spent a year eliminating, and GT7 Adapt is
+        the safe HDR default while Reference is the DV one (the auto-default below
+        picks between them per signal).
+        """
+        row = self._row(CURVE_KEY)
+        if row is None:
+            return
+        table = CURVE_ALL if self.show_all_curves else CURVE_SIMPLE
+        labels = CURVE_ALL_LABELS if self.show_all_curves else CURVE_SIMPLE_LABELS
+
+        engine = None
+        raw = self.ini.get(CURVE_KEY) if self.ini else None
+        if raw is not None:
+            try:
+                v = int(str(raw).strip())
+            except (TypeError, ValueError):
+                v = None
+            if v is not None:
+                if v in CURVE_ALL:
+                    engine = v                      # stored as an engine value
+                elif 0 <= v < len(CURVE_ALL):
+                    engine = CURVE_ALL[v]           # legacy: an index into the full list
+        if engine is None or engine not in table:
+            engine = CURVE_GT7_ADAPT if CURVE_GT7_ADAPT in table else table[0]
+
+        VALUE_MAP[CURVE_KEY] = list(table)
+        row.options = list(labels)
+        row.opt = table.index(engine)
 
     def _ini_value(self, r):
         """The value as the INI stores it — panel-native, so cycles keep their
@@ -855,6 +926,12 @@ class S3ShellPanel(QWidget):
         if r.type == FILE:
             return r.text
         if r.type == CYCLE:
+            # The curve row stores its ENGINE value, not an option index: the option
+            # list changes shape with the hidden show-all flag, and an index that
+            # meant "GT7" in a ten-option list must not silently become "GT7 Adapt"
+            # in a two-option one.
+            if r.key == CURVE_KEY:
+                return self._engine_value(r)
             return r.opt
         return int(round(r.val)) if r.key in INT_SLIDERS else round(r.val, _SLIDER_DECIMALS)
 
