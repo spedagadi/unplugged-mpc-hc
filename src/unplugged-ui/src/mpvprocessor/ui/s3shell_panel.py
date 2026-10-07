@@ -322,16 +322,22 @@ CURVE_GT7_ADAPT = 10
 # other eight exist, work, and are a maintenance and mis-selection surface — ten
 # options for what is in practice a two-way decision.
 #
+# DISPLAY NAME: the Hable-based curve is shown as "Unplugged". Its engine and code
+# identity is unchanged — TONE_CURVE_REFERENCE, value 7, "reference" in logs and in
+# the renderer — because renaming those would churn every comment, commit and skill
+# note that cites them. Only what a human reads in the rail and the status panel
+# carries the new name.
+#
 # `ui.showAllTonemappers=true` in the INI (hand-edited; no row, no UI, never
 # written by the app) restores the full list for development and A/B work. That is
 # the whole mechanism: a config-only escape hatch, invisible to everyone who does
 # not go looking in the file.
 CURVE_KEY = "hdr.toneMapCurve"
 CURVE_ALL = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
-CURVE_ALL_LABELS = ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference",
+CURVE_ALL_LABELS = ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Unplugged",
                     "GT7", "Spline", "GT7 Adapt", "Dynamic & Auto"]
 CURVE_SIMPLE = [7, 10]
-CURVE_SIMPLE_LABELS = ["Reference", "GT7 Adapt"]
+CURVE_SIMPLE_LABELS = ["Unplugged", "GT7 Adapt"]
 CURVE_ALL_INI_KEY = "ui.showAllTonemappers"
 # Marks the INI's hdr.toneMapCurve value as an ENGINE value rather than an option
 # index. Needed because the two formats overlap on eight of ten values: a stored 5 was
@@ -509,7 +515,7 @@ def build_rows():
     # knee dials and Adapt entirely. This is the one to use for DV P7 over HDMI, where
     # the stream carries no ST 2086 at all and every other curve is guessing.
     add("Tone curve", CYCLE, H, "hdr.toneMapCurve", "TONE MAPPING",
-        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Reference", "GT7", "Spline",
+        ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Unplugged", "GT7", "Spline",
          "GT7 Adapt", "Dynamic & Auto"], 4, uncheck=False)
     # Exposure trim: -3..+3 in thirds of a stop, an INPUT gain applied before the curve
     # on Reference and on the DV identity transfer. Stepped and small on purpose — it is

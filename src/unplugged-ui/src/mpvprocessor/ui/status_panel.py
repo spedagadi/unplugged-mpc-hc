@@ -212,7 +212,7 @@ _TM_ALGO = {
     "reinhard":  "Reinhard",
     "mobius":    "Möbius",
     "hable":     "Hable (Filmic)",
-    "reference": "Reference (Hable) ",
+    "reference": "Unplugged (Hable) ",
     "gt7":       "GT7 (Polyphony)",
     "gamma":     "Gamma",
     "linear":    "Linear",
