@@ -1,0 +1,16 @@
+PLACEHOLDER-REPLACE-WITH-BLACKMAGIC-DECKLINK-SDK-LICENSE
+
+This file is a placeholder. The Blackmagic Design DeckLink SDK licence is NOT
+redistributable from this repository: it ships only inside the SDK download, and
+the person building the installer is the person who accepted it there.
+
+Before compiling unplugged.iss, replace this entire file with the verbatim text
+of the Blackmagic DeckLink SDK Licence Agreement from your SDK download.
+build_unplugged_setup.ps1 refuses to run ISCC while the marker line above is
+present, so an installer cannot be produced behind a licence page that says
+nothing.
+
+Why this gate exists: DeckLinkSource.ax is built against the SDK, and Inno's
+LicenseFile is a mandatory accept-or-abort page. Shipping the filter behind a
+bogus page would misrepresent the terms the user is accepting — a legal defect,
+not a cosmetic one.
