@@ -1864,6 +1864,17 @@ void MpcPlayer::ApplyPendingSettings()
             h.titlePeakNits = dl.hdrMaxCLL;
         }
         ApplyHdrToSettings(h, s);
+        // The three taste dials at the instant they cross into the struct that is
+        // handed to the renderer. The rail and the engine were proven to agree
+        // (ui-corr / [SETTINGS] received) while the renderer's [SHADER-CB] push
+        // disagreed on shadowLift ALONE -- so the loss is between this line and
+        // that one, and only a measurement at this boundary says which side.
+        // h.* is the merged intent, s.* is what the renderer is about to be given;
+        // if the two pairs differ, the field is missing or the ABI does not match
+        // the .ax.
+        Log("[TASTE] apply hdr(tr=%d sh=%d pu=%d) -> settings(tr=%d sh=%d pu=%d)",
+            h.exposureTrim, h.shadowLift, h.punch,
+            s.iHdrExposureTrim, s.iHdrShadowLift, s.iHdrPunch);
     }
     if (hasMl_)  ApplyMlToSettings(pendingMl_, s);
     if (hasOut_) ApplyOutToSettings(pendingOut_, s);
