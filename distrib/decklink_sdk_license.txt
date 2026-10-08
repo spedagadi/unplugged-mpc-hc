@@ -12,5 +12,5 @@ nothing.
 
 Why this gate exists: DeckLinkSource.ax is built against the SDK, and Inno's
 LicenseFile is a mandatory accept-or-abort page. Shipping the filter behind a
-bogus page would misrepresent the terms the user is accepting — a legal defect,
+bogus page would misrepresent the terms the user is accepting -- a legal defect,
 not a cosmetic one.

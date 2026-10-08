@@ -12,11 +12,22 @@ is met in this directory or in the installer's licence pages.
       GPL v2+ / LGPL v2.1+. Modified fork. See lav_gpl_source_offer.txt in this
       directory for the source offer that the GPL requires.
 
-  DeckLinkSource.ax, built against the Blackmagic DeckLink SDK
-      The SDK is licensed by Blackmagic Design; its licence text is in
-      decklink_sdk_license.txt in this directory and was presented for
-      acceptance during installation. This product is not affiliated with or
-      endorsed by Blackmagic Design.
+  Blackmagic DeckLink SDK derived code
+      TWO binaries in this product are compiled against the Blackmagic Design
+      DeckLink SDK headers:
+        _internal\decklink_monitor.dll  read-only signal status monitor, bundled
+                                        inside the application itself and present
+                                        in every build
+        filters\DeckLinkSource.ax       DirectShow capture source, present when
+                                        the filter chain is installed
+      The SDK is licensed by Blackmagic Design. Its End User Licence Agreement is
+      in decklink_sdk_license.txt in this directory and was presented for
+      acceptance during installation; the verbatim copyright notice and grant
+      statement that the SDK headers require to accompany derivative works are
+      in blackmagic_sdk_notice.txt in this directory.
+      The DeckLink driver and Desktop Video software are licensed separately by
+      Blackmagic Design, are installed by the user, and are not redistributed
+      here. This product is not affiliated with or endorsed by Blackmagic Design.
 
   ONNX Runtime (onnxruntime.dll)
       MIT licence. Copyright (c) Microsoft Corporation.

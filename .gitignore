@@ -42,3 +42,8 @@ ipch
 /distrib/MPCVR/
 /distrib/x64/MediaInfo.dll
 /distrib/x86/MediaInfo.dll
+# Installer output. /distrib/*.exe above is anchored and matches only direct
+# children of distrib, so it never covered out\ -- where ISCC writes the setup,
+# hundreds of MB per build. A plain `git add .` would stage all of it.
+/distrib/out/
+/distrib/*.log

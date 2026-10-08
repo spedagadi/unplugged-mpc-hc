@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------------
-; unplugged.iss — installer for the Unplugged HTPC app and its filter chain.
+; unplugged.iss -- installer for the Unplugged HTPC app and its filter chain.
 ;
 ; Derived in structure from mpc-hc_setup.iss and LAVFilters.iss in this tree;
 ; the regserver idiom below is LAV's, proven on exactly these binaries.
@@ -19,21 +19,35 @@
 ; path that no longer exists.
 ;
 ; WHAT DELIBERATELY DOES NOT SHIP
-;   The renderer's own logs (ml_debug.csv, mpcvr_trace*.log) — ~96 MB of one
+;   The renderer's own logs (ml_debug.csv, mpcvr_trace*.log) -- ~96 MB of one
 ;   machine's diagnostics sitting in the staged build folder.
 ;   The per-user config. It lives in %LOCALAPPDATA%\Unplugged\s3_shell.ini,
 ;   outside {app}, so upgrades never touch it and uninstall never deletes it.
 ;   That is a feature: a re-install must not cost anyone their tuned curve.
 ;
-; THE LICENCE PAGE IS A HARD GATE
-;   DeckLinkSource.ax is built against the Blackmagic DeckLink SDK, whose EULA
-;   must be accepted by the person installing. LicenseFile below makes Inno show
-;   it as a mandatory accept-or-abort page. The text is NOT in this repository —
-;   it ships only inside the SDK download — so distrib/decklink_sdk_license.txt
-;   is a placeholder and build_unplugged_setup.cmd refuses to compile while the
-;   placeholder marker is present. Do not remove that check: shipping a filter
-;   built on the SDK behind a bogus licence page is worse than shipping no
-;   installer.
+; THE BLACKMAGIC LICENCE PAGE IS AN UNCONDITIONAL HARD GATE
+;   Two of our binaries are compiled against Blackmagic DeckLink SDK headers:
+;   filters\DeckLinkSource.ax (the capture filter) and _internal\
+;   decklink_monitor.dll (a read-only signal monitor, gcc-built from
+;   decklink_monitor.c, bundled inside the application by PyInstaller). The
+;   second one is the reason the gate is unconditional: it ships in the
+;   application payload, so it is present in EVERY build -- including one
+;   compiled with /DSkipFilters=1, which omits the filter chain. Skipping the
+;   filters therefore skips no Blackmagic obligation, and the EULA page must
+;   appear for whoever installs.
+;
+;   The SDK headers grant their rights "subject to" the DeckLink SDK End User
+;   Licence Agreement, and require the copyright notice and the full grant
+;   statement to accompany all copies and derivative works. Both are met here:
+;   LicenseFile shows the EULA as a mandatory accept-or-abort page, and
+;   blackmagic_sdk_notice.txt carries the verbatim notice plus a statement of
+;   which binaries are SDK-derived.
+;
+;   The EULA text itself is NOT in this repository -- it ships inside the SDK
+;   download -- so distrib/decklink_sdk_license.txt is a placeholder and
+;   build_unplugged_setup.ps1 refuses to compile while that marker is present,
+;   in every configuration. Do not weaken that check: an installer that ships
+;   SDK-derived code behind a bogus licence page is worse than no installer.
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
@@ -59,14 +73,33 @@ PrivilegesRequired=admin
 ; per-user variant of this product.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-LicenseFile=decklink_sdk_license.txt
-CloseApplications=yes
-RestartApplications=no
+; Unconditional, in every configuration. The Blackmagic SDK-derived code lives
+; in the APPLICATION payload (_internal\decklink_monitor.dll), not only in the
+; filter chain, so /DSkipFilters=1 does not remove the obligation and must not
+; remove the page. The gates follow the payload, and this payload always
+; contains SDK-derived code.
+;
+; This page also serves as the anchor for the End-User Terms page in [Code],
+; which is created with CreateCustomPage(wpLicense, ...) -- a custom page
+; anchored to a page the wizard never shows is a question about Inno internals
+; nobody should have to answer at install time. Showing the licence inventory of
+; the product being installed is the right content regardless.
+LicenseFile=decklink_sdk_license.txt,blackmagic_sdk_notice.txt,licenses\third_party_notices.txt
 ; The app holds its own .ax open while running; without this the install fails
 ; halfway with a sharing violation and leaves mixed versions on disk.
+CloseApplications=yes
+RestartApplications=no
 OutputDir=out
+; /DFastTest=1 builds in seconds with no compression, to check the wizard, the
+; payload and the registration. Its filename says TESTONLY so a smoke build
+; cannot be mistaken for the deliverable.
+#ifdef FastTest
+OutputBaseFilename=Unplugged-setup-{#MyAppVersion}-TESTONLY
+Compression=none
+#else
 OutputBaseFilename=Unplugged-setup-{#MyAppVersion}
 Compression=lzma2/max
+#endif
 SolidCompression=yes
 SetupLogging=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -80,7 +113,13 @@ Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Ad
 
 [Files]
 ; ---- the app ---------------------------------------------------------------
-Source: "{#AppSrc}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The mask is not tidiness, it is containment: the packaged app writes its own
+; logs beside itself (s3engine.log at the root, panel.log deeper in), so after
+; anyone tests a build the dist folder carries that machine's session history --
+; played file paths and all -- and a plain recursive copy would ship it inside
+; everybody's installer. Excluding by pattern makes that impossible rather than
+; depending on nobody ever running the app from dist before packaging.
+Source: "{#AppSrc}\*"; DestDir: "{app}"; Excludes: "*.log"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; ---- MPCVR: filter, runtime and models, one directory ----------------------
 Source: "{#FiltersSrc}\MpcVideoRenderer64.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
@@ -91,6 +130,12 @@ Source: "{#FiltersSrc}\xgb_shadow_recovery.plxgb";      DestDir: "{app}\filters"
 Source: "{#FiltersSrc}\yolo26n-seg_op21.onnx";           DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\yolo26n-sem.onnx";                DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 
+; ---- LAV fork and DeckLink source: conditional on not skipping --------------
+; These two groups carry the only third-party obligations in the product (GPL
+; source offer; Blackmagic SDK notice). Building with /DSkipFilters=1 omits both
+; binaries AND both obligations, which is what makes a gate-free test build
+; legitimate rather than a workaround.
+#ifndef SkipFilters
 ; ---- LAV fork: filters plus the ffmpeg DLLs they link ----------------------
 Source: "{#LavSrc}\LAVSplitter.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 Source: "{#LavSrc}\LAVVideo.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
@@ -109,6 +154,7 @@ Source: "{#LavSrc}\IntelQuickSyncDecoder.dll"; DestDir: "{app}\filters"; Flags: 
 
 ; ---- DeckLink ingest source -------------------------------------------------
 Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+#endif
 
 ; ---- VC++ runtime, only if you drop it in distrib\redist\ --------------------
 ; Our binaries are MSVC /MD; a clean Windows box may lack the 2015-2022 x64
@@ -124,8 +170,19 @@ Source: "redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; durable copy, because obligations that live only in an installer vanish the
 ; moment someone copies the folder to another machine.
 Source: "unplugged_eula.txt"; DestDir: "{tmp}"; Flags: dontcopy
-Source: "decklink_sdk_license.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
-Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "licenses\third_party_notices.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+; Both Blackmagic texts travel in EVERY build, because the SDK-derived binary
+; they describe (_internal\decklink_monitor.dll) is in the application payload
+; of every build. The notice is the part the header licence itself demands:
+; copyright notice plus the full grant statement, accompanying all copies and
+; derivative works.
+Source: "blackmagic_sdk_notice.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "decklink_sdk_license.txt";  DestDir: "{app}\licenses"; Flags: ignoreversion
+#ifndef SkipFilters
+; The GPL source offer is genuinely payload-conditional: it exists for the
+; modified LAV binaries, and a build that ships none of them owes nothing.
+Source: "licenses\lav_gpl_source_offer.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -147,8 +204,8 @@ Type: filesandordirs; Name: "{app}\logs"
 // SECOND, MANDATORY ACCEPTANCE PAGE.
 //
 // Inno's LicenseFile page carries the third-party licences (Blackmagic's among
-// them). This page carries OUR terms — responsibility for captured content, the
-// no-circumvention statement, the independence disclaimer — because those are
+// them). This page carries OUR terms -- responsibility for captured content, the
+// no-circumvention statement, the independence disclaimer -- because those are
 // the points a user must actually confront, and burying them in a combined
 // licence blob is how they stop being read.
 //
@@ -166,9 +223,16 @@ var
   lines: TArrayOfString;
   i: Integer;
 begin
+  // The page description is the wizard's own word-wrapping label. The two
+  // points that carry the legal weight belong there rather than in the check
+  // box caption: TNewCheckBox has no WordWrap, so a long caption is not wrapped,
+  // it is clipped -- and a clipped acceptance clause is worse than a short one.
   EulaPage := CreateCustomPage(wpLicense,
     'End-User Terms',
-    'Read the terms under which this software is provided, then accept to continue.');
+    'Read the terms under which this software is provided, then accept to '
+    + 'continue. Your acceptance covers in particular that you are solely '
+    + 'responsible for what you capture with this software, and that it does '
+    + 'not and cannot circumvent copy protection.');
 
   EulaMemo := TNewMemo.Create(EulaPage);
   EulaMemo.Parent := EulaPage.Surface;
@@ -185,11 +249,8 @@ begin
   EulaCheck.Left := 0;
   EulaCheck.Top := ScaleY(200);
   EulaCheck.Width := EulaPage.SurfaceWidth;
-  EulaCheck.Height := ScaleY(46);
-  EulaCheck.WordWrap := True;
-  EulaCheck.Caption := 'I have read and accept the End-User Terms, including that I am '
-    + 'solely responsible for what I capture with this software, and that it does not '
-    + 'and cannot circumvent copy protection.';
+  EulaCheck.Height := ScaleY(24);
+  EulaCheck.Caption := 'I have read and accept the End-User Terms shown above.';
 
   // The text ships inside the setup so it can never drift from what was accepted.
   ExtractTemporaryFile('unplugged_eula.txt');
