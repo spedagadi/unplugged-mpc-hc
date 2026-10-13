@@ -1,0 +1,135 @@
+<div id="stageB">
+  <div class="frameB">
+    <svg class="markB" width="320" height="266" viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="cgB" x1="30" y1="170" x2="152" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#E8551F" stop-opacity="0.5"/>
+          <stop offset="1" stop-color="#E8551F" stop-opacity="1"/>
+        </linearGradient>
+        <radialGradient id="glowB">
+          <stop offset="0" stop-color="#FFB080" stop-opacity="0.9"/>
+          <stop offset="1" stop-color="#FFB080" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <!-- glow halo behind the origin spark -->
+      <circle class="glowB" cx="201" cy="66" r="34" fill="url(#glowB)"/>
+
+      <!-- cable draws outward FROM the spark point (reverse dash) -->
+      <path class="cableB" d="M 30 170 C 78 170 100 150 116 114 C 128 88 138 72 152 66"
+            fill="none" stroke="url(#cgB)" stroke-width="9" stroke-linecap="round"/>
+
+      <g class="socketB" stroke="#E8551F" stroke-opacity="0.5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <rect x="208" y="49" width="24" height="34" rx="7"/>
+        <line x1="210" y1="61" x2="217" y2="61"/>
+        <line x1="210" y1="71" x2="217" y2="71"/>
+      </g>
+
+      <g class="plugB" stroke="#E8551F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <rect x="150" y="52" width="32" height="28" rx="8"/>
+        <line x1="182" y1="61" x2="194" y2="61"/>
+        <line x1="182" y1="71" x2="194" y2="71"/>
+      </g>
+
+      <!-- the origin spark: ignites first, re-flares on disconnect -->
+      <g class="sparkB" stroke="#FFE0CC" stroke-width="4" stroke-linecap="round">
+        <circle cx="201" cy="66" r="2.5" fill="#FFE0CC" stroke="none"/>
+        <line x1="201" y1="54" x2="201" y2="60"/>
+        <line x1="201" y1="72" x2="201" y2="78"/>
+        <line x1="191" y1="66" x2="197" y2="66"/>
+        <line x1="205" y1="66" x2="211" y2="66"/>
+      </g>
+    </svg>
+
+    <div class="wordB">unplugged<span class="dotB"></span></div>
+    <div class="statusB"><span class="s1">locking&hellip;</span><span class="s2">the real <b>picture</b> awaits&hellip;</span></div>
+  </div>
+</div>
+
+<style>
+  #stageB{
+    position:relative; width:100%; min-height:520px; background:#000;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif; overflow:hidden;
+  }
+  .frameB{ display:flex; flex-direction:column; align-items:center; }
+
+  /* ---- everything runs on ONE synced 6s infinite cycle (no JS) ----
+     Timeline within 6s (reveal ~2.4s, hold, fade/reset near end):
+     0.2 spark ignites | 0.5 cable draws from spark | 0.8 socket | 1.0 plug forms
+     1.5 plug frees + spark reflare | 1.85 word powers on | 2.15 status | ~5.7 fade&reset */
+
+  /* whole-frame fade near end so the cycle resets cleanly */
+  .frameB{ animation:bFrame 6s linear infinite; }
+  @keyframes bFrame{ 0%,92%{opacity:1;} 97%{opacity:0;} 99%,100%{opacity:1;} }
+
+  /* 1) spark: ignite (~0.2s) then reflare at disconnect (~1.5s) */
+  .sparkB{ transform-box:fill-box; transform-origin:center; animation:bSpark 6s infinite; }
+  @keyframes bSpark{
+    0%,3%{ opacity:0; transform:scale(0); }
+    10%{ opacity:1; transform:scale(1.1); }
+    16%,23%{ opacity:.9; transform:scale(1); }
+    27%{ opacity:1; transform:scale(1.35); }   /* reflare at disconnect */
+    33%,92%{ opacity:.9; transform:scale(1); }
+    97%,100%{ opacity:0; transform:scale(0); }
+  }
+
+  /* glow halo swells with ignition, settles dim */
+  .glowB{ animation:bGlow 6s ease-out infinite; }
+  @keyframes bGlow{ 0%,3%{opacity:0;} 12%{opacity:1;} 40%,92%{opacity:.12;} 97%,100%{opacity:0;} }
+
+  /* 2) cable draws outward FROM the spark point */
+  .cableB{ stroke-dasharray:260; animation:bDraw 6s infinite; }
+  @keyframes bDraw{
+    0%,8%{ stroke-dashoffset:-260; }
+    25%,92%{ stroke-dashoffset:0; }
+    97%,100%{ stroke-dashoffset:-260; }
+  }
+
+  /* socket fades in softly */
+  .socketB{ animation:bSocket 6s infinite; }
+  @keyframes bSocket{ 0%,13%{opacity:0;} 20%,92%{opacity:1;} 97%,100%{opacity:0;} }
+
+  /* 3) plug forms then gently pulls free */
+  .plugB{ animation:bPlug 6s infinite; }
+  @keyframes bPlug{
+    0%,16%{ opacity:0; transform:translateX(14px); }
+    22%{ opacity:1; transform:translateX(14px); }
+    25%{ opacity:1; transform:translateX(14px); }
+    33%,92%{ opacity:1; transform:translateX(0); }   /* freed */
+    97%,100%{ opacity:0; transform:translateX(14px); }
+  }
+
+  /* 4) word powers on with a soft flicker + glow (~1.85s in) */
+  .wordB{
+    margin-top:10px; font-size:54px; font-weight:600; letter-spacing:1px; color:#F2F2F2;
+    animation:bPower 6s infinite;
+  }
+  .wordB .dotB{
+    display:inline-block; width:11px; height:11px; border-radius:50%;
+    background:#E8551F; margin-left:6px; vertical-align:0.02em;
+  }   /* CSS circle — matches splash A's dot exactly */
+  @keyframes bPower{
+    0%,30%{opacity:0; text-shadow:0 0 0 rgba(232,85,31,0);}
+    34%{opacity:.4;} 37%{opacity:.15;}
+    42%{opacity:.9; text-shadow:0 0 22px rgba(232,85,31,.55);}
+    48%,92%{opacity:1; text-shadow:0 0 0 rgba(232,85,31,0);}
+    97%,100%{opacity:0;}
+  }
+
+  /* 5) status: "locking…" -> "the real picture." (picture bold) */
+  .statusB{ position:relative; height:22px; margin-top:12px; font-size:15px; letter-spacing:.5px; }
+  .statusB span{ position:absolute; left:50%; transform:translateX(-50%); white-space:nowrap; }
+  .s1{ color:#8A8A90; animation:bS1 6s infinite; }
+  @keyframes bS1{ 0%,8%{opacity:0;} 14%{opacity:.7;} 30%{opacity:.7;} 36%,100%{opacity:0;} }
+  .s2{ color:#E8551F; font-weight:500; animation:bS2 6s infinite; }
+  .s2 b{ font-weight:800; }   /* emphasise 'picture' — the pun word */
+  @keyframes bS2{
+    0%,36%{opacity:0;}
+    43%{opacity:1;}          /* lands firmly as the picture would appear */
+    92%{opacity:1;}          /* holds steady — a statement, not a flicker */
+    97%,100%{opacity:0;}
+  }
+</style>
+
+

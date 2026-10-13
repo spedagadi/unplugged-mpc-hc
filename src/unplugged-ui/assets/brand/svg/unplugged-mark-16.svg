@@ -1,0 +1,9 @@
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unplugged icon small">
+  <!-- simplified for 16px: curve + plug + spark, socket dropped -->
+  <path d="M 2 13.5 C 5 13.5 6 11.5 7.2 8.6 C 8 6.8 8.6 5.8 9.6 5.4"
+        fill="none" stroke="#E8551F" stroke-width="1.8" stroke-linecap="round"/>
+  <rect x="9.2" y="4.1" width="3.4" height="3" rx="0.9" fill="none" stroke="#E8551F" stroke-width="1.5"/>
+  <line x1="12.6" y1="5" x2="13.8" y2="5" stroke="#E8551F" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="12.6" y1="6.2" x2="13.8" y2="6.2" stroke="#E8551F" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="14.6" cy="5.6" r="1" fill="#FF7A3D"/>
+</svg>

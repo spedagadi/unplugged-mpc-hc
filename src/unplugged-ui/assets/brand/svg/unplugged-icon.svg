@@ -1,0 +1,39 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unplugged app icon">
+  <defs>
+    <linearGradient id="cableGradI" x1="70" y1="180" x2="168" y2="86" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E8551F" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#E8551F" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- container -->
+  <rect x="0.5" y="0.5" width="255" height="255" rx="56" fill="#0E0E10"/>
+  <rect x="1" y="1" width="254" height="254" rx="55.5" fill="none" stroke="#242428" stroke-width="1.5"/>
+
+  <!-- mark, scaled + centred -->
+  <g transform="translate(28,34) scale(0.83)">
+    <path d="M 30 170 C 78 170 100 150 116 114 C 128 88 138 72 152 66"
+          fill="none" stroke="url(#cableGradI)" stroke-width="10"
+          stroke-linecap="round"/>
+
+    <g stroke="#E8551F" stroke-opacity="0.5" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <rect x="208" y="49" width="24" height="34" rx="7"/>
+      <line x1="210" y1="61" x2="217" y2="61"/>
+      <line x1="210" y1="71" x2="217" y2="71"/>
+    </g>
+
+    <g stroke="#E8551F" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <rect x="150" y="52" width="32" height="28" rx="8"/>
+      <line x1="182" y1="61" x2="194" y2="61"/>
+      <line x1="182" y1="71" x2="194" y2="71"/>
+    </g>
+
+    <g stroke="#FF7A3D" stroke-width="4.5" stroke-linecap="round">
+      <circle cx="201" cy="66" r="3" fill="#FF7A3D" stroke="none"/>
+      <line x1="201" y1="55" x2="201" y2="60"/>
+      <line x1="201" y1="72" x2="201" y2="77"/>
+      <line x1="192" y1="66" x2="197" y2="66"/>
+      <line x1="205" y1="66" x2="210" y2="66" stroke-opacity="0.6"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpv-videoprocessor"
+version = "0.1.0"
+description = "MPV-based HDR home theater processor UI"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.7",
+    "PyQt6-WebEngine>=6.7",
+    "mpv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+mpv-videoprocessor = "mpvprocessor.main:main"

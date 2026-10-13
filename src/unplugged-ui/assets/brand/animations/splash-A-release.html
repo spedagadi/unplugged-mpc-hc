@@ -1,0 +1,126 @@
+<div id="stageA">
+  <div class="frameA">
+    <svg class="markA" width="320" height="266" viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="cgA" x1="30" y1="170" x2="152" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#E8551F" stop-opacity="0.5"/>
+          <stop offset="1" stop-color="#E8551F" stop-opacity="1"/>
+        </linearGradient>
+      </defs>
+
+      <path class="cableA" d="M 30 170 C 78 170 100 150 116 114 C 128 88 138 72 152 66"
+            fill="none" stroke="url(#cgA)" stroke-width="9" stroke-linecap="round"/>
+
+      <g class="socketA" stroke="#E8551F" stroke-opacity="0.5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <rect x="208" y="49" width="24" height="34" rx="7"/>
+        <line x1="210" y1="61" x2="217" y2="61"/>
+        <line x1="210" y1="71" x2="217" y2="71"/>
+      </g>
+
+      <g class="plugA" stroke="#E8551F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <rect x="150" y="52" width="32" height="28" rx="8"/>
+        <line x1="182" y1="61" x2="194" y2="61"/>
+        <line x1="182" y1="71" x2="194" y2="71"/>
+      </g>
+
+      <g class="sparkA" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round">
+        <circle cx="201" cy="66" r="2" fill="#FFFFFF" stroke="none"/>
+        <line x1="201" y1="51" x2="201" y2="59"/>
+        <line x1="201" y1="73" x2="201" y2="81"/>
+        <line x1="187" y1="66" x2="196" y2="66"/>
+        <line x1="206" y1="66" x2="215" y2="66"/>
+        <line x1="192" y1="57" x2="197" y2="61"/>
+        <line x1="205" y1="71" x2="210" y2="75"/>
+      </g>
+    </svg>
+
+    <div class="wordA">unplugged<span class="dotA"></span></div>
+    <div class="taglineA">free your nits</div>
+  </div>
+</div>
+
+<style>
+  #stageA{
+    position:relative; width:100%; min-height:520px; background:#000;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif; overflow:hidden;
+  }
+  .frameA{ display:flex; flex-direction:column; align-items:center; }
+
+  /* the orange dot: a CSS circle (not a text glyph) so it scales cleanly in place.
+     Sized to match a full-stop; sits near the text baseline; flares white then settles orange. */
+  .dotA{
+    display:inline-block; width:11px; height:11px; border-radius:50%;
+    background:#E8551F; margin-left:6px; vertical-align:0.02em;
+    transform-origin:center center; animation:aDot 6s infinite;
+  }
+  @keyframes aDot{
+    0%,44%{ opacity:0; transform:scale(0); }
+    50%{ opacity:1; transform:scale(2.2); background:#FFFFFF;
+         box-shadow:0 0 16px rgba(255,255,255,.9); }   /* spark landing: bright flare */
+    58%{ opacity:1; transform:scale(1); background:#E8551F; box-shadow:0 0 4px rgba(232,85,31,.4); }
+    89%{ opacity:1; transform:scale(1); background:#E8551F; box-shadow:0 0 0 rgba(232,85,31,0); }
+    97%,100%{ opacity:0; transform:scale(1); }
+  }
+
+  /* ---- ONE synced 6s infinite cycle (slowed from 2.4s) ----
+     Timeline within 6s (percent = time/4.5):
+       0.25 mark in | ~1.0 yank | ~1.1 spark | ~1.2 cable bright
+       ~1.7 word rises | ~2.5 tagline glows in
+       2.8–4.0 HOLD (finished logo sits ~1.2s) | 4.0–4.5 fade & reset   */
+
+  .markA{ animation:aFade 6s ease infinite; }
+  @keyframes aFade{ 0%{opacity:0;} 5%,89%{opacity:1;} 97%,100%{opacity:0;} }
+
+  .cableA{ animation:aCableBright 6s ease infinite; }
+  @keyframes aCableBright{ 0%,20%{filter:brightness(.7);} 30%,100%{filter:brightness(1);} }
+
+  /* plug seated -> slower deliberate yank with overshoot, long hold, reset */
+  .plugA{ animation:aYank 6s infinite; }
+  @keyframes aYank{
+    0%,16%{ transform:translateX(14px); }
+    24%{ transform:translateX(-5px); }     /* overshoot past rest */
+    30%,89%{ transform:translateX(0); }
+    100%{ transform:translateX(14px); }    /* reset for next loop */
+  }
+
+  /* spark: HARD electrical flash — opacity-only (no transform, so it stays put).
+     A double-flick reads as an electrical spark: bright, blink, bright, then out. */
+  .sparkA{ animation:aSpark 6s infinite; }
+  @keyframes aSpark{
+    0%,18%{ opacity:0; }
+    19.5%{ opacity:1; }      /* first hard flash */
+    22%{ opacity:0.15; }     /* blink */
+    23.5%{ opacity:1; }      /* second flash (electrical stutter) */
+    26%{ opacity:0.6; }
+    31%,100%{ opacity:0; }   /* fade out */
+  }
+
+  /* word rises (~1.7s in), long hold */
+  .wordA{
+    margin-top:10px; font-size:54px; font-weight:600; letter-spacing:1px; color:#F2F2F2;
+    animation:aRise 6s infinite;
+  }
+  @keyframes aRise{
+    0%,32%{ opacity:0; transform:translateY(14px); }
+    46%,89%{ opacity:1; transform:translateY(0); }
+    97%,100%{ opacity:0; transform:translateY(14px); }
+  }
+
+  /* tagline: flashes bright with an orange glow on arrival, then settles steady (option 3) */
+  .taglineA{
+    margin-top:14px; font-size:19px; font-weight:500; letter-spacing:2px; color:#E8551F;
+    animation:aTag 6s infinite;
+  }
+  @keyframes aTag{
+    0%,48%{ opacity:0; text-shadow:0 0 0 rgba(232,85,31,0); transform:scale(1); }
+    /* the flash: overshoot bright with a glow halo (slower rise) */
+    60%{ opacity:1; color:#FF8A4C; text-shadow:0 0 18px rgba(232,85,31,.85); transform:scale(1.06); }
+    /* ease back down to calm steady orange, unhurried */
+    76%{ opacity:1; color:#E8551F; text-shadow:0 0 6px rgba(232,85,31,.35); transform:scale(1); }
+    89%{ opacity:1; color:#E8551F; text-shadow:0 0 6px rgba(232,85,31,.25); transform:scale(1); }
+    97%,100%{ opacity:0; text-shadow:0 0 0 rgba(232,85,31,0); }
+  }
+</style>
+
+
