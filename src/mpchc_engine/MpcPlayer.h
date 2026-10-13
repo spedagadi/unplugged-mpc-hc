@@ -107,8 +107,14 @@ public:
     // Off = today's stacked models and dials. On = the controller owns those three
     // actuators and the legacy toe/top-up stand down.
     bool  controller = false;
-    // House white for the controller's scene-referred target law: source nits that
-    // approach display white. 203 = mastering convention, ~335 = cloud-safe taste.
+    // PINNED, not a rail control (2026-10-13). 203 cd/m² is ITU-R BT.2408's
+    // diffuse-white convention — Source/csputils.h calls it MP_REF_WHITE, libplacebo
+    // calls it PL_COLOR_SDR_WHITE, and the renderer's grade passes normalise I by the
+    // same point (SDR_I_PEAK_PQ = 0.5893). A standard is not a taste dial, and leaving
+    // it adjustable here only let the two uses disagree.
+    //
+    // It is also nearly inert now: the renderer uses it solely as the neutral point of
+    // `level = 203 / ctlWhite` in the band controller, so 203 means "no scaling".
     float ctlWhite   = 203.0f;
         bool  highlightEnabled = true;
         float highlight = 0.0f;            // [-0.3, 0.4]
@@ -203,13 +209,35 @@ public:
     float softKneeWidth = 0.42f;
     // The Hable curve's 1.0 in nits, decoupled from display white. 203 = libplacebo's
     // SDR diffuse white (clouds are content below that), 0 = sdrNits (legacy).
-    // See the rail's "Scene ref white" row: in the adapted GT7 form only
-    // 2.2*refWhite/sdrNits matters (maxCLL cancels), so this is the shoulder's
-    // workload, not a per-title brightness. 105 at an 85-nit target = 2.7x,
-    // validated on Everest (991/220) and Furiosa (909/140). Rule: ~1.24 * sdrNits.
-    float refWhiteNits  = 105.0f;
+    // PINNED, not a rail control (2026-10-12). In the adapted GT7 form only
+    // 2.2*refWhite/sdrNits matters — maxCLL cancels — so this number is the shoulder's
+    // WORKLOAD, not a brightness, and letting a user set it was how highlights started
+    // flattening: 203.8 at a 127-nit target asks for 3.53x while the shoulder reaches
+    // 1.87x, and everything above that arrived as one flat white value.
+    //
+    // 203 is libplacebo's reference. The renderer caps it at the reach the current
+    // sdrNits and gtAlpha can actually carry (Gt7Reach*sdrNits/2.2, divided by the
+    // exposure trim), so on a modest SDR target this asks for 108 and is held there, and
+    // only on a high-headroom display does 203 survive intact. That is the behaviour the
+    // old "~= 1.24 * sdrNits" rule was a hand-tuned approximation of, now enforced
+    // instead of advised. Brightness lives in "Exposure target" and the shoulder reach.
+    float refWhiteNits  = 203.0f;
     float highlightNeutral = 0.9f;   // 0..1: PQ->SDR head pulls toward neutral
-    float chromaExp = 1.35f;         // STAGE 1 delivery-only: value carried, not applied
+    float chromaExp = 1.35f;         // APPLIED in the converter: pow(gGain, chromaExp-1),
+                                     // keyed on the CURVE's compression of the pixel
+    // Highlight desaturation (hdr.hiDesat), 0..1; 0 = off, byte-identical.
+    //
+    // chromaExp is blind to what happens after the curve: the grade moves luminance in
+    // ICtCp at ABSOLUTE Ct/Cp, which changes relative saturation on its own, so the colour
+    // budget gets set against a luminance that then moves under it. This term reads the
+    // DELIVERED level instead — applied in ps_ml_chroma, the last pass that can change
+    // chroma, over a fitted window (I_norm 0.45 -> 0.70) damped by the grade's P(skin)
+    // weight so it cannot drain a face.
+    //
+    // Grouped here because it is a delivery control the user tunes next to gamut
+    // capacity; it still travels in MLParams_t and only draws while the ML grade is on,
+    // which is why its group and the renderer field it feeds (fMLHiDesat) do not match.
+    float hiDesat = 0.0f;
     // GT7 operator (toneMapCurve 8). Defaults are Polyphony's own constants; the
     // curve's shape parameters are NOT exposed because they are what make it GT7.
     //   gt7Blend: 0 = raw per-channel "skewed" curve, 1 = luminance from that pass
@@ -381,8 +409,8 @@ public:
     HRESULT GetOutSettings(OutSettings&) const;
     HRESULT GetProcessorInfo(std::wstring&) const;
 
-    // Write the renderer's live settings back to MPCVR's own registry key
-    // (HKCU\Software\MPC-BE Filters\MPC Video Renderer).
+    // Write the renderer's live settings back to its own registry key
+    // (HKCU\Software\Unplugged\Renderer).
     //
     // IVideoRenderer::SetSettings applies LIVE ONLY — it never persists. A graph
     // rebuild (the decklink monitor self-heals on any signal change) constructs
@@ -391,6 +419,10 @@ public:
     // there wins instead. That made the same toggle appear to work one day and
     // do nothing the next.
     HRESULT SaveRendererSettings();
+    // Cash in a renderer-window detach requested by the live thread at end-of-title.
+    // Public because the host's poll (s3_stats, UI thread) is what calls it: window
+    // operations belong to the thread that owns the window. See the definition.
+    void ApplyPendingWindowDetach();
     // The user's settings INTENT, independent of whether a graph exists. A push
     // that arrives before the renderer does is remembered here and applied when
     // the graph is built, instead of being dropped (old behaviour: dropped, but the
@@ -544,6 +576,17 @@ private:
     void DisconnectDecklinkPins();      // source-out <-> renderer-in, before any join
     HRESULT AddRenderer(CComPtr<IBaseFilter>&);
     HRESULT ConfigureRendererWindow();
+    // Hide/show the renderer's own window. Needed because the video surface is a
+    // NATIVE child HWND: hiding the Qt viewport does not take MPCVR's window out of
+    // the client area, and a native window above Qt widgets swallows mouse input for
+    // everything under it. Without this the media library returns after a title ends
+    // visible but unclickable. See the definition for the full note.
+    void SetRendererVisible(bool visible);
+    // Hide AND unparent the renderer's window without releasing the graph. The
+    // non-destructive fix for the EOF/stopped case: releasing the graph from the UI
+    // thread hangs (see the definition).
+    void DetachRendererWindow();
+    std::atomic<bool> m_detachPending{false};
     HRESULT ConnectVideoPin(IBaseFilter* source, IPin* decIn); // try-connect over output pins
     void    CaptureSourceMediaType(IPin* srcPin); // record demuxer media type → LIVE panel
     void    ApplyDecklinkColorToRenderer(); // push ICS override pre-connect

@@ -54,7 +54,13 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
-#define FiltersSrc   "..\..\unplugged-VideoRenderer\_bin\MpcVideoRenderer-0.10.8.2637"
+// The renderer's staging folder, named for this product since the filter became
+// unplugged_vr.ax with its own CLSID. The version is baked into the directory name by
+// distrib\make_dist.cmd, so a renderer version bump breaks this line -- and gate 3 of
+// build_unplugged_setup.ps1 is what catches it: it verifies every Source path exists
+// before ISCC runs, so the failure is a refused build, not an installer shipping
+// without a video renderer.
+#define FiltersSrc   "..\..\unplugged-VideoRenderer\_bin\UnpluggedRenderer-0.10.8.2637"
 #define LavSrc       "..\..\LAVFilters\bin_x64"
 #define DlSrc        "..\src\thirdparty\DeckLinkSource\bin\Filters_x64"
 #define AppSrc       "..\src\unplugged-ui\dist\Unplugged"
@@ -121,8 +127,13 @@ Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Ad
 ; depending on nobody ever running the app from dist before packaging.
 Source: "{#AppSrc}\*"; DestDir: "{app}"; Excludes: "*.log"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; ---- MPCVR: filter, runtime and models, one directory ----------------------
-Source: "{#FiltersSrc}\MpcVideoRenderer64.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+; ---- Unplugged renderer: filter, runtime and models, one directory ---------
+; The models MUST stay beside the .ax: the filter resolves them from the directory of
+; the module it was loaded from, so splitting them across DestDirs breaks ML modes with
+; no error. regserver does DllRegisterServer on install and DllUnregisterServer on
+; uninstall, which now registers our own CLSID and leaves any install of the upstream
+; filter on the machine alone.
+Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 Source: "{#FiltersSrc}\onnxruntime.dll";        DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#FiltersSrc}\xgb_gamma_model.plxgb";          DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\xgb_highlight_rolloff.plxgb";    DestDir: "{app}\filters"; Flags: ignoreversion restartreplace

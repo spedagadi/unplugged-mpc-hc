@@ -239,6 +239,9 @@ KEY_MAP = {
     "hdr.gtAlpha":        ("hdr", "gtAlpha"),
     "hdr.gtDesat":        ("hdr", "gtDesat"),
     "hdr.gamutCap":       ("hdr", "gamutCap"),
+    # Delivered through the grade's chroma pass (Settings_t.fMLHiDesat), but keyed on the
+    # level the viewer receives, so it is named and placed as a delivery control.
+    "hdr.hiDesat":        ("hdr", "hiDesat"),
     "hdr.gt7Dbg":         ("hdr", "gt7Dbg"),
     "hdr.exposureTrim":   ("hdr", "expTrim"),
     "hdr.shadowLift":     ("hdr", "shLift"),
@@ -339,6 +342,13 @@ CURVE_ALL_LABELS = ["ACES", "Reinhard", "Hable", "Mobius", "BT-2390", "Unplugged
 CURVE_SIMPLE = [7, 10]
 CURVE_SIMPLE_LABELS = ["Unplugged", "GT7 Adapt"]
 CURVE_ALL_INI_KEY = "ui.showAllTonemappers"
+
+# The same escape hatch, for rows marked dev=True: hand-edited, never written by the
+# app, never a row of its own. Absent means the internals stay hidden.
+#   ui.showGradeInternals=true   -> reveals the soft-knee trio (and any future dev row)
+# Hiding is a visibility filter only: the rows still read the INI and still push, so a
+# value set by hand is honoured exactly as if the dial were on screen.
+DEV_INI_KEY = "ui.showGradeInternals"
 # Marks the INI's hdr.toneMapCurve value as an ENGINE value rather than an option
 # index. Needed because the two formats overlap on eight of ten values: a stored 5 was
 # "Reference" as an index (the sixth option) but is BT-2390 as an engine value. Guessing
@@ -360,7 +370,7 @@ CURVES_CHROMA   = {CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS,
 class Row:
     def __init__(self, label, type_, group, key, section=None, options=None,
                  opt=0, min_=0, max_=100, val=50, default=50, gate=0,
-                 on=False, live=True, uncheck=True, curves=None):
+                 on=False, live=True, uncheck=True, curves=None, dev=False):
         self.label = label; self.type = type_; self.group = group; self.key = key
         self.section = section; self.options = options or []
         self.opt = opt; self.min = min_; self.max = max_; self.val = val
@@ -370,6 +380,15 @@ class Row:
         # None = always visible. Lets a dial that only matters for some curves
         # (e.g. highlight-neutral = Hable-only) hide itself otherwise.
         self.curves = curves
+        # dev: hidden unless the INI carries ui.showGradeInternals (see DEV_INI_KEY).
+        # For dials that are machinery rather than taste — three interlocking sliders
+        # that describe one behaviour, where a wrong combination can produce artefacts
+        # (the soft-knee set is the current tenant: its residual interaction is what
+        # turned dark flecks inside an explosion black). The row is HIDDEN, not removed:
+        # the INI key still applies and still pushes, exactly like the tone-curve escape
+        # hatch, so an expert can set it by hand without anyone else being able to
+        # discover it by dragging.
+        self.dev = dev
         self.text = ""               # FILE rows: the chosen path
         self.enabled = True          # per-control checkbox state
 
@@ -383,9 +402,9 @@ def build_rows():
 
     def add(label, type_, group, key, section=None, options=None, opt=0,
             min_=0, max_=100, val=50, default=50, gate=0, on=False,
-            live=True, uncheck=True, curves=None):
+            live=True, uncheck=True, curves=None, dev=False):
         r.append(Row(label, type_, group, key, section, options, opt, min_, max_,
-                     val, default, gate, on, live, uncheck, curves))
+                     val, default, gate, on, live, uncheck, curves, dev))
 
     # ── PLAYBACK — media-playback surface ────────────────────────────────────
     # Track rows have no engine backing yet (no track-list API across the C ABI);
@@ -412,15 +431,34 @@ def build_rows():
     #      and the manual top-up stand down, because stacking them would double-act.
     # OFF: today's behaviour exactly.
     add("Band controller", TOGGLE, Z, "zion.ctl", "TONE CURVE", on=False)
-    # HOUSE WHITE — the controller's one taste parameter. Its targets are
-    # scene-referred: target = 1 - exp(-srcNits / W), so a source luminance always
-    # lands in the same place no matter what else is in the frame. A CONSTANT
-    # delivered target would be auto-gain (night into noon); this is not.
-    #   203 = the HDR mastering convention (diffuse white maps to display white)
-    #   ~335 = the cloud-safe taste measured on Everest/Furiosa this week
-    # Lower = brighter house look, higher = more headroom and a darker mid.
-    add("House white (nits)", SLIDER, Z, "zion.ctlWhite", "TONE CURVE",
-        min_=100, max_=400, val=203, default=203, gate=1)
+    # HOUSE WHITE — RETIRED. Pinned at MlSettings::ctlWhite = 203, which is not a
+    # taste value: 203 cd/m² is ITU-R BT.2408's diffuse-white convention, cited at
+    # Source/csputils.h:104 as MP_REF_WHITE and used by libplacebo as PL_COLOR_SDR_WHITE.
+    # It is also the PQ code pair the grade passes normalise by (SDR_PEAK_NITS 203 /
+    # SDR_I_PEAK_PQ 0.5893 in ictcp.hlsl), so the number is load-bearing elsewhere and
+    # letting a user move it here only made the two disagree.
+    #
+    # What the row actually did was never what this label claimed. The 1 - exp(-src/W)
+    # law it referred to was replaced months ago by the relative form
+    #     target = clamp(level * r^0.75, delivered anchor)   ,  level = 203 / ctlWhite
+    # so the dial is now an INVERTED scalar on a curve — higher value = less lift — and
+    # at the standards value level is exactly 1.0, i.e. the control was a no-op sitting
+    # in the middle of its own slider. Range 100..400 maps to level 2.0..0.51, and the
+    # level is clamped to [0.5, 2.0] anyway, so most of the travel did nothing.
+    #
+    # The one measured value in the retired comment above ("~335 = cloud-safe") is
+    # suspect: it predates the fix that makes the band controller predict the curve
+    # ACTUALLY RUNNING. On the Unplugged curve the old GT7-based model under-predicted
+    # the delivered anchors by up to 0.058 of white through the 42-203 nit range, so the
+    # controller was lifting past the picture — and backing house white off to 335 is
+    # exactly how you would compensate for that without noticing. If clouds come back as
+    # a complaint, the honest place to fix it is the 0.75 exponent or the [0.5,2.0]
+    # authority clamp (both taste, neither measured), not a user-facing scalar.
+    #
+    # The ml.ctlWhite parse stays, so the value remains reachable for A/B without a rail
+    # control that can be nudged.
+    # add("House white (nits)", SLIDER, Z, "zion.ctlWhite", "TONE CURVE",
+    #     min_=100, max_=400, val=203, default=203, gate=1)
     add("Mode",  CYCLE,  Z, "zion.toneMode", "TONE CURVE", ["Auto", "Manual", "Off"], 0)
     add("Shadow", SLIDER, Z, "zion.shadowToe", "TONE CURVE", max_=0.40, val=0, default=0, gate=2)
     add("Shadow dehaze", SLIDER, Z, "zion.shadowDehaze", "TONE CURVE", max_=1.0, val=0, gate=1)
@@ -552,12 +590,25 @@ def build_rows():
     # ultra-bright DV/HDR masters need compression to start early or the sky clips.
     # It is safe at a low knee because the compressor is detail-preserving (local base
     # + restored residual), so mid-tone texture no longer "oil-paints" at ratio>1.
+    #
+    # HIDDEN BY DEFAULT (dev=True) — three sliders that describe ONE behaviour, and the
+    # first drafts of this comment described their interaction wrongly. Measured
+    # 2026-10-12/13 on an explosion: knee 0.21 + ratio 2.0 put the local base far above
+    # the compressed value, the restored residual carried a large negative constant, and
+    # dark detail inside the bright region rendered as BLACK pixels — which read as
+    # "clipping" and was nothing of the kind. The compressor is now bounded against that
+    # (gt7_tonemap.hlsl: keep <= comp/base), so these values are safe, but a user cannot
+    # be expected to hold the interaction of three dials that only make sense together.
+    # The INI keys still apply and still push, so an expert can tune them by hand.
     add("Soft knee (0=off)", SLIDER, H, "hdr.softKnee", "CURVE SETTINGS",
-        min_=0, max_=4, val=0.21, default=0.21, uncheck=False, curves=CURVES_SOFTKNEE)
+        min_=0, max_=4, val=0.21, default=0.21, uncheck=False, curves=CURVES_SOFTKNEE,
+        dev=True)
     add("Soft knee ratio", SLIDER, H, "hdr.softKneeRatio", "CURVE SETTINGS",
-        min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False, curves=CURVES_SOFTKNEE)
+        min_=1.0, max_=5.0, val=2.48, default=2.48, uncheck=False, curves=CURVES_SOFTKNEE,
+        dev=True)
     add("Soft knee width", SLIDER, H, "hdr.softKneeWidth", "CURVE SETTINGS",
-        min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False, curves=CURVES_SOFTKNEE)
+        min_=0.05, max_=1.0, val=0.42, default=0.42, uncheck=False,
+        curves=CURVES_SOFTKNEE, dev=True)
     # Scene reference white (Hable + GT7 + GT7 Adapt): the input-gain numerator.
     #
     # Default is 105, not libplacebo's 203, and the reason is measured rather than
@@ -573,8 +624,23 @@ def build_rows():
     # So the rule is refWhite ~= 1.24 * sdrNits -- 105 at 85, 248 at 200. The
     # libplacebo 203 is the value for a display with headroom; at 85 nits it asks
     # the shoulder for 5.2x and flattens the top of the range.
-    add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "CURVE SETTINGS",
-        min_=50, max_=400, val=105, default=105, uncheck=False, curves=CURVES_REFWHITE)
+    # RETIRED 2026-10-12 — the row above says "refWhite ~= 1.24 * sdrNits" and then this
+    # slider let a user type any number from 50 to 400 anyway. It did: a manual 203.8 at a
+    # 127-nit target placed the master's peak at 3.53x the ceiling, GT7's shoulder ran out
+    # at 1.87x and min(blended, ceiling) flattened everything between — measured, and the
+    # reason explosions clipped while ordinary frames looked fine (nothing else lives that
+    # high). The renderer now caps refWhite at the shoulder's own reach (Gt7Reach/sdrNits/
+    # 2.2, divided by the exposure trim), which makes any value at or above the cap
+    # indistinguishable: a dial whose top two-thirds does nothing is not a control, it is
+    # a trap. refWhite is pinned in the engine (HdrSettings::refWhiteNits) and the cap
+    # enforces the rest; the honest brightness lever on this curve is "GT7 shoulder
+    # reach" (gtAlpha), which buys headroom instead of spending it.
+    #
+    # Kept in the engine and in Settings_t on purpose: the value is still reachable for
+    # A/B work without restoring a rail control, and removing the field would shift the
+    # Settings_t layout the filter and the engine share.
+    # add("Scene ref white (nits)", SLIDER, H, "hdr.refWhite", "CURVE SETTINGS",
+    #     min_=50, max_=400, val=105, default=105, uncheck=False, curves=CURVES_REFWHITE)
     # AUTO EXPOSURE. refWhite was a per-title hand dial: Everest wants ~80, a dark
     # indoor master ~200, and nothing in the metadata says which (one title's MaxFALL
     # of 944 on an indoor drama predicted 20 where 200 was right). What separates them
@@ -703,6 +769,29 @@ def build_rows():
     # 1.00 = off (no mapping inside the gamut). ~0.55 is what madVR's sky measures at.
     add("Gamut capacity (709)", SLIDER, H, "hdr.gamutCap", "TONE MAPPING",
         min_=0.20, max_=1.00, val=1.00, default=1.00, uncheck=False)
+    # HIGHLIGHT DESATURATION — the level-linked term these curves do not have.
+    #
+    # Measured on the Dune 12 dusk sky against madVR, seven bands (fillmap.ps1): madVR's
+    # gamut fill FALLS as level rises (0.60 -> 0.54 -> 0.43 -> 0.31) while ours RISES
+    # (0.74 -> 0.83 -> 0.80 -> 0.57), and RED is the channel that pays — 62 -> 41 and
+    # 78 -> 52 codes at matched luma. Less red in a blue-dominant pixel is what reads as
+    # cyan. Shadows match madVR to within 0.04, so this is not inherited from the master;
+    # it is a desaturation that is simply absent on the Unplugged curve, where "Highlight
+    # neutral" and "Chroma desat (exp)" are never read at all (they belong to GT7).
+    #
+    # It sits with the gamut controls, not in the grade tab, because it is a DELIVERY
+    # decision keyed on the level the viewer receives. Mechanically it runs after the band
+    # steps (so a grade lift or crush is accounted for) inside the chroma pass, which means
+    # it needs "Enable ML grade" on — and on GT7-Adapt, highlightNeutral and GT7 desat pull
+    # in this same band too, so the value fitted on curve 7 may be too strong there.
+    #
+    # Window is fitted, not chosen: smoothstep over I_norm 0.45 -> 0.70, mean error 0.014
+    # against the seven measured anchors (a linear ramp to the ceiling scored 0.125, and
+    # its failure was the reported symptom — 13% engaged where the cyan lives, 93% on the
+    # speculars it should not touch). Skin is protected by the grade's P(skin) weight.
+    # 0 = off, byte-identical. 0.50 is the value fitted to curve 7.
+    add("Highlight desat", SLIDER, H, "hdr.hiDesat", "TONE MAPPING",
+        min_=0.0, max_=1.0, val=0.0, default=0.0, uncheck=False)
     add("Windows HDR", CYCLE, H, "hdr.toggleDisplay", "DISPLAY TARGET",
         ["Do not change", "On (fullscreen)", "On", "On/off (fullscreen)", "On/off"], 0, uncheck=False)
     add("Static nits (max)", SLIDER, H, "hdr.maxNits", "DISPLAY TARGET", min_=200, max_=10000, val=1000, default=1000, uncheck=False)
@@ -831,6 +920,9 @@ class S3ShellPanel(QWidget):
         # new graph generation (see MainWindow._on_s3_status), which covers
         # everything this rail manages without touching fields it does not.
         self.group = 3               # ZION (g_sysGroup default)
+        # Read before any layout pass: _rebuild() filters dev rows on it, and a row that
+        # is hidden must never be painted on the first frame and removed on the second.
+        self.show_internals = self._ini_flag(DEV_INI_KEY)
         self.collapsed = set()
         self.mouse = QPoint(-1, -1)  # for hover
         self._layout = []            # [(is_header, text/idx, y, h)]
@@ -1164,6 +1256,10 @@ class S3ShellPanel(QWidget):
             # itself otherwise. Checked BEFORE the section header so a section
             # whose rows are all hidden emits no header.
             if r.curves is not None and active not in r.curves:
+                continue
+            # Machinery, not taste: hidden unless ui.showGradeInternals is set by hand.
+            # Visibility only — the row still holds its INI value and still pushes.
+            if r.dev and not self.show_internals:
                 continue
             # A section header is emitted only for rows that HAVE a section
             # (shell: `r->section && wcscmp(...)` — "Enable ML grade" has none).
@@ -1500,6 +1596,14 @@ class S3ShellPanel(QWidget):
         self.update()
 
 
+# old INI key -> new INI key, applied on load by SettingsIni.__init__.
+# Use it whenever a row is renamed or moves group, so a tuned value follows the control
+# instead of reverting to its default on the next start.
+RENAMED_INI_KEYS = {
+    "zion.hiDesat": "hdr.hiDesat",   # "Hi-Desat" in the grade tab -> "Highlight desat"
+}
+
+
 class SettingsIni:
     """key=value INI next to the executable; debounced 400 ms save."""
 
@@ -1515,6 +1619,15 @@ class SettingsIni:
                     self.values[k.strip()] = v.strip()
         except OSError:
             pass
+        # Renamed keys. A row that moves group (zion.hiDesat -> hdr.hiDesat when the
+        # control was re-labelled "Highlight desat" and placed with the gamut controls)
+        # would otherwise read as "never configured" and silently reset to its default —
+        # the user sees a dial they tuned jump back, which reads as the setting never
+        # having worked. Carried over only when the new key is absent, so a value chosen
+        # after the rename is never overwritten by the old one.
+        for old, new in RENAMED_INI_KEYS.items():
+            if new not in self.values and old in self.values:
+                self.values[new] = self.values[old]
 
     def get(self, key):
         return self.values.get(key)

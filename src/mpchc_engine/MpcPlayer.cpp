@@ -35,7 +35,14 @@
 
 namespace {
 
-const CLSID CLSID_MPCVR = {0x71F080AA, 0x8661, 0x4093, {0xB1, 0x5E, 0x4F, 0x69, 0x03, 0xE7, 0x7D, 0x0A}};
+// The Unplugged renderer -- its own CLSID, deliberately NOT the upstream filter's
+// {71F080AA-...}. Sharing that GUID meant whichever .ax registered last owned the
+// InprocServer32 entry for both, so an install of the upstream filter could take
+// over this app's video output (or this one take over theirs). This is an
+// engine-local constant inside an anonymous namespace; moreuuids.h's CLSID_MPCVR is
+// left completely alone because the MPC-HC app uses it for its own renderer entry,
+// and repointing that would make MPC-HC look for our filter under the legacy name.
+const CLSID CLSID_UnpluggedRenderer = {0xE8BD7497, 0x6880, 0x4CD6, {0x8C, 0x51, 0x5F, 0xA9, 0x7E, 0xCD, 0xAC, 0x3F}};
 const CLSID CLSID_LAVSplitter = {0x171252A0, 0x8820, 0x4AFE, {0x9D, 0xF8, 0x5C, 0x92, 0xB2, 0xD6, 0x6B, 0x04}};
 const CLSID CLSID_LAVSplitterSource = {0xB98D13E7, 0x55DB, 0x4385, {0xA3, 0x3D, 0x09, 0xFD, 0x1B, 0xA2, 0x63, 0x38}};
 const CLSID CLSID_LAVVideo = {0xEE30215D, 0x164F, 0x4A92, {0xA4, 0xEB, 0x9D, 0x4C, 0x13, 0x39, 0x0F, 0x9F}};
@@ -224,6 +231,15 @@ MpcPlayer::MpcPlayer()
     // touch the renderer/card directly (see GetLive* docs).
     m_liveThread = std::thread([this]() {
         while (!m_liveStop) {
+            // Pump the graph's event queue HERE, not on the UI thread. PumpEvents
+            // takes m_graphMtx, and the refresh thread is the one thread that may
+            // hold it while sending window messages: the UI thread must never block
+            // on this mutex, because this thread can need the UI thread to service
+            // the renderer's drained messages. Doing it on the UI thread (via
+            // s3_stats) deadlocked exactly that way -- black frame, frozen app.
+            // Cadence is ~1 s, so end-of-title is noticed within a second, which the
+            // 300 ms UI poll then reports on its next tick.
+            PumpEvents();
             RefreshLive();
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
@@ -264,6 +280,26 @@ HRESULT MpcPlayer::SetRenderer(Renderer r)
 
 HRESULT MpcPlayer::Open(std::wstring_view source)
 {
+    // RETIRE A LEFTOVER CAPTURE BEFORE THE LOCK, NOT UNDER IT.
+    //
+    // Switching VP -> media only stops the engine when is_playing(), and with no
+    // signal that is false, so the DeckLink monitor keeps polling after the switch.
+    // Opening a file then ran the graph teardown into a live capture -- the
+    // join-into-live-receive hang the teardown's own comment warns about, observed
+    // as a frozen app with the monitor still logging locked=0.
+    //
+    // Placement is load-bearing: StopDecklinkCapture joins m_gopThread (the executor),
+    // and the executor takes m_graphMtx inside its rebuild. Calling it while WE hold
+    // m_graphMtx would join a thread that is waiting on us -- the same deadlock
+    // family, one mutex earlier. Before the lock, the join merely waits for an
+    // in-flight rebuild to finish on its own.
+    const bool isDecklink = (source.size() >= 11 &&
+        _wcsnicmp(source.data(), L"decklink://", 11) == 0);
+    if (!isDecklink && (decklinkMonitor_ || ingest_)) {
+        Log("[GRAPH] Open: retiring leftover DeckLink capture before file playback");
+        StopDecklinkCapture();
+    }
+
     // The graph is single-owner: every thread that mutates it (UI calls, the
     // filter-driven restart worker) goes through this lock.
     std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
@@ -362,6 +398,13 @@ HRESULT MpcPlayer::Play()
     if (!mediaControl_) return VFW_E_NOT_FOUND;
     const HRESULT hr = mediaControl_->Run();
     if (SUCCEEDED(hr)) {
+        // The counterpart of DetachRendererWindow on stop/EOF. Re-run the window
+        // configuration first: after a detach the renderer has no owner, and making
+        // it visible with owner 0 would put a stray top-level window on screen.
+        // ConfigureRendererWindow is idempotent -- it just re-asserts owner, style
+        // and message drain.
+        ConfigureRendererWindow();
+        SetRendererVisible(true);
         snapshot_.state = State::Playing;
         UpdateSnapshot();
         Notify("state");
@@ -392,6 +435,9 @@ HRESULT MpcPlayer::Stop()
     if (!mediaControl_) return VFW_E_NOT_FOUND;
     const HRESULT hr = mediaControl_->Stop();
     if (SUCCEEDED(hr)) {
+        // Stop() alone leaves the renderer's window parented into the client area
+        // and eating mouse input; see DetachRendererWindow.
+        DetachRendererWindow();
         snapshot_.state = State::Stopped;
         UpdateSnapshot();
         Notify("state");
@@ -657,21 +703,58 @@ HRESULT MpcPlayer::ApplyVolume()
 
 HRESULT MpcPlayer::PumpEvents()
 {
+    // SERIALIZED ON THE GRAPH MUTEX, AND THAT IS NOT OPTIONAL.
+    //
+    // This runs on the LIVE-TELEMETRY thread (MpcPlayer's constructor loop), about
+    // once a second. It reads mediaEvent_ and mediaControl_ -- members that
+    // Open/BuildGraph/teardown assign and release on other threads under
+    // m_graphMtx. Without the same lock, a concurrent reader can dereference a
+    // CComPtr mid-release: that is the access violation in s3_engine.py:_poll that
+    // killed the app the moment a file was opened, back when this was (wrongly)
+    // called from the UI thread's poll.
+    //
+    // It must NOT run on the UI thread at all: this function takes m_graphMtx, and
+    // the thread holding that mutex may then send window messages to the UI thread
+    // (the deferred detach does). A UI thread blocked on the mutex while its
+    // message queue is what the mutex-holder waits on is a deadlock -- observed as
+    // a black frame and a frozen app. The live thread is the one place this is
+    // safe, because nothing it waits on waits on it.
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
     if (!mediaEvent_) return S_OK;
     long code = 0;
     LONG_PTR p1 = 0, p2 = 0;
+    bool eof = false, aborted = false;
     while (mediaEvent_->GetEvent(&code, &p1, &p2, 0) == S_OK) {
         if (code == EC_COMPLETE) {
-            if (mediaControl_) mediaControl_->Stop();
-            snapshot_.state = State::Ended;
-            UpdateSnapshot();
-            Notify("eof");
+            eof = true;
         } else if (code == EC_ERRORABORT || code == EC_USERABORT) {
-            snapshot_.state = State::Error;
-            Notify("error");
+            aborted = true;
         }
         mediaEvent_->FreeEventParams(code, p1, p2);
     }
+    if (!eof && !aborted) return S_OK;
+
+    // NOTE: this runs on the LIVE THREAD, which must never touch windows. The
+    // renderer's window belongs to the UI thread; put_Owner/put_Visible from here
+    // SendMessage into it, and the UI thread can be blocked joining THIS thread
+    // (Shutdown does exactly that), which is a deadlock. So the detach is deferred:
+    // a flag here, the window work in ApplyPendingWindowDetach() on the UI's poll.
+    if (!decklinkControl_) m_detachPending = true;
+
+    // The window detach itself is NOT done here -- see the flag above. What this
+    // branch owns is the state: a stopped-but-alive graph keeps the renderer
+    // instantiated and its window parented into the Qt viewport, and that native
+    // HWND stacked above the Qt widgets takes the mouse before Qt sees it, which is
+    // why the media library used to come back after a title ended looking right and
+    // responding to nothing. The detach is requested here and performed on the UI
+    // thread by ApplyPendingWindowDetach().
+    //
+    // The graph is deliberately NOT retired here: releasing it joins LAV's worker
+    // threads, and doing that from any thread that the renderer can message is a
+    // deadlock. Open() performs the real teardown on the next play.
+    snapshot_.state = eof ? State::Ended : State::Error;
+    UpdateSnapshot();
+    Notify(eof ? "eof" : "error");
     return S_OK;
 }
 
@@ -1230,7 +1313,7 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
     HRESULT hr = E_FAIL;
     switch (choice) {
     case Renderer::MPCVR:
-        hr = out.CoCreateInstance(CLSID_MPCVR);
+        hr = out.CoCreateInstance(CLSID_UnpluggedRenderer);
         if (SUCCEEDED(hr)) {
             // BISECT PROBE (2026-09-21): the abort (0xc0000409, no handler, no
             // dump) fires at exactly this handoff — the renderer immediately
@@ -1256,6 +1339,16 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
             }
             return S_OK;
         }
+        // Loud, on purpose. Falling through to EVR silently cost a debugging
+        // session: the log said "renderer added hr=0x00000000" -- true, of EVR --
+        // and "renderer lacks IVideoRenderer", which reads like a graph problem
+        // rather than "our filter is not registered". A missing/unregistered CLSID
+        // is the single most likely reason this branch is taken after a rename or a
+        // reinstall, so name the HRESULT and say what is lost.
+        Log("[ENGINE] CANNOT CREATE UNPLUGGED RENDERER hr=0x%08X -- falling back to a "
+            "system renderer. TONE MAPPING, ZION GRADE AND ALL TASTE DIALS ARE INACTIVE. "
+            "Register it: run Install_Unplugged_64.cmd as administrator, or "
+            "regsvr32 \"<path>\\unplugged_vr.ax\"", (unsigned)hr);
         [[fallthrough]];
     case Renderer::VMR9:
         hr = out.CoCreateInstance(CLSID_VideoMixingRenderer9);
@@ -1291,6 +1384,67 @@ HRESULT MpcPlayer::ConfigureRendererWindow()
         pCfg->Flt_SetBool("d3dFullscreenControl", true);
     }
     return S_OK;
+}
+
+void MpcPlayer::DetachRendererWindow()
+{
+    // Take the renderer's window OUT of the client area without releasing anything.
+    //
+    // This is the non-destructive half of what the ordered teardown does. It exists
+    // because releasing the graph here HANGS: PumpEvents runs on the UI thread, and
+    // graph_.Release() joins LAV's worker threads while the renderer routes its
+    // messages to the Qt window via put_MessageDrain -- a UI thread blocked in
+    // release can never service those messages, so the join waits on a thread that
+    // waits on the UI thread. Detaching is enough for the actual problem (a native
+    // window stacked above the Qt widgets eating mouse input), and Open() performs
+    // the full teardown on the next play anyway, so nothing is leaked by leaving the
+    // filter alive in the meantime.
+    // Same lock as PumpEvents: renderer_ is assigned and released by Open/teardown
+    // on other threads. Recursive, so the PumpEvents caller re-enters freely.
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+    if (!renderer_) return;
+    if (CComQIPtr<IVideoWindow> pVW = renderer_) {
+        pVW->put_Visible(OAFALSE);
+        pVW->put_Owner(0);
+        pVW->put_MessageDrain(0);
+    }
+}
+
+void MpcPlayer::ApplyPendingWindowDetach()
+{
+    // Cash in a detach the live thread requested at end-of-title. Called from the
+    // UI thread's poll (s3_stats), which is the thread that owns the renderer's
+    // window -- the one place put_Owner/put_Visible cannot deadlock against the
+    // graph mutex, because this thread never blocks on a thread that needs it.
+    if (!m_detachPending.exchange(false)) return;
+    // Logged because the detach is otherwise invisible: it succeeds quietly, and a
+    // regression here reproduces as "the library came back but clicks do nothing",
+    // which is indistinguishable from three other failures without this line.
+    Log("[EOF] renderer window detached on the UI poll (requested by the live thread)");
+    DetachRendererWindow();
+}
+
+void MpcPlayer::SetRendererVisible(bool visible)
+{
+    // WHY THIS EXISTS. The video surface is a NATIVE child window: MPCVR's window is
+    // parented into the Qt viewport by put_Owner above. When a title ends, the UI
+    // hides its own viewport widget -- but that does not take MPCVR's window out of
+    // the client area, and a native window stacked above Qt widgets receives the
+    // mouse before Qt ever sees it. The app already documents this fact about itself:
+    // MainWindow::_show_chrome says in-window widgets "are not clickable -- the video
+    // renderer's window covers the client area for input" and that is precisely why
+    // the chrome is a separate top-level window. So the media library came back after
+    // EOF looking right and responding to nothing, while the chrome's buttons worked.
+    //
+    // put_Visible(FALSE) is sufficient -- a hidden window takes no input -- and it
+    // keeps the filter, its D3D device and its compiled shaders alive, so choosing
+    // the next title does not pay for a new renderer. put_Owner(nullptr) would also
+    // unparent it, but gambling on the renderer's null-owner path buys nothing here.
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);   // renderer_ lifetime, as above
+    if (!renderer_) return;
+    if (CComQIPtr<IVideoWindow> pVW = renderer_) {
+        pVW->put_Visible(visible ? VARIANT_TRUE : VARIANT_FALSE);
+    }
 }
 
 HRESULT MpcPlayer::Notify(std::string_view name)
@@ -1532,6 +1686,12 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrRefWhiteNits = h.refWhiteNits;
     s.fHdrHighlightNeutral = h.highlightNeutral;
     s.fHdrChromaExp = h.chromaExp;
+    // Delivered-level highlight desaturation. Named as a delivery control (hdr.*) but it
+    // feeds the grade's MLParams_t slot, because that is the pass that runs last over the
+    // chroma — see the header note on HdrSettings::hiDesat.
+    // Clamped to the same 0..1 the renderer stores: the filter compares its stored value
+    // against every push, so an out-of-range value would re-arm the grade forever.
+    s.fMLHiDesat = std::clamp(h.hiDesat, 0.0f, 1.0f);
     s.fHdrGt7Blend     = h.gt7Blend;
     s.fHdrGt7FadeStart = h.gt7FadeStart;
     s.fHdrGt7FadeEnd   = h.gt7FadeEnd;
@@ -1574,6 +1734,7 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.refWhiteNits  = s.fHdrRefWhiteNits;
     h.highlightNeutral = s.fHdrHighlightNeutral;
     h.chromaExp = s.fHdrChromaExp;
+    h.hiDesat = s.fMLHiDesat;
     h.gt7Blend     = s.fHdrGt7Blend;
     h.gt7FadeStart = s.fHdrGt7FadeStart;
     h.gt7FadeEnd   = s.fHdrGt7FadeEnd;
@@ -1702,8 +1863,9 @@ HRESULT MpcPlayer::SaveRendererSettings()
     if (!renderer_) return S_FALSE;
     CComQIPtr<IVideoRenderer> vr = renderer_;
     if (!vr) return S_FALSE;
-    // Persist to HKCU\Software\MPC-BE Filters\MPC Video Renderer so a rebuilt
-    // graph comes back up with these values instead of a stale key.
+    // The renderer writes its own key (HKCU\Software\Unplugged\Renderer since the
+    // identity rename). Persist there so a rebuilt graph comes back up with these
+    // values instead of a stale key -- the engine never touches the registry itself.
     return vr->SaveSettings();
 }
 
@@ -2451,10 +2613,12 @@ std::string MpcPlayer::GetUiStatusJson() const
         sigNum = 0, sigDen = 0, sigIl = 0;
     GetDecklinkSignalInfo(sigLocked, sigCs, sigDr, sigDepth, sigChroma, sigW, sigH, sigNum, sigDen, sigIl);
 
-    const char* st = sn.state == State::Playing ? "playing"
-                   : sn.state == State::Paused   ? "paused"
-                   : sn.state == State::Stopped  ? "stopped"
-                   : sn.state == State::Error    ? "error" : "idle";
+    // StateName is the single source of these strings. The previous hand-written
+    // ternary collapsed Ended AND Opening into "idle", which made "the title
+    // finished" indistinguishable from "a rebuild-only re-open is in flight" on the
+    // UI side -- and the UI's exit-on-finish therefore closed the app one second
+    // into playback, mid-film. "ended" is now its own value; "opening" is too.
+    const char* st = StateName(sn.state);
 
     MlSettings ml{};        GetLiveMlSettings(ml);
     OutSettings out{};      GetLiveOutSettings(out);
@@ -2646,6 +2810,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "refWhite")      hdr.refWhiteNits  = (float)vd(v);
             else if (name == "highlightNeutral")  hdr.highlightNeutral = std::clamp((float)vd(v), 0.0f, 1.0f);
             else if (name == "chromaExp")          hdr.chromaExp = (float)std::clamp(vd(v), -1.0, 3.5);
+            else if (name == "hiDesat")           hdr.hiDesat = std::clamp((float)vd(v), 0.0f, 1.0f);
             else if (name == "gtBlend")            hdr.gt7Blend = std::clamp((float)vd(v), 0.0f, 1.0f);
             else if (name == "gtFade") {
                 // ONE row for the fade window: the rail sets its START and the width

@@ -151,6 +151,18 @@ class MainWindow(QMainWindow):
         self._mouse_hide_timer.setInterval(3000)
         self._mouse_hide_timer.timeout.connect(self._hide_cursor)
         self._cursor_hidden = False
+        # Set on PLAYING in media mode, cleared on a new play and on exit. The
+        # engine reports "idle" both at startup and after a title ends, and the two
+        # are indistinguishable in the state string alone -- so "we were playing and
+        # now we are not" is the only safe trigger for exit-on-finish. Without it
+        # the app would close on its first poll, before anything was ever played.
+        self._media_was_playing = False
+        # Set only by the automatic exit-on-finish path. closeEvent asks the user to
+        # confirm an exit, which is right for a hand on the X and wrong for a title
+        # that simply ended: the dialog would interrupt an unattended session, and
+        # cancelling it leaves a session whose engine is already stopped -- unable to
+        # play anything else, which is the exact state exit-on-finish exists to avoid.
+        self._exit_without_confirm = False
         # App-level input filter — see eventFilter for why the window's own
         # mouseMoveEvent cannot carry this.
         QApplication.instance().installEventFilter(self)
@@ -361,10 +373,13 @@ class MainWindow(QMainWindow):
         # The confirm dialog is a real dialog the user must click. If the cursor is
         # hidden when X is pressed it would appear with an invisible pointer.
         self._show_cursor()
-        if not ConfirmDialog.ask("Close Unplugged", "Are you sure you want to exit?",
-                                 confirm_label="Exit", parent=self):
-            event.ignore()
-            return
+        if not self._exit_without_confirm:
+            if not ConfirmDialog.ask("Close Unplugged", "Are you sure you want to exit?",
+                                     confirm_label="Exit", parent=self):
+                event.ignore()
+                return
+        else:
+            _audit.info("app: automatic exit (title finished) — no confirmation by design")
         _audit.info("app: window close event — shutting down")
         self._hotkey.stop()
         self._dl_monitor.stop()
@@ -561,6 +576,10 @@ class MainWindow(QMainWindow):
         # Overlay "Media Player" button — no confirmation needed, user is on failure screen
         self._acquire_overlay.switch_to_media_player.connect(
             lambda: self._force_mode_change("media_player"))
+        # Overlay "Exit" button. The failure dialog is modal over the whole app, so
+        # it must offer a way out; close() runs the same ordered teardown as the
+        # title bar (engine shutdown, config save), so there is one exit path.
+        self._acquire_overlay.exit_requested.connect(self.close)
 
         # Playback controls → engine (track/audio-mode routed to the s3 engine;
         # everything else keeps the mpv-era set_property shim).
@@ -571,7 +590,11 @@ class MainWindow(QMainWindow):
 
         # Media library
         self._media_library.play_requested.connect(self._on_play_file)
-        self._media_library.calibrate_requested.connect(self._on_calibrate)
+        # The library's bottom-bar button is the mode switch. _on_app_mode_changed
+        # already owns the whole sequence: confirm if genuinely playing, stop and
+        # shut the engine down, flip app_mode, then _start_vp_capture for the HDMI
+        # feed. Reusing it keeps one definition of "switch to VP" instead of a
+        # second path that drifts.
         self._media_library.switch_requested.connect(
             lambda: self._on_app_mode_changed("video_processor"))
 
@@ -613,6 +636,14 @@ class MainWindow(QMainWindow):
             self._viewport.hide()
             self._status_bar.show()
             self._control_bar.show()
+            # The chrome is a separate top-level window docked over the whole frame
+            # with a transparent middle -- and a transparent top-level still OWNS
+            # mouse input in its transparent region. Left up, it sits over the media
+            # library and eats every click meant for it, while the chrome's own
+            # buttons keep working: exactly the "library visible but dead" report.
+            # The chrome is a watch-mode affordance; the picker screen is not watch
+            # mode, so it goes.
+            self._show_chrome(False)
             self._set_overlay_opacity(_OVERLAY_OPACITY_EDIT)
             if self._app_config.app_mode == "media_player":
                 self._background.show_instant()
@@ -959,10 +990,17 @@ class MainWindow(QMainWindow):
         """
         Initialise the engine (once), apply options, observe properties, play.
         """
+        # PLAY-PATH BRACKETS. A hang in this function is invisible from the engine
+        # log (the command never arrives) and invisible to the user (frozen UI), so
+        # the only evidence that can exist is which bracket was written last. Each
+        # stage logs on entry; the gap between panel.log's final line and the next
+        # stage names the hang.
+        _audit.info("play path: enter _init_engine_with_options")
         self._viewport.show()
         self._viewport.raise_()
         self._viewport.winId()
         wid = self._viewport.hwnd()
+        _audit.info(f"play path: viewport hwnd={wid}")
 
         # Initialise engine once — subsequent calls are no-ops; each engine guards
         # its own re-entry internally. (The old `if not self._engine._mpv` check
@@ -977,6 +1015,7 @@ class MainWindow(QMainWindow):
                 _mp_startup["msg_level"] = _a[len("--msg-level="):]
         self._engine.initialise(self._app_config.mpv_executable, wid=wid,
                                 startup_opts=_mp_startup or None)
+        _audit.info("play path: engine initialised")
 
         if not self._engine._mpv:
             QMessageBox.critical(self, "Engine Error",
@@ -1007,9 +1046,12 @@ class MainWindow(QMainWindow):
         _audit.info(f"media_player: mpv args = {extra_args}")
 
         # Push profile live settings
+        _audit.info("play path: syncing live settings")
         sync_all_live(self._engine, self._profile)
 
+        _audit.info(f"play path: engine.play({url})")
         self._engine.play(url)
+        _audit.info("play path: engine.play returned")
         self._acquire_overlay.dismiss()   # stale VP overlay must not persist over file playback
         # Polling is now deferred until first video-params (first real frame)
         # in MpvEngine._on_property_qt — no timer needed here.
@@ -1101,6 +1143,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_play_file(self, path: str) -> None:
         _audit.info(f"user: play file  {path}")
+        self._media_was_playing = False   # re-armed by the next PLAYING state
         self._current_file = path
         self._dv_switched_for = ""
         self._status_panel.set_dv_active(False)
@@ -1249,6 +1292,9 @@ class MainWindow(QMainWindow):
         self._status_panel.set_process_state(ps)
 
         if state == EngineState.PLAYING:
+            # Arms exit-on-finish: see _media_was_playing.
+            if self._app_config.app_mode == "media_player":
+                self._media_was_playing = True
             # The acquire overlay belongs to VP acquisition; once the engine is
             # PLAYING it is stale in ANY mode (including a leftover from a prior
             # VP session in Media mode — it would otherwise animate forever over
@@ -1295,6 +1341,31 @@ class MainWindow(QMainWindow):
                 url = self._profile.input.device
                 self._engine._video_params_seen = False
                 QTimer.singleShot(200, lambda: self._engine.play(url))
+                return
+
+            # A FINISHED TITLE ENDS THE SESSION. Returning to the library after EOF
+            # was the origin of three separate input-ownership bugs in a row -- the
+            # renderer's native window over the Qt widgets, the chrome top-level over
+            # the library, and the leftover-capture join -- each one a fight over who
+            # owns the mouse on that screen. The product decision is simpler and it
+            # fits the HTPC use: when the film is over, the app is over.
+            #
+            # Gated on _media_was_playing because the engine reports "idle" both at
+            # startup and after a title ends, and the state string alone cannot tell
+            # them apart. ERROR is excluded on purpose: a failed open must not kill
+            # the app.
+            # ENDED ONLY. The engine now reports "ended" distinctly (StateName), and
+            # that is the only state that means a title finished. IDLE and LOADING
+            # also occur mid-stream -- a rebuild-only re-open reports opening/idle
+            # for a moment -- and treating those as end-of-title closed the app one
+            # second into playback, mid-film, on 2026-10-09.
+            if (self._app_config.app_mode == "media_player"
+                    and self._media_was_playing
+                    and state == EngineState.ENDED):
+                self._media_was_playing = False
+                self._exit_without_confirm = True
+                _audit.info("media: title finished -> graceful exit (no confirmation)")
+                self.close()
                 return
 
             self._set_mode(AppMode.IDLE)

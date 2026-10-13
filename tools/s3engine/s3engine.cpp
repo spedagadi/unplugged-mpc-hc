@@ -246,6 +246,17 @@ __declspec(dllexport) int s3_start_device(const char* deviceUtf8)
 __declspec(dllexport) int s3_stats(char* buf, int cap)
 {
     if (!buf || cap <= 0) return -1;
+    // NOTE: this used to call g_player()->PumpEvents() so that end-of-title would be
+    // noticed. It must NOT: s3_stats runs on the UI thread, PumpEvents takes the graph
+    // mutex, and the engine's refresh thread takes that same mutex and then sends
+    // window messages TO the UI thread. A UI thread blocked on the mutex plus a
+    // refresh thread blocked on the UI thread is a deadlock -- observed as a black
+    // frame and a frozen app the moment a file played. The pump now lives on the
+    // refresh thread (MpcPlayer's live-tick loop).
+    //
+    // What the UI thread DOES own is the renderer's window, so the detach that the
+    // refresh thread requests at end-of-title is cashed in here, on the poll.
+    g_player()->ApplyPendingWindowDetach();
     const std::string j = g_player()->GetUiStatusJson();
     const size_t n = j.size();
     if (n + 1 > (size_t)cap) {
