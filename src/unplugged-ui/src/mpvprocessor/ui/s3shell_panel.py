@@ -1156,6 +1156,17 @@ class S3ShellPanel(QWidget):
             except (TypeError, ValueError):
                 pass
             return
+        # Subtitle track: option 0 is "Off" (MPC-HC's subtitle menu has that entry), so the
+        # engine's subtitle-relative index is the option index minus one. Imperative like
+        # the audio row — never part of KEY_MAP, so push_all cannot re-send it.
+        if r.key == "pb.subTrack":
+            try:
+                idx = int(r.opt) - 1
+                self.engine.select_subtitle_track(idx)
+                log(f"ui-corr: apply {r.key} -> subtrack {idx}")
+            except (TypeError, ValueError):
+                pass
+            return
         # Audio mode likewise: only sent on a real user click (options are
         # ["Bitstream","PCM"] → engine 1/0). Kept out of KEY_MAP so push_all never
         # re-sends it and re-triggers the mode→re-open→gen→push feedback loop.
@@ -1211,6 +1222,35 @@ class S3ShellPanel(QWidget):
         if hd is not None:
             hd.opt = 0 if int(mode) == 1 else 1     # options ["Bitstream", "PCM"]
         self.update()   # repaint the custom-drawn rail
+
+    def set_subtitle_state(self, tracks, current_i):
+        """Populate the PLAYBACK Subtitles rotate row from the engine's subtitle block.
+
+        Options stay ["Off", track1, track2, ...] — MPC-HC's subtitle menu leads with the
+        same Off entry, and _apply_engine maps option -> engine index by minus one. Set
+        WITHOUT pushing back to the engine: the engine is the source of truth for which
+        stream is enabled, so a poll must not echo a selection."""
+        row = self._row("pb.subTrack")
+        if row is None:
+            return
+        import re
+        labels = ["Off"]
+        for i, t in enumerate(tracks or []):
+            # LAV names subtitle streams "S: Deutsch Forced (SRT) [ger]". Keep the "(SRT)"
+            # — unlike audio, where the format parenthetical is noise, here it is the one
+            # thing that tells a text track from a bitmap one, which decides whether the
+            # style row can do anything at all.
+            nm = re.sub(r'^[A-Za-z]:\s*', '', (t.get("name") or "").strip())
+            nm = re.sub(r'\[[^\]]*\]', '', nm)
+            nm = " ".join(nm.split()).strip()
+            labels.append(nm or (t.get("lang") or "").strip() or f"Track {i + 1}")
+        row.options = labels
+        try:
+            cur = int(current_i)
+        except (TypeError, ValueError):
+            cur = -1
+        row.opt = 0 if cur < 0 else max(0, min(cur + 1, len(labels) - 1))
+        self.update()
 
     def push_all(self):
         """Push every mapped INI value to the engine once (engine startup)."""

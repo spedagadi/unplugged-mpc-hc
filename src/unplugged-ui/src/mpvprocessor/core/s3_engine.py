@@ -208,6 +208,20 @@ class S3Engine(QObject):
         if self._lib:
             self._lib.s3_cmd(json.dumps({"a": "track", "index": int(index)}).encode("utf-8"))
 
+    def select_subtitle_track(self, index: int) -> None:
+        """Pick the Nth subtitle stream (subtitle-relative index, live).
+
+        The engine's "subtrack" action takes -1 for off, which is how the rail's Off
+        entry maps; anything else is enabled through the splitter's IAMStreamSelect and
+        reaches the picture through the presenter's subpic queue."""
+        if self._lib:
+            self._lib.s3_cmd(json.dumps({"a": "subtrack", "index": int(index)}).encode("utf-8"))
+
+    def set_subtitle_visible(self, on: bool) -> None:
+        """Show/hide the current subtitle without changing which stream is selected."""
+        if self._lib:
+            self._lib.s3_cmd(json.dumps({"a": "subvisible", "on": 1 if on else 0}).encode("utf-8"))
+
     def set_audio_mode(self, mode: int) -> None:
         """0 = decode to PCM, 1 = bitstream. Triggers an engine re-open to apply."""
         self.apply_settings({"audio": {"mode": int(mode)}})

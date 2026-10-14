@@ -26,6 +26,35 @@
 
 #include "MpcPlayer.h"
 
+// MFC is statically linked into this DLL (mpchc_engine.lib is UseOfMfc Static), and the
+// subtitle stack made that load-bearing: the allocator-presenter and the pass-thru
+// filter construct CStrings and windows. In mpc-hc.exe a CWinApp initialises MFC; a DLL
+// hosted by a non-MFC process (python, or the proof harness) gets NO initialisation
+// unless it asks, and afxCurrentInstanceHandle stays null until the first CString or
+// CWinThread touch reads through it — observed as 0xC0000005 inside CreateRenderer on
+// the first subtitle-enabled graph build (2026-10-14).
+BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hInst);
+        AfxWinInit(hInst, nullptr, ::GetCommandLineW(), SW_SHOWNORMAL);
+    }
+    return TRUE;
+}
+
+// The module's CWinApp. AfxWinInit sets the instance handle, but AfxGetApp() still
+// returns null without an app object, and the subtitle decoders (CRenderedTextSubtitle
+// and friends) call it — observed as 0xC0000005 inside CLAVOutputPin::Connect on the
+// first subtitle pin, with the AV frames inside the decoder's construction. mpc-hc.exe
+// gets this object from its own app class; a regular DLL statically linked to MFC has
+// to declare one, which is exactly what the MFC DLL wizard generates.
+class CS3EngineApp : public CWinApp
+{
+public:
+    BOOL InitInstance() override { return TRUE; }
+};
+static CS3EngineApp theS3EngineApp;
+
 static void EngineLog(const char* line);   // defined below; the crash hooks need it first
 
 // ─ Crash self-diagnosis: the engine prints its own stack at the moment of death ─
@@ -329,6 +358,21 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
         // index, same as the status JSON's audio.tracks[].i). Live via IAMStreamSelect.
         const std::string idx = JsonField(s, "index");
         return (int)g_player()->SetAudioTrack(idx.empty() ? -1 : atoi(idx.c_str()));
+    }
+    if (a == "subvisible") {
+        // {"a":"subvisible","on":0|1} — show/hide the current subtitle without changing
+        // which stream is selected, i.e. MPC-HC's "Subtitles" toggle rather than its
+        // track menu. The engine keeps the flag, so a track change honours it too.
+        const std::string on = JsonField(s, "on");
+        return (int)g_player()->SetSubtitlesEnabled(on.empty() ? 1 : atoi(on.c_str()) != 0);
+    }
+    if (a == "subtrack") {
+        // {"a":"subtrack","index":N} — select the Nth subtitle stream, or -1 to clear.
+        // Same shape as "track": the engine enables it on the splitter AND hands the
+        // matching ISubPicProvider to the presenter, so the change is visible on the
+        // next presented frame without a graph rebuild.
+        const std::string idx = JsonField(s, "index");
+        return (int)g_player()->SetSubtitleTrack(idx.empty() ? -1 : atoi(idx.c_str()));
     }
     // Audio mode (PCM↔Bitstream) rides the "set" path as audio.mode — no action here.
     // Persist the renderer's live settings to MPCVR's own registry key. SetSettings

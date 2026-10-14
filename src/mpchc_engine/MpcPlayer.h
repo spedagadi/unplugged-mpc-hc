@@ -469,6 +469,15 @@ public:
     int m_audioTrackCount = 0;   // audio tracks in m_audioJson; 0 → retry on the live tick
     void RebuildAudioJson();
 
+    // The same for subtitles: a `,"subtitle":{"current":N,"tracks":[…]}` fragment. The UI
+    // has had a Subtitles row since the mpv days but nothing fed it, so the list showed
+    // "Off" only. Enumerated from the splitter's IAMStreamSelect (same source as audio),
+    // with subtitle-relative indexes — which is what SetSubtitleTrack takes.
+    std::string m_subJson;
+    int m_subTrackCount = 0;
+    bool m_subEnumDone = false;   // splitter really enumerated (vs. answered 0 streams)
+    void RebuildSubtitleJson();
+
     // Inject (or clear+re-inject) the post-scale post-fx shaders through
     // IExFilterConfig. Idempotent: it re-injects only when the generated source
     // changed or the renderer instance is new (graphGen_ moved), so an unrelated

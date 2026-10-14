@@ -49,6 +49,8 @@
     <ClCompile Include="..\filters\renderer\VideoRenderers\MPCVRAllocatorPresenter.cpp" />
     <ClCompile Include="..\filters\renderer\VideoRenderers\RenderersSettings.cpp" />
     <ClCompile Include="..\filters\renderer\VideoRenderers\IPinHook.cpp" />
+    <ClCompile Include="..\mpc-hc\Monitors.cpp" />
+    <ClCompile Include="..\mpc-hc\MultiMonitor.cpp" />
     <ClCompile Include="SubtitlePlayerGlobals.cpp" />
   </ItemGroup>
   <ItemGroup>

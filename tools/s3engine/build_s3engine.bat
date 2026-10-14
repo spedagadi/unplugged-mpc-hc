@@ -19,17 +19,23 @@ REM CRT (common.props), and MpcPlayer.h now includes afxwin.h for the subtitle s
 REM /MD TU that touches MFC asks for uafxcw.lib, which collides symbol-for-symbol with
 REM the engine's nafxcw.lib (LNK2005 on CFile::hFileNull & co). Same runtime as the lib
 REM or the link cannot be made to work at all.
-cl /nologo /EHsc /std:c++17 /W3 /utf-8 /Ox /MT /DNDEBUG /DWIN32_LEAN_AND_MEAN ^
+REM /D_UNICODE /DUNICODE are NOT optional: MpcPlayer.h pulls afxwin.h, and static MFC
+REM selects its library by CHARACTER SET - uafxcw for Unicode, nafxcw for ANSI (afx.h,
+REM the _AFX_NOFORCE_LIBS block). Every project in the chain is CharacterSet=Unicode;
+REM this cl line is the only TU built by hand, and without the defines it asked for
+REM nafxcw and collided symbol-for-symbol with the rest (LNK2005, CFile::hFileNull).
+REM Keep this file pure ASCII: cmd parses bats as cp1252 and an em dash tokenises it.
+cl /nologo /EHsc /std:c++17 /W3 /utf-8 /Ox /MT /DNDEBUG /DWIN32_LEAN_AND_MEAN /D_UNICODE /DUNICODE ^
   /I"..\..\src\mpchc_engine" /I"..\..\src\thirdparty\DeckLinkSource" ^
   /I"..\..\src\thirdparty" /I"..\..\src\thirdparty\BaseClasses" ^
   /I"..\..\src\SubPic" /I"..\..\src\Subtitles" /I"..\..\src\DSUtil" ^
   /I"..\..\src\filters\renderer\VideoRenderers" ^
   s3engine.cpp ^
-  /LD /Fe:s3engine.dll /link "..\..\bin\lib\Release_x64\mpchc_engine.lib" ^
+  /LD /Fe:s3engine.dll /link /DEBUG:FULL "..\..\bin\lib\Release_x64\mpchc_engine.lib" ^
   /LIBPATH:"..\..\bin\lib\Release_x64" /LIBPATH:"..\..\src\thirdparty\BaseClasses\bin\lib\Release_x64" ^
   BaseClasses.lib ^
-  SubPic.lib Subtitles.lib DSUtil.lib libass.lib libharfbuzz.lib freetype2.lib libfribidi.lib libunibreak.lib zlib.lib libiconv.lib ^
-  strmiids.lib mfuuid.lib mf.lib mfplat.lib ole32.lib oleaut32.lib user32.lib gdi32.lib dbghelp.lib
+  SubPic.lib Subtitles.lib DSUtil.lib unrar.lib libass.lib libharfbuzz.lib freetype2.lib libfribidi.lib libunibreak.lib zlib.lib libiconv.lib ^
+  strmiids.lib mfuuid.lib mf.lib mfplat.lib ole32.lib oleaut32.lib user32.lib gdi32.lib dbghelp.lib version.lib vfw32.lib wininet.lib
 ECHO S3ENGINE_BUILD_EXIT=%ERRORLEVEL%
 POPD
 ENDLOCAL

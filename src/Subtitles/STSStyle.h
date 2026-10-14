@@ -25,6 +25,14 @@
 #include <array>
 #include "TextFile.h"
 
+// USE_LIBASS changes this class's layout (the members below the #if), so the header that
+// declares them cannot rely on some other header having pulled the config in first. STS.h
+// and RTS.h include it for the same reason; consumers that take only STSStyle.h (the
+// engine's SubRendererSettings.h path) otherwise compile a smaller struct than the one
+// Subtitles.lib allocates and copy, and the CString at the tail of the truncated layout
+// is uninitialised garbage that STSStyle::operator= then dereferences.
+#include "../../include/mpc-hc_config.h"
+
 class STSStyle {
 public:
     enum RelativeTo {

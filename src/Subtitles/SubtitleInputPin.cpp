@@ -160,7 +160,13 @@ HRESULT CSubtitleInputPin::CompleteConnect(IPin* pReceivePin)
                 m_lastHeader.assign(m_mt.pbFormat + dwOffset, m_mt.pbFormat + m_mt.cbFormat);
             }
 
-            if (dwOffset > 0 && m_mt.cbFormat - dwOffset > 0) {
+            // Bounds guard, 2026-10-14: `m_mt.cbFormat - dwOffset` is unsigned, so a
+            // format block whose dwOffset exceeds cbFormat underflows to ~4G, passes
+            // this test, and the reads below (pbFormat[dwOffset..]) go out of bounds —
+            // observed as 0xC0000005 in CompleteConnect when the engine spliced the pin
+            // during graph build. For well-formed types (dwOffset <= cbFormat) this
+            // condition is identical to the original.
+            if (dwOffset > 0 && m_mt.cbFormat > dwOffset) {
                 CMediaType mt = m_mt;
                 if (mt.pbFormat[dwOffset + 0] != 0xef
                         && mt.pbFormat[dwOffset + 1] != 0xbb

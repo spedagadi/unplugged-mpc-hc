@@ -335,6 +335,11 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
 
     const HRESULT hr = BuildGraph(source);
     if (FAILED(hr)) {
+        // BuildGraph's first statement is the graph's CoCreateInstance, and it returns
+        // before its own "enter" line when that fails — without this, a failed rebuild
+        // leaves no trace at all between "building the new graph" and state=error.
+        Log("[GRAPH] Open: BuildGraph FAILED hr=0x%08X (no BuildGraph enter line means the "
+            "filter graph manager itself could not be created)", (unsigned)hr);
         snapshot_.state = State::Error;
         Notify("error");
         return hr;
@@ -383,19 +388,115 @@ void MpcPlayer::TeardownDecklinkGraph()
             pVW->put_Owner(0);
         }
     }
-    // Subtitle side first: the queue thread holds the provider, and the presenter holds
-    // the renderer, so both go before the graph drops its filters.
-    subs_.clear();
-    subSink_.Release();
-    subAP_.Release();
-    graph_.Release();
-    mediaControl_.Release();
-    mediaSeeking_.Release();
-    mediaEvent_.Release();
-    splitter_.Release();
-    renderer_.Release();
-    audioDecoder_.Release();
-    audioRenderer_.Release();
+    // One line per release plus a refcount read, because the ordering question below is
+    // unanswerable from a stack that only shows DECLARE_IUNKNOWN's Release: the last
+    // "enter" without its "done" names the release that faults, and the refcount says
+    // whether the object was already dead when we got there. CComPtr hides AddRef/Release
+    // (_NoAddRefReleaseOnCComPtr), hence the raw pointer.
+#define RELEASE_STEP(what, ptr)                                                        \
+    do {                                                                               \
+        Log("[TEARDOWN] release %s (%p) — enter", what, (void*)(ptr).p);               \
+        if ((ptr).p) {                                                                 \
+            IUnknown* pRaw = (ptr).p;                                                  \
+            pRaw->AddRef();                                                            \
+            Log("[TEARDOWN] %s refs before release = %lu", what, pRaw->Release());     \
+        }                                                                              \
+        (ptr).Release();                                                               \
+        Log("[TEARDOWN] release %s — done", what);                                     \
+    } while (0)
+
+    auto probeRenderer = [this](const char* where) {
+        if (!renderer_) { Log("[TEARDOWN] %s renderer = null", where); return; }
+        IUnknown* pRaw = renderer_.p;
+        pRaw->AddRef();
+        Log("[TEARDOWN] %s renderer %p refs = %lu", where, (void*)pRaw, pRaw->Release());
+    };
+
+    // Is this thread still in a COM apartment? CoGetContextToken answers without changing
+    // the apartment's reference count, which is exactly what is needed here: the rebuild
+    // runs on the executor thread, and a filter whose setup code pairs CoInitialize with
+    // CoUninitialize (CBaseFilter::Register/Unregister do, amfilter.cpp:914/958) drops that
+    // thread's count to zero and every later CoCreateInstance on it returns
+    // CO_E_NOTINITIALIZED (measured: 0x800401F0 from BuildGraph after this teardown).
+    auto probeCom = [this](const char* where) {
+        ULONG_PTR tok = 0;
+        Log("[TEARDOWN] %s COM apartment hr=0x%08X token=0x%llX", where,
+            (unsigned)CoGetContextToken(&tok), (unsigned long long)tok);
+    };
+    probeCom("4a pre-teardown");
+
+    // ── teardown order, and the one fact that decides it ────────────────────────────────
+    // The renderer filter and the presenter are ONE aggregate: CreateRenderer hands back
+    // the presenter cast to IUnknown (MPCVRAllocatorPresenter.cpp:319) and the presenter
+    // forwards IBaseFilter to the .ax filter, so a reference on either is a reference on
+    // the same refcount. Measured directly: renderer refs = 7 and presenter refs = 7 at
+    // this point. Whoever drops the last one deletes both objects, so the only question is
+    // who is still holding a pointer when that happens. Three orders were tried and each
+    // one faulted somewhere specific:
+    //   * presenter released before the graph  -> the graph's destruction finishes the
+    //     object off and faults inside the .ax (CBaseAllocator::Release, amfilter.h:1467).
+    //   * presenter released after the graph   -> the graph already finished it, and our
+    //     Release runs on freed memory (DECLARE_IUNKNOWN's Release).
+    //   * providers released while the queue can still render them -> fault on the queue
+    //     thread (this is why MPC-HC nulls the provider first, MainFrm.cpp:19279/19389).
+    // The order below answers all three. What it keeps coming back to is that renderer_
+    // and subAP_ are two names for one object, so exactly one of them may be released.
+    probeRenderer("4a pre-graph");
+    if (subAP_) {
+        Log("[TEARDOWN] 4a SetSubPicProvider(nullptr) — enter");
+        subAP_->SetSubPicProvider(nullptr);
+        Log("[TEARDOWN] 4a SetSubPicProvider(nullptr) — done");
+    }
+    Log("[TEARDOWN] 4b release graph + its interfaces — enter");
+    RELEASE_STEP("graph", graph_);
+    RELEASE_STEP("mediaControl", mediaControl_);
+    RELEASE_STEP("mediaSeeking", mediaSeeking_);
+    RELEASE_STEP("mediaEvent", mediaEvent_);
+    probeCom("4b post-graph");
+    Log("[TEARDOWN] 4b release graph + its interfaces — done");
+    Log("[TEARDOWN] 4c release the other filters — enter");
+    RELEASE_STEP("splitter", splitter_);
+    RELEASE_STEP("audioDecoder", audioDecoder_);
+    RELEASE_STEP("audioRenderer", audioRenderer_);
+    probeCom("4c post-filters");
+    Log("[TEARDOWN] 4c release the other filters — done");
+    // ONE release for two pointers. The measurement that proves it: renderer_ and subAP_
+    // both read refs = 7 at 4a (one shared count, not two), and by the time we get here the
+    // count is 1 while we are still holding BOTH pointers. Releasing both therefore
+    // releases the last reference twice — whichever order we pick, the second one faults
+    // (measured three times: in the presenter's Release, in the graph's destructor, and in
+    // the filter's destructor). CreateRenderer hands out the presenter as the renderer
+    // (MPCVRAllocatorPresenter.cpp:319) and the presenter forwards IBaseFilter to the .ax
+    // filter it owns, so they are one aggregate with one refcount.
+    // Drop the presenter pointer without decrementing (Detach), and let the filter
+    // reference finish the aggregate exactly once. The presenter's own destructor runs
+    // inside that Release, unhooks the filter's pin vtable while the filter is still a live
+    // object, and releases m_pMPCVR — which is the same object, so it is the correct owner
+    // of the last reference.
+    Log("[TEARDOWN] 4d drop presenter pointer (shared lifetime) — enter");
+    // Leak check on the Detach below: Detach transfers ownership without decrementing, so
+    // it is only correct if the presenter's own reference is already gone (it dies with the
+    // filter it owns). If this logs refs = 1, we are dropping the last real reference and
+    // leaking the presenter — which holds a D3D device and the window subclass — and the
+    // release/Detach pair has to be swapped instead.
+    if (subAP_) {
+        ISubPicAllocatorPresenter* pRawAP = subAP_.p;
+        pRawAP->AddRef();
+        Log("[TEARDOWN] 4d presenter refs before Detach = %lu", pRawAP->Release());
+    }
+    subAP_.Detach();
+    Log("[TEARDOWN] 4d drop presenter pointer — done");
+    Log("[TEARDOWN] 4e release renderer (last reference) — enter");
+    RELEASE_STEP("renderer", renderer_);   // the presenter's destructor runs inside this
+    probeCom("4e post-presenter-death");
+    Log("[TEARDOWN] 4e release renderer (last reference) — done");
+    Log("[TEARDOWN] 4f release subtitle providers + sink — enter");
+    subs_.clear();               // ISubStream decoders owned by the (now dead) pass-thru filter
+    subSink_.Release();          // CNullTextRenderer lives in the graph: after it
+    curSub_ = -1;
+    probeCom("4f post-subtitle-objects");
+    Log("[TEARDOWN] 4f release subtitle providers + sink — done");
+#undef RELEASE_STEP
     Log("[TEARDOWN] 4/4 stop graph + release — done");
 
     // Release the PREVIOUS capture session here — the quiescent point. Its
@@ -535,17 +636,22 @@ void MpcPlayer::Shutdown()
             pVW->put_Owner(0);
         }
     }
-    subs_.clear();
-    subSink_.Release();
-    subAP_.Release();
+    // Same order as TeardownDecklinkGraph step 4, for the reasons measured and written
+    // down there (filter and presenter are one aggregate; the presenter's destructor
+    // unhooks the filter, so renderer_ is the last reference dropped).
+    if (subAP_) subAP_->SetSubPicProvider(nullptr);
     graph_.Release();
     mediaControl_.Release();
     mediaSeeking_.Release();
     mediaEvent_.Release();
     splitter_.Release();
-    renderer_.Release();
     audioDecoder_.Release();
     audioRenderer_.Release();
+    subAP_.Detach();             // same lifetime as renderer_: one release between them
+    renderer_.Release();
+    subs_.clear();
+    subSink_.Release();
+    curSub_ = -1;
     Log("[SHUTDOWN] release graph + filters — done");
 
     if (decklinkMonitor_) {
@@ -886,13 +992,39 @@ HRESULT MpcPlayer::ApplyRendererConfig()
 
 HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
 {
+    // Hold a permanent COM apartment reference on every thread that builds a graph.
+    // Measured, not theorised: the executor thread's apartment is alive at [TEARDOWN] 4c
+    // and gone at 4e — killed by the filter's Release that runs ~CMPCVRAllocatorPresenter,
+    // i.e. something in that destructor chain calls CoUninitialize without having called
+    // CoInitialize on our thread. The symptom is the next rebuild failing with
+    // CO_E_NOTINITIALIZED (0x800401F0) before BuildGraph logs its own enter line. Taking
+    // our own reference makes the apartment survive one unbalanced release, which is the
+    // only defence available to us without patching the renderer's internals; the count is
+    // never dropped, deliberately, because the thread outlives every graph.
+    static thread_local bool s_apartmentHeld = false;
+    {
+        ULONG_PTR tok = 0;
+        const HRESULT hrCom = CoGetContextToken(&tok);
+        if (!s_apartmentHeld || FAILED(hrCom)) {
+            const HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hrInit) && hrInit != RPC_E_CHANGED_MODE && hrInit != S_FALSE) {
+                Log("[GRAPH] BuildGraph: CoInitializeEx hr=0x%08X", (unsigned)hrInit);
+            }
+            s_apartmentHeld = true;
+        }
+    }
+
     HRESULT hr = graph_.CoCreateInstance(CLSID_FilterGraph);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        Log("[GRAPH] BuildGraph: filter graph manager CoCreateInstance hr=0x%08X", (unsigned)hr);
+        return hr;
+    }
 
     // New graph => new MPCVR => its constructor re-reads the registry, so the
     // settings the UI pushed into the previous instance no longer apply. The
     // counter lets the UI notice and re-push (see "gen" in GetUiStatusJson).
     ++graphGen_;
+    m_subEnumDone = false;   // new splitter instance => the list has to be re-enumerated
     Log("[GRAPH] BuildGraph enter — generation now %u", (unsigned)graphGen_);
 
     // Hold the previous direct filter for release by the EXECUTOR, at the next
@@ -1172,6 +1304,7 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // Audio tracks are enumerable now that the splitter has negotiated its streams
     // and the audio decoder connected. Cache the list + mode for the UI to poll.
     RebuildAudioJson();
+    RebuildSubtitleJson();
     return S_OK;
 }
 
@@ -1373,6 +1506,14 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
                 CComPtr<IUnknown> unk;
                 hrAP = subAP_->CreateRenderer(&unk);
                 out = CComQIPtr<IBaseFilter>(unk.p);
+                // Identity witness: CreateRenderer hands back the PRESENTER cast to
+                // IUnknown (MPCVRAllocatorPresenter.cpp:319) and the presenter forwards
+                // IBaseFilter to the .ax filter, so `unk.p` and `out.p` are different
+                // objects with different refcounts. Logged because teardown has to release
+                // exactly these pointers; a mismatch against the teardown log identifies
+                // who reassigned them.
+                Log("[SUBS] renderer filter %p from presenter %p (unk %p)",
+                    (void*)out.p, (void*)subAP_.p, (void*)unk.p);
                 if (FAILED(hrAP) || !out) {
                     Log("[SUBS] presenter CreateRenderer hr=0x%08X -- falling back to a direct CoCreate "
                         "(picture still works, embedded subtitles will not)", (unsigned)hrAP);
@@ -1383,6 +1524,15 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
                 Log("[SUBS] presenter ctor hr=0x%08X -- falling back to a direct CoCreate", (unsigned)hrAP);
                 subAP_.Release();
             }
+        }
+        // The presenter path reports through hrAP and `out`; `hr` is still the E_FAIL it
+        // was initialised to. Forgetting to reconcile them made the success branch below
+        // skip, logged CANNOT CREATE over a renderer that HAD been created, and fell
+        // through to EVR — discarding the .ax (and with it the subtitle callback) while
+        // the picture still came up. Regression of 2026-10-14, caught by the renderer's
+        // own trace showing a fully-initialised instance nobody kept.
+        if (out) {
+            hr = S_OK;
         }
         if (!out) {
             hr = out.CoCreateInstance(CLSID_UnpluggedRenderer);
@@ -2486,8 +2636,10 @@ void MpcPlayer::RefreshLive()
     // empty. Retry from here until audio tracks appear. m_liveReady is false during
     // any rebuild, so splitter_ is stable; this is a read (IAMStreamSelect Count/
     // Info), not a renderer mutation, so it cannot stall the playback clock.
-    if (snapshot_.state == State::Playing && m_audioTrackCount == 0)
+    if (snapshot_.state == State::Playing && (m_audioTrackCount == 0 || !m_subEnumDone)) {
         RebuildAudioJson();
+        RebuildSubtitleJson();
+    }
 
     // Reads may block on the renderer during a signal blip; that cost belongs
     // here, not the UI.
@@ -2812,12 +2964,13 @@ std::string MpcPlayer::GetUiStatusJson() const
     // Splice the cached audio fragment in before the root object's closing brace.
     // m_audioJson already begins with a leading comma (,"audio":{…}); read it under
     // the live-cache lock because the capture path rebuilds it on the executor.
-    std::string audio;
-    { std::lock_guard<std::mutex> lk(m_liveMtx); audio = m_audioJson; }
+    std::string audio, subs;
+    { std::lock_guard<std::mutex> lk(m_liveMtx); audio = m_audioJson; subs = m_subJson; }
     std::string result = std::string(b1) + std::string(b2);
-    if (!audio.empty() && !result.empty() && result.back() == '}') {
+    if (!result.empty() && result.back() == '}') {
         result.pop_back();
         result += audio;
+        result += subs;
         result += '}';
     }
     return result;
@@ -3405,12 +3558,44 @@ HRESULT MpcPlayer::SetAudioTrack(int posIndex)
     return hr;
 }
 
+// posIndex is subtitle-relative (what the rail shows). -1 means Off.
+//
+// Off is expressed by detaching the provider, NOT by disabling the splitter stream:
+// LAVSplitter::Enable returns E_NOTIMPL unless AMSTREAMSELECTENABLE_ENABLE is set
+// (LAVSplitter.cpp:1548-1554), so there is no "disable" verb to call at all. The demuxer
+// keeping the stream flowing is harmless — the presenter renders whatever provider it was
+// last handed, and nullptr means nothing — and it is also how MPC-HC's own Off behaves for
+// renderers that take the stream anyway.
 HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
 {
+    if (posIndex < 0) {
+        curSub_ = -1;
+        ApplySubtitleProvider();
+        RebuildSubtitleJson();
+        Log("[SUBS] subtitle track Off (provider detached; splitter stream left enabled)");
+        return S_OK;
+    }
     const HRESULT hr = SelectStream(TrackKind::Subtitle, posIndex);
     if (SUCCEEDED(hr)) {
-        curSub_ = posIndex;
+        // Trust what the splitter ended up enabling, not what we asked for. LAV's stream
+        // list carries two pseudo-entries — "Forced Subtitles (auto)" and "No subtitles" —
+        // which MPC-HC's menu shows as well, and selecting the second leaves NO real stream
+        // enabled. Keeping the asked-for index in that case would leave the old provider
+        // attached and subtitles still on screen, which is the opposite of the click.
+        curSub_ = -1;
+        std::vector<TrackInfo> tracks;
+        GetTracks(tracks);
+        int rel = 0;
+        for (const auto& t : tracks) {
+            if (t.kind != TrackKind::Subtitle) continue;
+            if (t.active) { curSub_ = rel; }
+            ++rel;
+        }
         ApplySubtitleProvider();
+        RebuildSubtitleJson();   // the rail lights the track the engine actually took
+        Log("[SUBS] subtitle track %d -> enabled %d", posIndex, curSub_);
+    } else {
+        Log("[SUBS] subtitle track %d unavailable hr=0x%08X", posIndex, (unsigned)hr);
     }
     return hr;
 }
@@ -3594,6 +3779,61 @@ void MpcPlayer::RebuildAudioJson()
     std::lock_guard<std::mutex> lk(m_liveMtx);
     m_audioJson = std::move(j);
     m_audioTrackCount = idx;
+}
+
+// Subtitle counterpart of RebuildAudioJson, from the same IAMStreamSelect enumeration.
+// "current" is the enabled subtitle-relative index, or -1 when none is — MPC-HC's subtitle
+// menu has an Off entry and the rail needs to be able to light it without guessing.
+// Note this lists what the SPLITTER offers, which is wider than what we spliced: stage 1
+// connects one subtitle pin, so a second stream appears in the list and selecting it goes
+// through the pass-thru filter's own SetStream (MPC-HC's mechanism), not a new connection.
+void MpcPlayer::RebuildSubtitleJson()
+{
+    std::vector<TrackInfo> tracks;
+    GetTracks(tracks);
+
+    auto esc = [](std::string s) {
+        std::string o; o.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '"' || c == '\\') { o += '\\'; o += c; }
+            else if ((unsigned char)c < 0x20) o += ' ';   // control chars → space
+            else o += c;
+        }
+        return o;
+    };
+
+    std::string j = ",\"subtitle\":{\"current\":-1,\"tracks\":[";
+    int idx = 0;
+    // curSub_ is the engine's own selection and the only truthful answer: the splitter
+    // reports a stream enabled from the moment the graph connects (that is how the decoder
+    // got its data), which says nothing about whether we are rendering it — Off detaches
+    // the provider and leaves the stream enabled.
+    const int cur = curSub_;
+    for (const auto& t : tracks) {
+        if (t.kind != TrackKind::Subtitle) continue;
+        if (idx) j += ",";
+        j += "{\"i\":" + std::to_string(idx)
+           + ",\"name\":\"" + esc(Utf8(t.name)) + "\""
+           + ",\"lang\":\"" + esc(Utf8(t.lang)) + "\""
+           + ",\"codec\":\"" + esc(Utf8(t.codec)) + "\""
+           + ",\"active\":" + (idx == cur ? "1" : "0") + "}";
+        ++idx;
+    }
+    // Rewrite the leading "current":-1 with the value we found (built after the loop
+    // because the enabled flag is only known once every stream has been read).
+    const std::string head = ",\"subtitle\":{\"current\":-1,";
+    j.replace(0, head.size(), ",\"subtitle\":{\"current\":" + std::to_string(cur) + ",");
+    j += "]}";
+
+    // The splitter exposes its streams only after it has parsed the header, so the
+    // end-of-BuildGraph pass is usually empty. Anything at all coming back means the
+    // enumeration worked, which is what the live-tick retry looks for — without this flag
+    // a file with no subtitle streams would re-enumerate on every tick forever.
+    m_subEnumDone = !tracks.empty();
+
+    std::lock_guard<std::mutex> lk(m_liveMtx);
+    m_subJson = std::move(j);
+    m_subTrackCount = idx;
 }
 
 // ── Audio endpoints (WASAPI MMDevice) ────────────────────────────────────────

@@ -839,6 +839,18 @@ class MainWindow(QMainWindow):
                 self._audio_sig = sig
                 self._s3_settings.set_audio_state(tracks, cur, mode)
 
+        # Subtitle tracks — same treatment: the engine enumerates them from the splitter,
+        # the rail only repaints when the list or the selection actually moved. The row used
+        # to sit at ["Off"] forever because nothing fed it.
+        sub = j.get("subtitle")
+        if isinstance(sub, dict) and media.get("valid"):
+            stracks = sub.get("tracks") or []
+            scur = sub.get("current", -1)
+            ssig = (tuple((t.get("i"), t.get("name"), t.get("active")) for t in stracks), scur)
+            if ssig != getattr(self, "_sub_sig", None):
+                self._sub_sig = ssig
+                self._s3_settings.set_subtitle_state(stracks, scur)
+
         # Per-source tone-curve DEFAULT (file path): fires once per graph generation
         # once the media block is known. hdr and dovi arrive in the same poll, so
         # there is no race between "is it HDR" and "is it DV".
