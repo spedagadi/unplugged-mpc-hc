@@ -1419,8 +1419,16 @@ class S3ShellPanel(QWidget):
         else:  # cycle
             p.setFont(F_VALUE); p.setPen(MID)
             opt = r.options[r.opt] if r.options else "?"
+            # Elide in the middle, and leave room for the bracket markers: track names come
+            # straight from the splitter ("Deutsch Forced (SRT)", "English SDH (VobSub)")
+            # and both ends carry information — the language at the front, the format that
+            # decides whether styling applies at the back. Drawing the raw string simply ran
+            # off the right edge and cut the tail mid-letter.
+            fm = QFontMetrics(p.font())
+            room = ct.width() - fm.horizontalAdvance("〈  〉") - 2
+            shown = fm.elidedText(opt, Qt.TextElideMode.ElideMiddle, max(room, 24))
             p.drawText(ct.adjusted(0, 0, 0, 0), Qt.AlignmentFlag.AlignRight |
-                       Qt.AlignmentFlag.AlignVCenter, f"〈  {opt}  〉")
+                       Qt.AlignmentFlag.AlignVCenter, f"〈  {shown}  〉")
 
     def _paint_slider(self, p, r, y):
         if r.has_uncheck:

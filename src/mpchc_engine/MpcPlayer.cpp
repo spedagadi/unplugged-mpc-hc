@@ -1274,7 +1274,12 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         // the graph in MPC-HC because it may happen mid-playback; here the graph has
         // not started, so the splice is free. Doing it later would need the stop/restart
         // dance and would drop a frame.
-        SpliceSubtitleFilters();
+        // Always pin 0: measured, the splitter offers ONE subtitle output pin for every
+        // subtitle stream in the file, so the pin is not the selector - the enabled stream
+        // is (see SetSubtitleTrack). The parameter stays because the enumeration counts
+        // subtitle pins by relative index and a splitter that does offer one per stream
+        // would need this call to name the right one.
+        SpliceSubtitleFilters(0);
     }
     ApplyVolume();
 
@@ -2729,6 +2734,15 @@ void MpcPlayer::RefreshLive()
         Log("[live] hdr: sdrNits=%d blackNits=%.3f convSdr=%d gamut=%d expTm=%d tmContrast=%.2f dispNits=%d",
             hd.sdrDisplayNits, hd.displayMinNits, hd.convertToSdr ? 1 : 0, hd.outputGamut,
             hd.experimentalToneMapper, hd.toneLutContrast, hd.displayMaxNits);
+        // Subtitles: is the renderer calling the presenter back at all, and is the time it
+        // passes the one the queue holds text for? render11=0 with a provider attached means
+        // the filter never invokes us (wrong binary, or a present path that skips
+        // DrawSubtitles); a growing count with no text on screen means the queue is being
+        // asked at the wrong stream time.
+        Log("[live] subs: render11=%lld lastRt=%.2fs noQueue=%lld",
+            (long long)DSObjects::g_subRender11Calls,
+            (double)DSObjects::g_subRender11LastRt / 10000000.0,
+            (long long)DSObjects::g_subRender11Dropped);
     }
     // (The delivery watchdog lived here: it read the renderer's frame counters and
     // posted a graph rebuild when they froze. Removed 2026-09-21. It was a
@@ -3577,23 +3591,22 @@ HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
     }
     const HRESULT hr = SelectStream(TrackKind::Subtitle, posIndex);
     if (SUCCEEDED(hr)) {
-        // Trust what the splitter ended up enabling, not what we asked for. LAV's stream
-        // list carries two pseudo-entries — "Forced Subtitles (auto)" and "No subtitles" —
-        // which MPC-HC's menu shows as well, and selecting the second leaves NO real stream
-        // enabled. Keeping the asked-for index in that case would leave the old provider
-        // attached and subtitles still on screen, which is the opposite of the click.
-        curSub_ = -1;
-        std::vector<TrackInfo> tracks;
-        GetTracks(tracks);
-        int rel = 0;
-        for (const auto& t : tracks) {
-            if (t.kind != TrackKind::Subtitle) continue;
-            if (t.active) { curSub_ = rel; }
-            ++rel;
-        }
+        // No re-splice, and the reason is measured: the splitter exposes ONE subtitle pin
+        // for all of its subtitle streams ("subtitle pins found=1" on a file with seven),
+        // so there is no "pin 4" to move onto - trying to splice one would leave subs_ empty
+        // and switch subtitles off entirely. Switching is the demuxer's job: enabling
+        // another stream makes LAV reconnect that pin with the new media type, which runs
+        // CSubtitleInputPin::CompleteConnect - where libass / CPGSSub / CVobSubStream is
+        // chosen from the subtype - and the filter reports the swap back through
+        // ISubtitleHost::ReplaceSubtitle, which updates subs_[0].stream. That is MPC-HC's
+        // mechanism, and it is why the provider is indexed by the splice and never by the
+        // track number.
+        curSub_ = posIndex;
         ApplySubtitleProvider();
+        if (subAP_) subAP_->Invalidate(-1);   // drop text still queued for the old stream
         RebuildSubtitleJson();   // the rail lights the track the engine actually took
-        Log("[SUBS] subtitle track %d -> enabled %d", posIndex, curSub_);
+        Log("[SUBS] subtitle track %d -> rendering=%d spliced=%d", posIndex, curSub_,
+            (int)subs_.size());
     } else {
         Log("[SUBS] subtitle track %d unavailable hr=0x%08X", posIndex, (unsigned)hr);
     }
@@ -3631,18 +3644,22 @@ void MpcPlayer::ReplaceSubtitle(const ISubStream* pOld, ISubStream* pNew)
     ApplySubtitleProvider();
 }
 
-// Mirrors CMainFrame::InsertTextPassThruFilter (MainFrm.cpp), adapted to a graph whose
-// pins are connected BY HAND: MPC-HC splices between a splitter pin and the null
-// renderer the graph manager already connected, and only for pins that are connected;
-// here nothing connects a subtitle pin unless we do, so the first subtitle pin found is
-// wired splitter -> CTextPassThruFilter -> CNullTextRenderer. One pin, deliberately:
-// the sink has a single input, and switching tracks is stage 2 (it needs LAV's
-// reconnect dance, not a second queue).
-HRESULT MpcPlayer::SpliceSubtitleFilters()
+// Mirrors CMainFrame::InsertTextPassThruFilter (MainFrm.cpp:18902-18935), adapted to a
+// graph whose pins are connected BY HAND. MPC-HC splices a pass-thru filter into every
+// subtitle pin the graph manager already connected, one filter per pin; nothing connects a
+// subtitle pin here, so we connect the pin belonging to the track that is selected
+// (targetRel is the subtitle-relative index - the same space IAMStreamSelect counts in, so
+// the rail's option, the splitter's stream and this pin must all agree; the pin name is
+// logged so a disagreement is visible in one line instead of being inferred).
+//
+// The earlier version wired "the first subtitle pin found" and stopped there, which made
+// every track except index 0 a no-op: ApplySubtitleProvider looked up subs_[track], and
+// subs_ had exactly one entry.
+HRESULT MpcPlayer::SpliceSubtitleFilters(int targetRel)
 {
     subs_.clear();
     curSub_ = -1;
-    if (!splitter_ || !subSink_) {
+    if (!splitter_ || !subSink_ || !graph_) {
         return S_FALSE;
     }
 
@@ -3681,8 +3698,23 @@ HRESULT MpcPlayer::SpliceSubtitleFilters()
                         || (pmt->majortype == MEDIATYPE_Subtitle);
         DeleteMediaType(pmt);
         if (!isSub) continue;
+        const int rel = found;                  // this pin's subtitle-relative index
         ++found;
-        if (!subs_.empty()) continue;   // stage 1: one spliced stream
+        if (rel != targetRel) continue;
+
+        // Which pin this is, by name: LAV names them after the stream ("Subtext (ger)"),
+        // so this line is the cross-check that the splitter's stream order and its pin
+        // order agree - the whole track-selection mapping rests on that assumption.
+        {
+            PIN_INFO pi = {};
+            if (SUCCEEDED(pin->QueryPinInfo(&pi))) {
+                // PIN_INFO carries a fixed WCHAR[128] (strmif.h), not a pointer.
+                CStringW w(pi.achName);
+                CStringA a(w);
+                Log("[SUBS] target pin %d = %s", rel, (const char*)a);
+                if (pi.pFilter) pi.pFilter->Release();   // QueryPinInfo AddRefs the filter
+            }
+        }
 
         CComPtr<IBaseFilter> tptf(DEBUG_NEW CTextPassThruFilter(this));
         if (!tptf) continue;
@@ -3715,13 +3747,16 @@ HRESULT MpcPlayer::SpliceSubtitleFilters()
             SubEntry e;
             e.stream = ss;
             e.splitter = splitter_;
+            e.tptf = tptf;
+            e.srcPin = pin;
+            e.sinkPin = sinkIn;
             subs_.push_back(e);
-            curSub_ = 0;
+            curSub_ = targetRel;
         } else {
             Log("[SUBS] spliced filter exposes no ISubStream -- provider unavailable");
         }
     }
-    Log("[SUBS] subtitle pins found=%d spliced=%d", found, (int)subs_.size());
+    Log("[SUBS] subtitle pins found=%d target=%d spliced=%d", found, targetRel, (int)subs_.size());
     ApplySubtitleProvider();
     return subs_.empty() ? S_FALSE : S_OK;
 }
@@ -3731,9 +3766,14 @@ void MpcPlayer::ApplySubtitleProvider()
     if (!subAP_) {
         return;
     }
+    // subs_ holds the ONE stream we are spliced onto (the sink has a single input, and
+    // MPC-HC's per-pin multiplicity is achieved over time by re-splicing, not by keeping
+    // every track wired at once). So the provider is subs_[0] whenever a track is
+    // selected - indexing it by track number was the bug that made every switch after
+    // the first silently clear the provider.
     CComPtr<ISubPicProvider> prov;
-    if (subsOn_ && curSub_ >= 0 && curSub_ < (int)subs_.size()) {
-        prov = CComQIPtr<ISubPicProvider>(subs_[curSub_].stream);
+    if (subsOn_ && curSub_ >= 0 && !subs_.empty()) {
+        prov = CComQIPtr<ISubPicProvider>(subs_[0].stream);
     }
     subAP_->SetSubPicProvider(prov);
     Log("[SUBS] subpic provider %s", prov ? "attached" : "cleared");

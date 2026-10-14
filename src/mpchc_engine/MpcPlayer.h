@@ -668,12 +668,23 @@ private:
     struct SubEntry {
         CComPtr<ISubStream> stream;      // QI'd off the spliced CTextPassThruFilter
         CComPtr<IBaseFilter> splitter;   // kept so IAMStreamSelect can enable the track
+        // What is wired to what, kept because the graph shape is otherwise invisible from
+        // the outside: splitter subtitle pin -> pass-thru filter -> CNullTextRenderer.
+        // Track changes do NOT move this splice - the splitter offers one subtitle pin for
+        // every stream and reconnects that pin itself - but a failed connect leaves a
+        // half-wired filter behind, and this is the only record of which objects they were.
+        CComPtr<IBaseFilter> tptf;
+        CComPtr<IPin> srcPin;            // the splitter's subtitle output pin
+        CComPtr<IPin> sinkPin;           // CNullTextRenderer's input
     };
     std::vector<SubEntry> subs_;
     int curSub_ = -1;                    // index into subs_, -1 = off
     bool subsOn_ = true;
     void ApplySubtitleProvider();        // (re)hands the current provider to subAP_
-    HRESULT SpliceSubtitleFilters();     // splitter sub pin -> CTextPassThruFilter -> sink
+    // One splice at a time, moved to the selected stream: the sink has a single input, so
+    // a track change un-splices the old pin and re-splices the new one (MPC-HC gets its
+    // per-pin multiplicity by inserting one filter per connected pin; we get it over time).
+    HRESULT SpliceSubtitleFilters(int targetRel);
 
     int volumePercent_ = 100;
     bool muted_ = false;

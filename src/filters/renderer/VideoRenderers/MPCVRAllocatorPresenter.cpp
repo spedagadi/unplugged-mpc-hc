@@ -230,6 +230,17 @@ HRESULT CMPCVRAllocatorPresenter::SetDevice11(ID3D11Device* pD3DDev)
 	return hr;
 }
 
+// Does the renderer actually call us back? Counted here and printed on the engine's
+// [live] line, because "subtitles do not render" has two completely different causes —
+// the callback never fires (wrong filter binary, or a present path that skips
+// DrawSubtitles) and the callback fires but has nothing to draw (no provider, empty
+// queue, wrong stream time) — and nothing else in the log distinguishes them.
+namespace DSObjects {
+	volatile long long g_subRender11Calls   = 0;
+	volatile REFERENCE_TIME g_subRender11LastRt = 0;
+	volatile long long g_subRender11Dropped = 0;
+}
+
 HRESULT CMPCVRAllocatorPresenter::Render11(
 											REFERENCE_TIME rtStart,
 											REFERENCE_TIME rtStop,
@@ -240,6 +251,11 @@ HRESULT CMPCVRAllocatorPresenter::Render11(
 											const double videoStretchFactor,
 											int xOffsetInPixels, DWORD flags)
 {
+	++DSObjects::g_subRender11Calls;
+	DSObjects::g_subRender11LastRt = rtStart;
+	if (!m_pSubPicQueue) {
+		++DSObjects::g_subRender11Dropped;   // called, but there is no queue to draw from
+	}
 	return RenderEx3(rtStart, rtStop, atpf, croppedVideoRect, originalVideoRect, viewportRect, videoStretchFactor, xOffsetInPixels, flags);
 }
 

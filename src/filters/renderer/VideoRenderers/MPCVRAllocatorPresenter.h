@@ -28,6 +28,12 @@
 
 namespace DSObjects
 {
+	// Subtitle callback witness, counted in Render11 and printed on the engine's [live]
+	// line. See the definition for why the count has to be visible at all.
+	extern volatile long long g_subRender11Calls;
+	extern volatile REFERENCE_TIME g_subRender11LastRt;
+	extern volatile long long g_subRender11Dropped;
+
 	class CMPCVRAllocatorPresenter
 		: public CSubPicAllocatorPresenterImpl
 		, ISubRenderCallback4

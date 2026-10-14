@@ -147,9 +147,16 @@ static void PollOnce() {
             g_phase = 2; g_phaseAt = now;
         }
         break;
+    // The A/B that tests track SWITCHING, at one fixed timestamp: 4:30.
+    //   track 0 = "Deutsch Forced (SRT)"  -> has NO event at 4:30 (verified from the file:
+    //                                        its events are 0:05, 3:42, 3:47, then 19:10)
+    //   track 4 = "Deutsch SDH (PGS)"     -> a full subtitle track, text at 4:30
+    // So frame 1 must be bare and frame 2 must carry text. Same picture, same position,
+    // one variable - and the switch exercises the decoder swap (libass -> CPGSSub), which
+    // is the code path that was silently clearing the provider.
     case 2:
         if (now - g_phaseAt > 500) {
-            Cmd("{\"a\":\"seek\",\"pos\":13840000000}");   // 23:04, inside a forced-sub event
+            Cmd("{\"a\":\"seek\",\"pos\":2700000000}");    // 4:30
             g_phase = 3; g_phaseAt = now;
         }
         break;
@@ -159,45 +166,50 @@ static void PollOnce() {
             g_phase = 4; g_phaseAt = now;
         }
         break;
+    // Track SWITCH, mid-playback: index 4 is "Deutsch SDH (PGS)" - a bitmap stream on a
+    // different decoder (CPGSSub, not libass) reached through different code (the new
+    // un-splice/re-splice, which does live pin surgery). Both the render and the teardown
+    // afterwards have to survive it, so this is the phase that tests the fix rather than
+    // the feature that already worked.
     case 4:
         if (now - g_phaseAt > 1000) {
-            Note("pushing a rebuild-only setting (the app does this after every open)");
-            Cmd("{\"a\":\"set\",\"sets\":\"out.dither=false\"}");
+            Cmd("{\"a\":\"subtrack\",\"index\":4}");
+            Cmd("{\"a\":\"seek\",\"pos\":2700000000}");    // same 4:30 as frame 1
+            g_phase = 12; g_phaseAt = now;
+        }
+        break;
+    case 12:
+        if (now - g_phaseAt > 4000) {
+            Cmd(GrabCmd(kOut2).c_str());
             g_phase = 5; g_phaseAt = now;
         }
         break;
-    // After a rebuild the graph restarts from position 0 (the engine re-opens the source),
-    // so the grab has to seek into the subtitle window again — otherwise frames 2 and 3
-    // are the black opening and prove nothing about subtitles.
+    // Then the rebuild the app performs on its own after every open (a rebuild-only
+    // setting arrives from the rail), and a grab after it: teardown of a graph that has
+    // had subtitle pin surgery is the case that crashed before.
     case 5:
-        if (now - g_phaseAt > 3000) {           // re-open done; jump back to the dialogue
-            Cmd("{\"a\":\"seek\",\"pos\":13840000000}");
+        if (now - g_phaseAt > 1000) {
+            Note("pushing a rebuild-only setting (the app does this after every open)");
+            Cmd("{\"a\":\"set\",\"sets\":\"out.dither=false\"}");
             g_phase = 10; g_phaseAt = now;
         }
         break;
     case 10:
-        if (now - g_phaseAt > 3500) {
-            Cmd(GrabCmd(kOut2).c_str());
+        if (now - g_phaseAt > 6000) {           // rebuild done; graph restarts at 0
+            Cmd("{\"a\":\"subtrack\",\"index\":0}");
+            Cmd("{\"a\":\"seek\",\"pos\":13840000000}");
             g_phase = 6; g_phaseAt = now;
         }
         break;
     case 6:
-        if (now - g_phaseAt > 1000) {
-            Cmd("{\"a\":\"set\",\"sets\":\"out.dither=true\"}");   // second live teardown
-            g_phase = 7; g_phaseAt = now;
-        }
-        break;
-    case 7:
-        if (now - g_phaseAt > 3000) {
-            Cmd("{\"a\":\"seek\",\"pos\":13840000000}");
-            g_phase = 11; g_phaseAt = now;
-        }
-        break;
-    case 11:
-        if (now - g_phaseAt > 3500) {
+        if (now - g_phaseAt > 4000) {
             Cmd(GrabCmd(kOut3).c_str());
             g_phase = 8; g_phaseAt = now;
         }
+        break;
+    case 7:
+        break;
+    case 11:
         break;
     case 8:
         if (now - g_phaseAt > 1000) { g_phase = 9; g_phaseAt = now; Note("all grabs done; shutting down"); }
