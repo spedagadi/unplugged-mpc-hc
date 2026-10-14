@@ -27,7 +27,12 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <AdditionalIncludeDirectories>..\..\include;..\thirdparty;..\thirdparty\BaseClasses;$(ML_MPCVR_INCLUDE);$(LAV_INCLUDE);$(DECKLINK_INCLUDE);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Explicit, because the subtitle stack (Subtitles.lib, SubPic.lib, DSUtil.lib)
+           is MFC-static on the STATIC CRT (nafxcw) via common.props, and a TU that
+           touches MFC on the DLL CRT asks for uafxcw instead — the two static-MFC
+           variants collide symbol-for-symbol at link. One flavour across the chain. -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>..\..\include;..\thirdparty;..\thirdparty\BaseClasses;$(ML_MPCVR_INCLUDE);$(LAV_INCLUDE);$(DECKLINK_INCLUDE);..\mpc-hc;..\DSUtil;..\SubPic;..\Subtitles;..\filters;..\filters\renderer;..\filters\renderer\VideoRenderers;..\thirdparty\freetype2\freetype2\include;..\thirdparty\libass\libass\include;..\thirdparty\fribidi\generated;..\thirdparty\LAVFilters\src\common\includes;..\thirdparty\ResizableLib\ResizableLib;..\thirdparty\AudioTools;..\thirdparty\MediaInfo\library\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -35,6 +40,16 @@
     <ClCompile Include="MpcPlayer.cpp" />
     <ClCompile Include="DeckLinkMonitor.cpp" />
     <ClCompile Include="IngestController.cpp" />
+    <!-- MPC-HC's internal subtitle path, hosted by the engine. Each file finds its own
+         directory's stdafx.h via the quoted include, exactly as it does inside
+         mpc-hc.exe; nothing here is a copy, so the filter behaviour cannot drift from
+         the player's. -->
+    <ClCompile Include="..\mpc-hc\TextPassThruFilter.cpp" />
+    <ClCompile Include="..\DSUtil\NullRenderers.cpp" />
+    <ClCompile Include="..\filters\renderer\VideoRenderers\MPCVRAllocatorPresenter.cpp" />
+    <ClCompile Include="..\filters\renderer\VideoRenderers\RenderersSettings.cpp" />
+    <ClCompile Include="..\filters\renderer\VideoRenderers\IPinHook.cpp" />
+    <ClCompile Include="SubtitlePlayerGlobals.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MpcPlayer.h" />

@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "../SubPic/ISubtitleHost.h"
 #include "ChildView.h"
 #include "DVBChannel.h"
 #include "DebugShadersDlg.h"
@@ -184,7 +185,11 @@ struct FileFavorite {
 /////////////////////////////////////////////////////////////////////////////
 // CMainFrame
 
-class CMainFrame : public CFrameWnd, public CDropClient
+// ISubtitleHost: CTextPassThruFilter used to hold a raw CMainFrame* and call three
+// members of it. Those three are now a contract (SubPic/ISubtitleHost.h) so the same
+// filter can be hosted by the headless engine; the frame implements it by forwarding
+// to exactly what it already did, so player behaviour is unchanged.
+class CMainFrame : public CFrameWnd, public CDropClient, public ISubtitleHost
 {
 public:
 
@@ -764,8 +769,11 @@ public:
     CComPtr<ISubPicProvider> GetSubtitleSubPicProvider();
     void UpdateSubtitleColorInfo();
     void ToggleSubtitleOnOff(bool bDisplayMessage = false);
-    void ReplaceSubtitle(const ISubStream* pSubStreamOld, ISubStream* pSubStreamNew);
-    void InvalidateSubtitle(DWORD_PTR nSubtitleId = DWORD_PTR_MAX, REFERENCE_TIME rtInvalidate = -1);
+    // ISubtitleHost — the first two forward to the implementations below this block;
+    // SubLock hands out the lock the queue and SetStream already share.
+    CCritSec* SubLock() override { return &m_csSubLock; }
+    void ReplaceSubtitle(const ISubStream* pSubStreamOld, ISubStream* pSubStreamNew) override;
+    void InvalidateSubtitle(DWORD_PTR nSubtitleId = DWORD_PTR_MAX, REFERENCE_TIME rtInvalidate = -1) override;
     void ReloadSubtitle();
     bool ApplySubtitleRenderingParameters(ISubStream* pSubStream, bool bSecondary);
     void UpdateSubtitleRenderingParameters();

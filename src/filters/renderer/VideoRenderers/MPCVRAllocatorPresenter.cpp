@@ -43,6 +43,18 @@ using namespace DSObjects;
 
 #define MPCVR_FILTERS_VERSION(major, minor, rev, commit) ((QWORD)(major) << 48 | (QWORD)(minor) << 32 | (QWORD)(rev) << 16 | (QWORD)(commit))
 
+// The Unplugged fork's renderer: same filter, own identity (see the renderer repo's
+// VideoRenderer.h). It MUST be tried before CLSID_MPCVR: CoCreateInstance resolves
+// through the registry, and a box with a legacy MpcVideoRenderer64.ax registered would
+// otherwise hand this presenter somebody else's picture — silently, because both
+// implement ISubRender11. Upstream's CLSID stays as the fallback so the player build
+// still works on a machine where only the legacy filter is registered.
+// initguid here makes THIS translation unit the one definition of the GUID; every
+// other TU that sees it gets the extern declaration.
+#include <initguid.h>
+DEFINE_GUID(CLSID_UnpluggedVR,
+    0xE8BD7497, 0x6880, 0x4CD6, 0x8C, 0x51, 0x5F, 0xA9, 0x7E, 0xCD, 0xAC, 0x3F);
+
 
 //
 // CMPCVRAllocatorPresenter
@@ -271,6 +283,10 @@ STDMETHODIMP CMPCVRAllocatorPresenter::CreateRenderer(IUnknown** ppRenderer)
     }
 
     HRESULT hr = InstantiateInternalMPCVR(m_pMPCVR, GetOwner());
+
+    if (FAILED(hr) && IsCLSIDRegistered(CLSID_UnpluggedVR)) {
+        hr = m_pMPCVR.CoCreateInstance(CLSID_UnpluggedVR, GetOwner());
+    }
 
     if (FAILED(hr) && IsCLSIDRegistered(CLSID_MPCVR)) {
         hr = m_pMPCVR.CoCreateInstance(CLSID_MPCVR, GetOwner());

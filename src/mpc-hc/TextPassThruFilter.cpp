@@ -41,7 +41,7 @@ protected:
     void AddSubStream(ISubStream* pSubStream) {
         if (m_pSubStreamOld) {
             if (pSubStream) {
-                m_pTPTFilter->m_pMainFrame->ReplaceSubtitle(m_pSubStreamOld, pSubStream);
+                m_pTPTFilter->m_pHost->ReplaceSubtitle(m_pSubStreamOld, pSubStream);
             }
             m_pSubStreamOld = nullptr;
         }
@@ -52,7 +52,7 @@ protected:
     }
 
     void InvalidateSubtitle(REFERENCE_TIME rtStart, ISubStream* pSubStream) {
-        m_pTPTFilter->m_pMainFrame->InvalidateSubtitle((DWORD_PTR)pSubStream, rtStart);
+        m_pTPTFilter->m_pHost->InvalidateSubtitle((DWORD_PTR)pSubStream, rtStart);
     }
 
 public:
@@ -210,12 +210,12 @@ HRESULT CTextPassThruOutputPin::GetMediaType(int iPosition, CMediaType* pmt)
 // CTextPassThruFilter
 //
 
-CTextPassThruFilter::CTextPassThruFilter(CMainFrame* pMainFrame)
+CTextPassThruFilter::CTextPassThruFilter(ISubtitleHost* pHost)
     : CBaseFilter(NAME("CTextPassThruFilter"), nullptr, this, __uuidof(this))
-    , m_pMainFrame(pMainFrame)
+    , m_pHost(pHost)
 {
     HRESULT hr;
-    m_pInput = DEBUG_NEW CTextPassThruInputPin(this, this, &m_pMainFrame->m_csSubLock, &hr);
+    m_pInput = DEBUG_NEW CTextPassThruInputPin(this, this, m_pHost->SubLock(), &hr);
     m_pOutput = DEBUG_NEW CTextPassThruOutputPin(this, this, &hr);
 }
 

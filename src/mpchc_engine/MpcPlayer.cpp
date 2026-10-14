@@ -1,4 +1,19 @@
 ﻿#include "MpcPlayer.h"
+
+// MPC-HC's internal subtitle path, hosted here. These are the player's own classes,
+// compiled into the engine unmodified except for the ISubtitleHost indirection — so
+// embedded subtitles decode and render exactly as they do in mpc-hc.exe.
+#include "../mpc-hc/TextPassThruFilter.h"
+#include "../DSUtil/NullRenderers.h"
+#include "../filters/renderer/VideoRenderers/MPCVRAllocatorPresenter.h"
+
+// One TU owns the LAV/MPC media-type GUIDs (MEDIATYPE_Subtitle, MEDIATYPE_Text).
+// initguid AFTER the DirectShow headers in MpcPlayer.h — those must stay extern and
+// resolve from strmiids.lib — and BEFORE moreuuids.h, so exactly the custom ones get
+// defined here. Subtitles.lib includes moreuuids.h without initguid (extern), and
+// mpc-hc.exe plays the same trick in MainFrm.cpp, so this cannot double-define.
+#include <initguid.h>
+#include <moreuuids.h>
 #include "PostFxShaders.h"
 
 #include <windows.h>
@@ -368,6 +383,11 @@ void MpcPlayer::TeardownDecklinkGraph()
             pVW->put_Owner(0);
         }
     }
+    // Subtitle side first: the queue thread holds the provider, and the presenter holds
+    // the renderer, so both go before the graph drops its filters.
+    subs_.clear();
+    subSink_.Release();
+    subAP_.Release();
     graph_.Release();
     mediaControl_.Release();
     mediaSeeking_.Release();
@@ -515,6 +535,9 @@ void MpcPlayer::Shutdown()
             pVW->put_Owner(0);
         }
     }
+    subs_.clear();
+    subSink_.Release();
+    subAP_.Release();
     graph_.Release();
     mediaControl_.Release();
     mediaSeeking_.Release();
@@ -1000,6 +1023,23 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     Log("[GRAPH] renderer added hr=0x%08X", (unsigned)hr);
     if (FAILED(hr)) return hr;
 
+    // Subtitle sink, added BEFORE any pin negotiates. MPC-HC gets this from filter
+    // merit (a CNullTextRenderer registered at MERIT64_DO_USE in its graph manager);
+    // this graph connects pins by hand, so the sink is added explicitly and the
+    // splitter's subtitle pins are wired to it in ConnectSubtitles. Without a sink the
+    // pins stay unconnected and CTextPassThruFilter has nothing to sit in front of.
+    {
+        HRESULT hrSink = S_OK;
+        subSink_.Attach(DEBUG_NEW CNullTextRenderer(nullptr, &hrSink));
+        if (subSink_ && SUCCEEDED(hrSink)) {
+            graph_->AddFilter(subSink_, L"NullTextRenderer");
+        } else {
+            subSink_.Release();
+            Log("[SUBS] null text renderer unavailable hr=0x%08X -- embedded subtitles off",
+                (unsigned)hrSink);
+        }
+    }
+
     // Apply the user's settings BEFORE the pins negotiate. Any setting that
     // decides which shader gets built (bConvertToSdr, the VP formats, the input
     // colour space) is consumed during negotiation, so pushing it afterwards only
@@ -1098,6 +1138,11 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     }
     if (!bDeckLink) {
         ConnectAudio(splitter);
+        // After the audio connect, before Run: CTextPassThruFilter's insertion stops
+        // the graph in MPC-HC because it may happen mid-playback; here the graph has
+        // not started, so the splice is free. Doing it later would need the stop/restart
+        // dance and would drop a frame.
+        SpliceSubtitleFilters();
     }
     ApplyVolume();
 
@@ -1313,8 +1358,36 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
     HRESULT hr = E_FAIL;
     switch (choice) {
     case Renderer::MPCVR:
-        hr = out.CoCreateInstance(CLSID_UnpluggedRenderer);
-        if (SUCCEEDED(hr)) {
+        // PRESENTER-OWNED CREATION, as MPC-HC's FGFilter does for
+        // CLSID_MPCVRAllocatorPresenter. The presenter owns the subpic queue and is the
+        // ISubRender11Callback our .ax invokes on every presented frame, so a directly
+        // CoCreated filter has nowhere to draw embedded subtitles from — the queue, the
+        // render thread and the callback all live on the presenter side. It creates the
+        // filter itself and prefers our CLSID (see MPCVRAllocatorPresenter.cpp), so this
+        // cannot silently load a legacy MpcVideoRenderer64.ax.
+        if (renderTarget_) {
+            HRESULT hrAP = S_OK;
+            CString apErr;
+            subAP_.Attach(DEBUG_NEW DSObjects::CMPCVRAllocatorPresenter(renderTarget_, hrAP, apErr));
+            if (subAP_ && SUCCEEDED(hrAP)) {
+                CComPtr<IUnknown> unk;
+                hrAP = subAP_->CreateRenderer(&unk);
+                out = CComQIPtr<IBaseFilter>(unk.p);
+                if (FAILED(hrAP) || !out) {
+                    Log("[SUBS] presenter CreateRenderer hr=0x%08X -- falling back to a direct CoCreate "
+                        "(picture still works, embedded subtitles will not)", (unsigned)hrAP);
+                    subAP_.Release();
+                    out.Release();
+                }
+            } else {
+                Log("[SUBS] presenter ctor hr=0x%08X -- falling back to a direct CoCreate", (unsigned)hrAP);
+                subAP_.Release();
+            }
+        }
+        if (!out) {
+            hr = out.CoCreateInstance(CLSID_UnpluggedRenderer);
+        }
+        if (SUCCEEDED(hr) && out) {
             // BISECT PROBE (2026-09-21): the abort (0xc0000409, no handler, no
             // dump) fires at exactly this handoff — the renderer immediately
             // calls a raw function pointer into s3engine.dll, which is built
@@ -3334,7 +3407,151 @@ HRESULT MpcPlayer::SetAudioTrack(int posIndex)
 
 HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
 {
-    return SelectStream(TrackKind::Subtitle, posIndex);
+    const HRESULT hr = SelectStream(TrackKind::Subtitle, posIndex);
+    if (SUCCEEDED(hr)) {
+        curSub_ = posIndex;
+        ApplySubtitleProvider();
+    }
+    return hr;
+}
+
+HRESULT MpcPlayer::SetSubtitlesEnabled(bool on)
+{
+    subsOn_ = on;
+    ApplySubtitleProvider();
+    return S_OK;
+}
+
+HRESULT MpcPlayer::GetSubtitlesEnabled(bool& on) const
+{
+    on = subsOn_;
+    return S_OK;
+}
+
+// ISubtitleHost ────────────────────────────────────────────────────────────────────
+void MpcPlayer::InvalidateSubtitle(DWORD_PTR /*nSubtitleId*/, REFERENCE_TIME rtInvalidate)
+{
+    if (subAP_) {
+        subAP_->Invalidate(rtInvalidate);
+    }
+}
+
+void MpcPlayer::ReplaceSubtitle(const ISubStream* pOld, ISubStream* pNew)
+{
+    for (auto& e : subs_) {
+        if (e.stream.p == pOld) {
+            e.stream = pNew;
+        }
+    }
+    ApplySubtitleProvider();
+}
+
+// Mirrors CMainFrame::InsertTextPassThruFilter (MainFrm.cpp), adapted to a graph whose
+// pins are connected BY HAND: MPC-HC splices between a splitter pin and the null
+// renderer the graph manager already connected, and only for pins that are connected;
+// here nothing connects a subtitle pin unless we do, so the first subtitle pin found is
+// wired splitter -> CTextPassThruFilter -> CNullTextRenderer. One pin, deliberately:
+// the sink has a single input, and switching tracks is stage 2 (it needs LAV's
+// reconnect dance, not a second queue).
+HRESULT MpcPlayer::SpliceSubtitleFilters()
+{
+    subs_.clear();
+    curSub_ = -1;
+    if (!splitter_ || !subSink_) {
+        return S_FALSE;
+    }
+
+    CComPtr<IPin> sinkIn;
+    {
+        CComPtr<IEnumPins> ep;
+        subSink_->EnumPins(&ep);
+        if (!ep) return S_FALSE;
+        for (IPin* p = nullptr; ep->Next(1, &p, nullptr) == S_OK; p = nullptr) {
+            CComPtr<IPin> take(p);
+            PIN_DIRECTION d = PINDIR_INPUT;
+            take->QueryDirection(&d);
+            if (d == PINDIR_INPUT && !sinkIn) sinkIn = take;
+        }
+    }
+    if (!sinkIn) return S_FALSE;
+
+    CComPtr<IEnumPins> ep;
+    splitter_->EnumPins(&ep);
+    if (!ep) return S_FALSE;
+
+    int found = 0;
+    for (IPin* raw = nullptr; ep->Next(1, &raw, nullptr) == S_OK; raw = nullptr) {
+        CComPtr<IPin> pin(raw);
+        PIN_DIRECTION d = PINDIR_INPUT;
+        pin->QueryDirection(&d);
+        if (d != PINDIR_OUTPUT) continue;
+        CComPtr<IPin> peer;
+        if (SUCCEEDED(pin->ConnectedTo(&peer)) && peer) continue;   // taken by video/audio
+
+        CComPtr<IEnumMediaTypes> em;
+        if (FAILED(pin->EnumMediaTypes(&em)) || !em) continue;
+        AM_MEDIA_TYPE* pmt = nullptr;
+        if (em->Next(1, &pmt, nullptr) != S_OK || !pmt) continue;
+        const bool isSub = (pmt->majortype == MEDIATYPE_Text)
+                        || (pmt->majortype == MEDIATYPE_Subtitle);
+        DeleteMediaType(pmt);
+        if (!isSub) continue;
+        ++found;
+        if (!subs_.empty()) continue;   // stage 1: one spliced stream
+
+        CComPtr<IBaseFilter> tptf(DEBUG_NEW CTextPassThruFilter(this));
+        if (!tptf) continue;
+        if (FAILED(graph_->AddFilter(tptf, L"TextPassThru"))) continue;
+
+        CComPtr<IPin> in0, out1;
+        {
+            CComPtr<IEnumPins> e2;
+            tptf->EnumPins(&e2);
+            for (IPin* p = nullptr; e2 && e2->Next(1, &p, nullptr) == S_OK; p = nullptr) {
+                CComPtr<IPin> take(p);
+                PIN_DIRECTION dd = PINDIR_INPUT;
+                take->QueryDirection(&dd);
+                if (dd == PINDIR_INPUT && !in0) in0 = take;
+                else if (dd == PINDIR_OUTPUT && !out1) out1 = take;
+            }
+        }
+        HRESULT hr = in0 && out1 ? S_OK : E_POINTER;
+        if (SUCCEEDED(hr)) hr = graph_->ConnectDirect(pin, in0, nullptr);
+        if (SUCCEEDED(hr)) hr = graph_->ConnectDirect(out1, sinkIn, nullptr);
+        if (FAILED(hr)) {
+            Log("[SUBS] splice connect failed hr=0x%08X -- filter removed", (unsigned)hr);
+            graph_->RemoveFilter(tptf);
+            continue;
+        }
+        // The QI only succeeds once the input pin has completed its connect, which is
+        // where CSubtitleInputPin builds the decoder for the media subtype (libass for
+        // text, CPGSSub/CDVBSub/CVobSubStream otherwise). Same ordering MPC-HC relies on.
+        if (CComQIPtr<ISubStream> ss = tptf) {
+            SubEntry e;
+            e.stream = ss;
+            e.splitter = splitter_;
+            subs_.push_back(e);
+            curSub_ = 0;
+        } else {
+            Log("[SUBS] spliced filter exposes no ISubStream -- provider unavailable");
+        }
+    }
+    Log("[SUBS] subtitle pins found=%d spliced=%d", found, (int)subs_.size());
+    ApplySubtitleProvider();
+    return subs_.empty() ? S_FALSE : S_OK;
+}
+
+void MpcPlayer::ApplySubtitleProvider()
+{
+    if (!subAP_) {
+        return;
+    }
+    CComPtr<ISubPicProvider> prov;
+    if (subsOn_ && curSub_ >= 0 && curSub_ < (int)subs_.size()) {
+        prov = CComQIPtr<ISubPicProvider>(subs_[curSub_].stream);
+    }
+    subAP_->SetSubPicProvider(prov);
+    Log("[SUBS] subpic provider %s", prov ? "attached" : "cleared");
 }
 
 // Rebuild the cached audio fragment the UI polls. Called on graph-safe threads only

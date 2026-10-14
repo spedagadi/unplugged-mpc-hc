@@ -45,6 +45,9 @@
       <PreprocessorDefinitions>_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|x64'">6509;26812</DisableSpecificWarnings>
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">6509;26812</DisableSpecificWarnings>
+      <!-- Static CRT: this lib links into mpchc_engine.lib, which is MFC-static on /MT.
+           The /MD flavour would request uafxcw and collide with the chain's nafxcw. -->
+      <RuntimeLibrary Condition="$(Configuration.Contains('Release'))">MultiThreaded</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

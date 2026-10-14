@@ -43,6 +43,9 @@
     <ClCompile>
       <AdditionalIncludeDirectories>..\..\include;..\thirdparty;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Static CRT: links into mpchc_engine.lib (MFC-static, /MT). /MD here would
+           request uafxcw and collide with the chain's nafxcw at link. -->
+      <RuntimeLibrary Condition="$(Configuration.Contains('Release'))">MultiThreaded</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

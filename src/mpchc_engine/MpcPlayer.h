@@ -1,9 +1,20 @@
 #pragma once
 
+// MFC FIRST. The subtitle stack (ISubPic.h, the presenter, CTextPassThruFilter's world)
+// is MFC code: CString, CList, POSITION. Including atlbase.h or dshow.h before afxwin.h
+// makes atlcoll.h and afx.h define __POSITION in the wrong order and CString arrive
+// after its first use — the exact cascade mpc-hc.exe avoids by putting afxwin.h at the
+// top of its stdafx. This header is now the engine's stdafx-equivalent for that world.
+#include <winsock2.h>          // afxwin.h #errors without it (MFC requires Winsock2);
+#include <ws2tcpip.h>          // this is what MPC-HC's SharedInclude.h does first
+#include <afxwin.h>
+#include <afxdisp.h>
+
 #include <atomic>
 #include <atlbase.h>
 #include <condition_variable>
 #include <dshow.h>
+#include <streams.h>           // BaseClasses: CCritSec, shared with the subtitle filters
 
 #include <functional>
 #include <memory>
@@ -13,11 +24,16 @@
 #include <thread>
 #include <vector>
 
+#include "../SubPic/ISubPic.h"        // ISubPicAllocatorPresenter / ISubPicProvider / ISubStream
+#include "../SubPic/ISubtitleHost.h"  // the contract CTextPassThruFilter needs from its owner
+
 #include "DeckLinkSourceControl.h"
 #include "DeckLinkMonitor.h"   // measures the wire — publishes settled facts only
 #include "IngestController.h"  // the single ingestion decider — facts in, intent out
 
-class MpcPlayer final {
+// ISubtitleHost: in mpc-hc.exe this role belongs to CMainFrame; here the engine owns the
+// graph, so the engine owns the subtitle session. Same three members, same semantics.
+class MpcPlayer final : public ISubtitleHost {
 public:
     enum class State {
         Idle,
@@ -392,6 +408,15 @@ public:
     HRESULT GetTracks(std::vector<TrackInfo>&) const;
     HRESULT SetAudioTrack(int posIndex);
     HRESULT SetSubtitleTrack(int posIndex);
+    HRESULT SetSubtitlesEnabled(bool);
+    HRESULT GetSubtitlesEnabled(bool&) const;
+
+    // ISubtitleHost — the three members CTextPassThruFilter calls on its owner. In
+    // mpc-hc.exe these are CMainFrame::m_csSubLock / InvalidateSubtitle /
+    // ReplaceSubtitle; the semantics are copied, not invented.
+    CCritSec* SubLock() override { return &subLock_; }
+    void InvalidateSubtitle(DWORD_PTR nSubtitleId, REFERENCE_TIME rtInvalidate) override;
+    void ReplaceSubtitle(const ISubStream* pOld, ISubStream* pNew) override;
 
     // Audio endpoints. GetAudioDevices enumerates WASAPI render endpoints;
     // SetAudioDevice routes playback to one of them (through MpcAudioRenderer
@@ -623,6 +648,24 @@ private:
     EventCallback eventCallback_;
     HWND renderTarget_ = nullptr;
     Renderer rendererKind_ = Renderer::Auto;
+
+    // ── MPC-HC's INTERNAL subtitle path, re-hosted ────────────────────────────────
+    // The presenter owns the subpic queue and is the object our .ax calls back into
+    // each presented frame (ISubRender11Callback), so the renderer filter must be
+    // created THROUGH it — a directly-CoCreated filter has no queue to draw from.
+    CComPtr<ISubPicAllocatorPresenter> subAP_;
+    CComPtr<IBaseFilter> subSink_;       // CNullTextRenderer: gives subtitle pins a sink
+    CCritSec subLock_;                   // shared by SetStream and the queue's Render
+    struct SubEntry {
+        CComPtr<ISubStream> stream;      // QI'd off the spliced CTextPassThruFilter
+        CComPtr<IBaseFilter> splitter;   // kept so IAMStreamSelect can enable the track
+    };
+    std::vector<SubEntry> subs_;
+    int curSub_ = -1;                    // index into subs_, -1 = off
+    bool subsOn_ = true;
+    void ApplySubtitleProvider();        // (re)hands the current provider to subAP_
+    HRESULT SpliceSubtitleFilters();     // splitter sub pin -> CTextPassThruFilter -> sink
+
     int volumePercent_ = 100;
     bool muted_ = false;
     bool audioEnabled_ = true;

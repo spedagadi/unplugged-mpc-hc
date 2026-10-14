@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "../SubPic/ISubtitleHost.h"
+
 class CTextPassThruInputPin;
 
 class __declspec(uuid("E2BA9B7B-B65D-4804-ACB2-89C3E55511DB"))
@@ -32,10 +34,13 @@ class __declspec(uuid("E2BA9B7B-B65D-4804-ACB2-89C3E55511DB"))
     CTextPassThruInputPin* m_pInput;
     CTextPassThruOutputPin* m_pOutput;
 
-    CMainFrame* m_pMainFrame;
+    // Was a raw CMainFrame*. The filter only ever needs three members of its host
+    // (the shared sub lock, invalidate, replace), so it now depends on that contract
+    // instead of on the player's frame window — see SubPic/ISubtitleHost.h.
+    ISubtitleHost* m_pHost;
 
 public:
-    CTextPassThruFilter(CMainFrame* pMainFrame);
+    CTextPassThruFilter(ISubtitleHost* pHost);
     virtual ~CTextPassThruFilter();
 
     DECLARE_IUNKNOWN;
