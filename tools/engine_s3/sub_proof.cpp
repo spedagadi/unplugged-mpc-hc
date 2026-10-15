@@ -229,7 +229,28 @@ static void PollOnce() {
                 ? std::string("still playing 10 s after the short subtitle stream")
                 : (std::string("STATE LOST after switch: ") + st);
             Note(msg.c_str());
-            g_phase = (st == "playing") ? 9 : 20;   // 20 = failed the end-of-title guard
+            if (st != "playing") { g_phase = 20; g_phaseAt = now; break; }
+            g_phase = 15; g_phaseAt = now;
+        }
+        break;
+    // The audio switch the app reported as "stops playback and jumps to media selection":
+    // it aborted the graph (EC_ERRORABORT 0x88890008). It is now queued and applied at
+    // connect across a re-open that restores the position, so the test is: still playing,
+    // and the position is where it was, not 0.
+    case 15:
+        if (now - g_phaseAt > 500) {
+            Cmd("{\"a\":\"track\",\"index\":1}");
+            g_phase = 16; g_phaseAt = now;
+        }
+        break;
+    case 16:
+        if (now - g_phaseAt > 12000) {
+            const std::string msg = (st == "playing")
+                ? std::string("still playing after the audio track switch, pos=")
+                  + std::to_string(pos / 10000000LL) + "s"
+                : (std::string("AUDIO SWITCH LOST STATE: ") + st);
+            Note(msg.c_str());
+            g_phase = (st == "playing") ? 9 : 20;
             g_phaseAt = now;
         }
         break;

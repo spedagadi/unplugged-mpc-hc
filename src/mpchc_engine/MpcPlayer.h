@@ -467,6 +467,11 @@ public:
     // select) — never read from the poll worker, which must not touch the graph.
     std::string m_audioJson;
     int m_audioTrackCount = 0;   // audio tracks in m_audioJson; 0 → retry on the live tick
+    // Audio stream to enable at connect time on the next BuildGraph, -1 = leave the file's
+    // default. Set by SetAudioTrack, which cannot switch live in this topology (see the
+    // pending-audio block in BuildGraph); cleared whenever a DIFFERENT source opens, so a
+    // choice made for one file cannot silently apply to the next.
+    int pendingAudioTrack_ = -1;
     void RebuildAudioJson();
 
     // The same for subtitles: a `,"subtitle":{"current":N,"tracks":[…]}` fragment. The UI

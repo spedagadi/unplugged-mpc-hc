@@ -330,6 +330,9 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     const bool resumeSameSource = !source.empty() && snapshot_.source == source
                                && snapshot_.duration > 0 && snapshot_.position > 0;
     const LONGLONG resumePos = resumeSameSource ? (LONGLONG)snapshot_.position : 0;
+    if (!resumeSameSource) {
+        pendingAudioTrack_ = -1;   // a new file starts from its own default stream
+    }
     if (resumeSameSource) {
         Log("[GRAPH] Open: re-open of the same source at %.1f s — position will be restored",
             resumePos / 10000000.0);
@@ -885,8 +888,19 @@ HRESULT MpcPlayer::PumpEvents()
             snapshot_.position / 10000000.0, snapshot_.duration / 10000000.0);
         if (code == EC_COMPLETE) {
             eof = true;
-        } else if (code == EC_ERRORABORT || code == EC_USERABORT) {
+        } else if (code == EC_USERABORT) {
             aborted = true;
+        } else if (code == EC_ERRORABORT) {
+            // Split from EC_USERABORT on purpose: a graph that failed is not a title that
+            // ended. Detaching the window for it put the viewer back on the library screen
+            // as if they had stopped playback, which is exactly how the audio-switch abort
+            // presented. p1 carries the failure code, so it is logged and not swallowed.
+            Log("[EVENT] graph ERRORABORT hr=0x%08X at %.1f s of %.1f s — reporting the "
+                "error, window kept", (unsigned)(HRESULT)p1,
+                snapshot_.position / 10000000.0, snapshot_.duration / 10000000.0);
+            snapshot_.state = State::Error;
+            Notify("error");
+            return S_OK;
         }
         mediaEvent_->FreeEventParams(code, p1, p2);
     }
@@ -1317,6 +1331,19 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         }
     }
     if (!bDeckLink) {
+        // The audio stream the user picked is enabled HERE, before the pins connect, and
+        // not live on a running graph: a live IAMStreamSelect::Enable makes LAVAudio
+        // renegotiate its input while the graph is running and the graph aborts (measured:
+        // EC_ERRORABORT 0x88890008 at 254 s of a 155-minute file, immediately followed by
+        // the window detaching and the UI falling back to the library). MPC-HC gets away
+        // with live switching because it puts its AudioSwitcher filter between the splitter
+        // and the renderer; this graph has no AudioSwitcher, so the switch is applied at
+        // connect time and Open() restores the position across the re-open.
+        if (pendingAudioTrack_ >= 0) {
+            const HRESULT hrTrack = SelectStream(TrackKind::Audio, pendingAudioTrack_);
+            Log("[GRAPH] pending audio track %d applied at connect hr=0x%08X",
+                pendingAudioTrack_, (unsigned)hrTrack);
+        }
         ConnectAudio(splitter);
         // After the audio connect, before Run: CTextPassThruFilter's insertion stops
         // the graph in MPC-HC because it may happen mid-playback; here the graph has
@@ -3614,11 +3641,17 @@ HRESULT MpcPlayer::SelectStream(TrackKind kind, int posIndex)
     return E_INVALIDARG;
 }
 
+// Queued, not live. See BuildGraph's pending-audio block for the measurement: enabling
+// another audio stream on a running graph aborts it in this topology (no AudioSwitcher).
+// The re-open is the same path a rebuild-only setting already uses, and Open() carries the
+// playback position across it, so the switch happens where the viewer is standing.
 HRESULT MpcPlayer::SetAudioTrack(int posIndex)
 {
-    const HRESULT hr = SelectStream(TrackKind::Audio, posIndex);
-    if (SUCCEEDED(hr)) RebuildAudioJson();   // refresh the cached active flag for the UI
-    return hr;
+    pendingAudioTrack_ = posIndex;
+    m_fileRebuildPending = true;
+    RebuildAudioJson();   // the rail lights the track that will be playing
+    Log("[ENGINE] audio track %d queued — re-open applies it at connect", posIndex);
+    return S_OK;
 }
 
 // posIndex is subtitle-relative (what the rail shows). -1 means Off.
