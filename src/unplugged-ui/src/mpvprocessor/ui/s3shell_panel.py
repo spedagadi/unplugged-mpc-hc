@@ -370,7 +370,8 @@ CURVES_CHROMA   = {CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS,
 class Row:
     def __init__(self, label, type_, group, key, section=None, options=None,
                  opt=0, min_=0, max_=100, val=50, default=50, gate=0,
-                 on=False, live=True, uncheck=True, curves=None, dev=False):
+                 on=False, live=True, uncheck=True, curves=None, dev=False,
+                 wide=False):
         self.label = label; self.type = type_; self.group = group; self.key = key
         self.section = section; self.options = options or []
         self.opt = opt; self.min = min_; self.max = max_; self.val = val
@@ -389,6 +390,12 @@ class Row:
         # hatch, so an expert can set it by hand without anyone else being able to
         # discover it by dragging.
         self.dev = dev
+        # wide: the VALUE gets the whole content area and the row's own label is dropped.
+        # For rows whose value IS the information — the audio and subtitle track names the
+        # splitter reports ("Deutsch TrueHD Atmos 7.1", "English SDH (VobSub)") — the 132 px
+        # control column elides them into unreadability, and the label ("Track") adds nothing
+        # the subgroup header (AUDIO / SUBTITLES) doesn't already say.
+        self.wide = wide
         self.text = ""               # FILE rows: the chosen path
         self.enabled = True          # per-control checkbox state
 
@@ -402,19 +409,19 @@ def build_rows():
 
     def add(label, type_, group, key, section=None, options=None, opt=0,
             min_=0, max_=100, val=50, default=50, gate=0, on=False,
-            live=True, uncheck=True, curves=None, dev=False):
+            live=True, uncheck=True, curves=None, dev=False, wide=False):
         r.append(Row(label, type_, group, key, section, options, opt, min_, max_,
-                     val, default, gate, on, live, uncheck, curves, dev))
+                     val, default, gate, on, live, uncheck, curves, dev, wide))
 
     # ── PLAYBACK — media-playback surface ────────────────────────────────────
     # Track rows have no engine backing yet (no track-list API across the C ABI);
     # they persist to the INI and become live once media player mode exposes it.
-    add("Track", CYCLE, P, "pb.audioTrack", "AUDIO", ["—"], 0, uncheck=False)
+    add("Track", CYCLE, P, "pb.audioTrack", "AUDIO", ["—"], 0, uncheck=False, wide=True)
     add("HD audio", CYCLE, P, "pb.hdAudio", "AUDIO",
         ["Bitstream", "PCM"], 0, uncheck=False)
     add("Delay", SLIDER, P, "pb.audioDelay", "AUDIO",
         min_=-500, max_=500, val=0, default=0, uncheck=False)
-    add("Track", CYCLE, P, "pb.subTrack", "SUBTITLES", ["Off"], 0, uncheck=False)
+    add("Track", CYCLE, P, "pb.subTrack", "SUBTITLES", ["Off"], 0, uncheck=False, wide=True)
 
     add("Enable ML grade", TOGGLE, Z, "zion.enabled", on=True)
     # JOINT BAND CONTROLLER. Solves the three grade actuators (shadow pedestal, gamma,
@@ -1242,6 +1249,16 @@ class S3ShellPanel(QWidget):
             # style row can do anything at all.
             nm = re.sub(r'^[A-Za-z]:\s*', '', (t.get("name") or "").strip())
             nm = re.sub(r'\[[^\]]*\]', '', nm)
+            # LAV appends its own machine codec tag after the human one, so the raw name
+            # reads "Deutsch Forced (SRT) (subrip)" and "Deutsch SDH (PGS) (pgs)". Drop the
+            # machine one by name — a blanket "lowercase parenthetical" rule would take
+            # "(auto)" off "Forced Subtitles (auto)", which is the only thing that says what
+            # that entry does.
+            # Case matters: LAV's machine tag is lowercase ("(pgs)") and the human one is
+            # mixed ("(PGS)"). Matching case-insensitively strips both and leaves three
+            # tracks named "Deutsch Forced" indistinguishable.
+            nm = re.sub(r'\((?:subrip|vobsub|pgs|ass|ssa|mov_text|dvb_teletext|text)\)',
+                        '', nm)
             nm = " ".join(nm.split()).strip()
             labels.append(nm or (t.get("lang") or "").strip() or f"Track {i + 1}")
         row.options = labels
@@ -1374,12 +1391,13 @@ class S3ShellPanel(QWidget):
 
     def _paint_row(self, p, r, y):
         is_slider = r.type == SLIDER
-        # label
-        p.setFont(F_LABEL); p.setPen(TEXT)
-        lb = QRect(RAIL_W + PAD + 6, y,
-                   (RAIL_W + 150 - 8) if is_slider else (RIGHT_W - 150),
-                   ROW_H)
-        p.drawText(lb, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r.label)
+        # label — except on wide rows, where the value takes the label's space (see Row.wide)
+        if not (getattr(r, "wide", False) and r.type == CYCLE):
+            p.setFont(F_LABEL); p.setPen(TEXT)
+            lb = QRect(RAIL_W + PAD + 6, y,
+                       (RAIL_W + 150 - 8) if is_slider else (RIGHT_W - 150),
+                       ROW_H)
+            p.drawText(lb, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r.label)
 
         if is_slider:
             self._paint_slider(p, r, y)
@@ -1419,6 +1437,24 @@ class S3ShellPanel(QWidget):
         else:  # cycle
             p.setFont(F_VALUE); p.setPen(MID)
             opt = r.options[r.opt] if r.options else "?"
+            if r.wide:
+                # Track names are the payload of these rows, so they get the whole content
+                # area (328 px instead of the 132 px control column) and the redundant
+                # "Track" label is dropped - the subgroup header above already says AUDIO or
+                # SUBTITLES. Chevrons sit at the right edge so the row still reads as a
+                # picker; the press handler rotates on any click in the row, so moving the
+                # text left costs nothing in usability.
+                chev = QRect(RIGHT_W - 44, y, 32, ROW_H)
+                left = RAIL_W + PAD + 6
+                avail = max(chev.left() - left - 8, 40)
+                fm = QFontMetrics(p.font())
+                p.setPen(TEXT)
+                p.drawText(QRect(left, y, avail, ROW_H),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                           fm.elidedText(opt, Qt.TextElideMode.ElideMiddle, avail))
+                p.setPen(ACCENT2 if r.options and len(r.options) > 1 else BORDER)
+                p.drawText(chev, Qt.AlignmentFlag.AlignCenter, "‹ ›")
+                return
             # Elide in the middle, and leave room for the bracket markers: track names come
             # straight from the splitter ("Deutsch Forced (SRT)", "English SDH (VobSub)")
             # and both ends carry information — the language at the front, the format that
