@@ -36,3 +36,17 @@ dlg._on_vp_selected()
 app.processEvents()
 shot("first_run_step2")
 print("first_run flag still set:", cfg.first_run)
+
+# The rename dialog opened from the SOURCE page must wear the same frame.
+from mpvprocessor.ui.input_config_panel import InputConfigDialog   # noqa: E402
+
+dlg2 = InputConfigDialog(cfg)
+dlg2.show()
+app.processEvents()
+img = QImage(dlg2.size(), QImage.Format.Format_ARGB32_Premultiplied)
+img.fill(QColor(0x00, 0x00, 0x00))
+dlg2.render(img)
+out = r"C:\code\unplugged-mpc-hc\tools\engine_s3\input_config_dialog.png"
+img.save(out)
+print("wrote", out, f"{img.width()}x{img.height()}")
+

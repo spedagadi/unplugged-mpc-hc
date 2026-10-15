@@ -302,7 +302,9 @@ _ACCENT_RGBA = "rgba(232,85,31,220)"
 _DLG_STYLE = """
 QWidget#card {
     background: #0e0e0e;
-    border: 1.5px solid rgba(100,100,100,180);
+    /* The same accent frame FirstRunDialog wears. Both open from the SOURCE page, and a
+       grey-bordered card next to an orange one reads as two different applications. */
+    border: 1.5px solid rgba(232,85,31,200);
     border-radius: 14px;
 }
 QWidget  { background: transparent; color: #e0e0e0; }
