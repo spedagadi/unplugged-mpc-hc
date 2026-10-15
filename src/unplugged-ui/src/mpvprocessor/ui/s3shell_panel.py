@@ -1438,22 +1438,27 @@ class S3ShellPanel(QWidget):
             p.setFont(F_VALUE); p.setPen(MID)
             opt = r.options[r.opt] if r.options else "?"
             if r.wide:
-                # Track names are the payload of these rows, so they get the whole content
-                # area (328 px instead of the 132 px control column) and the redundant
-                # "Track" label is dropped - the subgroup header above already says AUDIO or
-                # SUBTITLES. Chevrons sit at the right edge so the row still reads as a
-                # picker; the press handler rotates on any click in the row, so moving the
-                # text left costs nothing in usability.
-                chev = QRect(RIGHT_W - 44, y, 32, ROW_H)
-                left = RAIL_W + PAD + 6
-                avail = max(chev.left() - left - 8, 40)
+                # Same grammar as every other cycle row - a chevron at each end with the
+                # value between them, centred - but across the whole content area instead of
+                # the 132 px control column, and with the redundant "Track" label dropped
+                # (the subgroup header already says AUDIO or SUBTITLES). Keeping the
+                # brackets around the text matters: chevrons standing alone at the right
+                # edge read as a separate widget, and the name looked unclaimed.
+                left   = RAIL_W + PAD + 6
+                right  = RIGHT_W - PAD
+                chevW  = 20
+                live   = bool(r.options) and len(r.options) > 1
                 fm = QFontMetrics(p.font())
+                p.setPen(ACCENT2 if live else BORDER)
+                p.drawText(QRect(left, y, chevW, ROW_H),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "‹")
+                p.drawText(QRect(right - chevW, y, chevW, ROW_H),
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "›")
+                avail = max(right - chevW - (left + chevW) - 4, 40)
                 p.setPen(TEXT)
-                p.drawText(QRect(left, y, avail, ROW_H),
-                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                p.drawText(QRect(left + chevW + 2, y, avail, ROW_H),
+                           Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                            fm.elidedText(opt, Qt.TextElideMode.ElideMiddle, avail))
-                p.setPen(ACCENT2 if r.options and len(r.options) > 1 else BORDER)
-                p.drawText(chev, Qt.AlignmentFlag.AlignCenter, "‹ ›")
                 return
             # Elide in the middle, and leave room for the bracket markers: track names come
             # straight from the splitter ("Deutsch Forced (SRT)", "English SDH (VobSub)")

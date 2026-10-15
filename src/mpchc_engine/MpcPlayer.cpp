@@ -322,6 +322,19 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
     if (source.empty()) return E_INVALIDARG;
 
+    // A rebuild-only setting (audio mode, swap effect, dither…) re-opens the SAME source,
+    // and until now that put the viewer back at the beginning of the film — measured: a
+    // re-open taken at 270 s came back with the renderer at 1.79 s. Capture the position
+    // before the old graph dies and restore it below, but only for a re-open of the same
+    // source: opening a different file must start at the start.
+    const bool resumeSameSource = !source.empty() && snapshot_.source == source
+                               && snapshot_.duration > 0 && snapshot_.position > 0;
+    const LONGLONG resumePos = resumeSameSource ? (LONGLONG)snapshot_.position : 0;
+    if (resumeSameSource) {
+        Log("[GRAPH] Open: re-open of the same source at %.1f s — position will be restored",
+            resumePos / 10000000.0);
+    }
+
     Log("[GRAPH] Open: starting ordered teardown of the old graph");
     TeardownDecklinkGraph();
     Log("[GRAPH] Open: teardown complete — building the new graph");
@@ -349,6 +362,14 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     UpdateSnapshot();
     Notify("opened");
     m_liveReady = true;   // graph + renderer fully wired — live cache may touch them now
+
+    // Restore after the graph is wired (mediaSeeking_ exists and the renderer has its
+    // first sample), otherwise the seek lands on a half-built graph.
+    if (resumePos > 0) {
+        const HRESULT hrResume = Seek(resumePos);
+        Log("[GRAPH] Open: resume at %.1f s hr=0x%08X", resumePos / 10000000.0,
+            (unsigned)hrResume);
+    }
     return S_OK;
 }
 
@@ -854,12 +875,39 @@ HRESULT MpcPlayer::PumpEvents()
     LONG_PTR p1 = 0, p2 = 0;
     bool eof = false, aborted = false;
     while (mediaEvent_->GetEvent(&code, &p1, &p2, 0) == S_OK) {
+        // The code is logged because it is the whole question when the UI drops back to the
+        // library mid-title: EC_COMPLETE (0x0000000F) means a stream ran out - normal for a
+        // subtitle track, and now filtered by position - while EC_ERRORABORT (0x00000001)
+        // means the graph actually failed, which is a different bug and must not be hidden
+        // by the same code path.
+        Log("[EVENT] graph code=0x%08X p1=0x%llX p2=0x%llX pos=%.1fs dur=%.1fs",
+            (unsigned)code, (unsigned long long)p1, (unsigned long long)p2,
+            snapshot_.position / 10000000.0, snapshot_.duration / 10000000.0);
         if (code == EC_COMPLETE) {
             eof = true;
         } else if (code == EC_ERRORABORT || code == EC_USERABORT) {
             aborted = true;
         }
         mediaEvent_->FreeEventParams(code, p1, p2);
+    }
+    // EC_COMPLETE is per-stream, not per-title. A filter whose stream ran out posts it on
+    // the graph, so switching to a subtitle or audio track that has no more data - a forced
+    // subtitle track that ends a few minutes in, a secondary audio stream - reports
+    // "complete" while the title is still playing. Treating that as end-of-title detaches
+    // the window and drops the UI back on the library, which is exactly what was reported
+    // after a track switch 22 s into a 155-minute film.
+    //
+    // So the event is only believed when the position actually is at the end. Duration and
+    // position are the ones the snapshot already carries, both in 100 ns units.
+    if (eof) {
+        const long long dur = (long long)snapshot_.duration;
+        const long long pos = (long long)snapshot_.position;
+        const bool reallyAtEnd = dur > 0 && pos >= dur - 2 * 10000000LL;
+        if (!reallyAtEnd) {
+            Log("[EOF] EC_COMPLETE ignored: position %.1f s of %.1f s (a stream ended, not "
+                "the title)", pos / 10000000.0, dur / 10000000.0);
+            eof = false;
+        }
     }
     if (!eof && !aborted) return S_OK;
 

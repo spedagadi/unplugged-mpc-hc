@@ -211,8 +211,27 @@ static void PollOnce() {
         break;
     case 11:
         break;
+    // The regression the app reported: switching to a subtitle track whose stream runs out
+    // posts EC_COMPLETE on the graph, which the engine read as end-of-title - it detached
+    // the renderer window and the UI fell back to the library. Track 1 is "Deutsch Forced
+    // (VobSub)", the one in the failing session. Playback must survive the switch, so the
+    // state has to still be "playing" here.
     case 8:
-        if (now - g_phaseAt > 1000) { g_phase = 9; g_phaseAt = now; Note("all grabs done; shutting down"); }
+        if (now - g_phaseAt > 1000) {
+            Cmd("{\"a\":\"seek\",\"pos\":200000000}");     // 20 s, as in the failing session
+            Cmd("{\"a\":\"subtrack\",\"index\":1}");
+            g_phase = 14; g_phaseAt = now;
+        }
+        break;
+    case 14:
+        if (now - g_phaseAt > 10000) {
+            const std::string msg = (st == "playing")
+                ? std::string("still playing 10 s after the short subtitle stream")
+                : (std::string("STATE LOST after switch: ") + st);
+            Note(msg.c_str());
+            g_phase = (st == "playing") ? 9 : 20;   // 20 = failed the end-of-title guard
+            g_phaseAt = now;
+        }
         break;
     case 9:
         if (now - g_phaseAt > 500) {
@@ -251,9 +270,10 @@ int main(int argc, char** argv) {
     if (!g_hwnd) { printf("FAIL: no window\n"); return 2; }
 
     std::thread watchdog([] {
-        // != 9, not < 9: phases 10 and 11 are the post-rebuild seeks, and a "<" test would
-        // silently drop the watchdog while they run.
-        while (g_phase != 9) {
+        // Not "< 9": phases 10, 11 and 14 are the post-rebuild seeks and the end-of-title
+        // wait, and a "<" test would silently drop the watchdog while they run. Phase 20 is
+        // the terminal FAILURE state, which also has to stop the watch.
+        while (g_phase != 9 && g_phase != 20) {
             Sleep(500);
             long long age = (long long)GetTickCount() - g_lastPollMs.load();
             if (g_lastPollMs && age > 8000) {
