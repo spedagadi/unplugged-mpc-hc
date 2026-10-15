@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
         event.accept()
         self.hide()
         QApplication.processEvents()
-        self._engine.shutdown()
+        self._engine.shutdown(for_exit=True)   # the ONLY caller allowed to arm the exit watchdog
         QApplication.quit()
         super().closeEvent(event)
 
@@ -971,11 +971,42 @@ class MainWindow(QMainWindow):
             self._splash.finished.connect(self._start_vp_capture)
 
     def _show_first_run(self) -> None:
+        """Present the first-run dialog over the app's idle background, not over whatever
+        surface happens to be up.
+
+        The dialog is a frameless card with transparent margins, so the media library stays
+        visible around its rounded corners — which read as "a setup box sitting on top of
+        my file list" when setup is re-run from the Source tab. The surfaces it can replace
+        are put away first and restored if the user backs out, so cancelling costs them
+        nothing.
+        """
+        was_library = self._media_library.isVisible()
+        was_viewport = self._viewport.isVisible()
+        if was_library or was_viewport:
+            self._media_library.hide()
+            self._viewport.hide()
+            self._background.show_instant()
         dlg = FirstRunDialog(self._app_config, self)
+
         def _on_complete(mode: str, url: str) -> None:
+            nonlocal was_library, was_viewport
+            was_library = was_viewport = False     # the choice decides what comes next
             dlg.close()
             self._on_first_run_complete(mode, url)
+
+        def _on_done(_result) -> None:
+            # Backed out (Esc/close) without completing: put the surface back, or the user
+            # is left staring at a background they never asked for.
+            if was_library:
+                self._media_library.show()
+                self._media_library.raise_()
+            if was_viewport:
+                self._viewport.show()
+                self._viewport.raise_()
+            dlg.deleteLater()
+
         dlg.setup_complete.connect(_on_complete)
+        dlg.finished.connect(_on_done)
         dlg.show()
 
     @pyqtSlot(str, str)
@@ -1454,6 +1485,25 @@ class MainWindow(QMainWindow):
         except Exception:
             _log.exception("source: set_source_state failed")
 
+    def _engine_quiesce(self) -> None:
+        """Stop what is playing WITHOUT taking the app down with it.
+
+        Three places used to call engine.shutdown() here — a mode switch, a forced mode
+        switch, and the Source tab's stop-playback gate. shutdown() is the app's EXIT
+        routine: it releases the DLL and arms a 15 s os._exit(0) watchdog that exists so a
+        closing process can never linger and hold the DeckLink. Called from a settings
+        change, that watchdog is a delayed suicide: pick Media Player in first-run setup
+        while a film was playing and the app vanished a quarter of a minute later, cleanly
+        and with no crash to read.
+
+        A switch needs much less. pause() takes the sound and picture off, stop_capture()
+        hands the card back (empty device name is the engine's documented "capture off"),
+        and the next Open()/SetDecklinkCapture() replaces whatever graph is loaded — the
+        engine already tears down the old graph as the first thing it does.
+        """
+        self._engine.pause(True)
+        self._engine.stop_capture()
+
     def _stop_playback_for_source(self, what: str) -> bool:
         """Warn, then actually stop, before anything on the SOURCE page replaces what is on
         screen. Returns False if the user declined (and then nothing has changed).
@@ -1475,12 +1525,10 @@ class MainWindow(QMainWindow):
         if not ok:
             _audit.info("user: declined to stop playback — nothing changed")
             return False
-        # The same sequence _force_mode_change uses: the engine owns the graph, so it is
-        # stopped and shut down here rather than by a later mode switch that may never
-        # come. The overlay and the retry timers are the UI's half of the same teardown.
+        # Pause and hand the card back — NOT shutdown(), which is the exit routine and
+        # would schedule os._exit(0) fifteen seconds after the user changed a setting.
         _audit.info(f"user: stopping playback to proceed — {what}")
-        self._engine.stop()
-        self._engine.shutdown()
+        self._engine_quiesce()
         self._vp_acquiring = False
         self._vp_retry_timer.stop()
         self._vp_check_timer.stop()
@@ -1809,8 +1857,7 @@ class MainWindow(QMainWindow):
                 self._control_bar.set_app_mode(self._app_config.app_mode)
                 self._right_panel.set_app_mode(self._app_config.app_mode)
                 return
-            self._engine.stop()
-            self._engine.shutdown()
+            self._engine_quiesce()
 
         # Cancel any in-progress VP acquisition cleanly
         if self._vp_acquiring:
@@ -1850,8 +1897,7 @@ class MainWindow(QMainWindow):
         if mode == self._app_config.app_mode:
             return
         if self._engine.is_playing():
-            self._engine.stop()
-            self._engine.shutdown()
+            self._engine_quiesce()
         # Reuse the common body
         self._vp_acquiring = False
         self._vp_retry_timer.stop(); self._vp_check_timer.stop()

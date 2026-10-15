@@ -167,7 +167,11 @@ class S3Engine(QObject):
             self._timer.start()
             return
         device = _to_device(url)
-        if not self._started and device:
+        if device:
+            # Always issue the start. MpcPlayer::SetDecklinkCapture no-ops when the same
+            # device is already capturing and otherwise stops the old capture itself, so
+            # the guard this used to have ("only the first time") was what made switching
+            # to a different HDMI port a silent no-op: the new URL was never sent.
             device_b = device.encode("utf-8")
             rc = self._lib.s3_start_device(device_b)
             log.info("s3_start_device('%s') rc=0x%08X", device, rc)
@@ -178,6 +182,20 @@ class S3Engine(QObject):
 
     def stop(self) -> None:
         pass   # engine owns transitions; pause only if desired later
+
+    def stop_capture(self) -> None:
+        """Turn the capture off, engine-side.
+
+        An empty device name is the engine's documented "capture off" (SetDecklinkCapture
+        logs it and returns), and it runs on the engine's own thread discipline. This is
+        what a mode switch to media player uses instead of shutdown(): shutdown() releases
+        the DLL and arms the 15 s force-exit watchdog, which is correct only when the app is
+        actually closing.
+        """
+        if self._lib:
+            rc = self._lib.s3_start_device(b"")
+            log.info("s3_start_device('') rc=0x%08X — capture off", rc)
+        self._started = None
 
     def pause(self, paused: bool) -> None:
         if self._lib:
@@ -285,7 +303,7 @@ class S3Engine(QObject):
     def poll_properties(self, names: list[str]) -> None:
         self._poll()   # cheap: refresh cache + emit changes
 
-    def shutdown(self) -> None:
+    def shutdown(self, for_exit: bool = False) -> None:
         """Stop the poll timer, then the engine's ordered teardown.
 
         s3_shutdown bounds itself at ~10 s (detached worker + wait) and is
@@ -295,11 +313,26 @@ class S3Engine(QObject):
         (os._exit bypasses Python finalization — exactly the force we want at
         that point; a leftover Unplugged holds the DeckLink and blocks relaunch).
         Logged first so the trip reason stays in the log.
+
+        THAT IS AN EXIT ROUTINE. The watchdog is armed only when the caller says
+        `for_exit=True`, because the same call was being used to "reset" the engine
+        between modes and between capture ports — and every one of those scheduled
+        `os._exit(0)` fifteen seconds after the user changed a setting. The app
+        closing itself after a first-run dialog was that: not a crash, a promise the
+        exit path made and kept. Switching modes or ports needs stop_capture() and
+        pause(), which the engine handles without releasing the DLL.
         """
         self._timer.stop()
         if self._lib:
             self._lib.s3_shutdown()
             self._lib = None
+        self._attached = False
+        self._started = None
+
+        if not for_exit:
+            log.error("shutdown() called without for_exit=True — engine torn down, NO "
+                      "exit watchdog armed; callers should use stop_capture()/pause()")
+            return
 
         def _watchdog() -> None:
             log.error("shutdown watchdog: process still alive 15 s after close — forcing exit")
