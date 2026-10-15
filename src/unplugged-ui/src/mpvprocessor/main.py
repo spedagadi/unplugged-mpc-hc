@@ -145,16 +145,50 @@ def _setup_mpv_path() -> None:
                 pass
 
 
+_INSTANCE_MUTEX = None   # handle to the single-instance mutex; see release_instance_lock()
+
+
+def release_instance_lock() -> None:
+    """Hand the single-instance mutex back before this process has actually exited.
+
+    The mutex normally lives for the whole process, which is correct: two instances
+    cannot both own the DeckLink card or register the Up-arrow hotkey. The one exception
+    is a deliberate restart — the child is spawned while this process is still mid-teardown
+    (engine shutdown alone is bounded at ~10 s), so the child would find the mutex held and
+    exit, presenting as "the app closed and nothing came back". Releasing early opens a
+    seconds-wide window in which a manual second launch could fight this one for the card;
+    that is a rarer and gentler failure than a restart that never arrives.
+    """
+    global _INSTANCE_MUTEX
+    if _INSTANCE_MUTEX:
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(_INSTANCE_MUTEX)
+        _INSTANCE_MUTEX = None
+
+
 def main() -> None:
     # Single instance: two processes can't both own the DeckLink card nor
     # register the Up-arrow global hotkey (RegisterHotKey is process-global).
     # A stray second launch silently exits instead of fighting over both.
     import ctypes
+    global _INSTANCE_MUTEX
     _kernel32 = ctypes.windll.kernel32
     _s3_mutex = _kernel32.CreateMutexW(None, False, "UnpluggedS3Instance")
     if _kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
-        sys.stderr.write("unplugged already running - exiting second instance\n")
-        sys.exit(0)
+        # Usually a stray double-launch, which should die. But it is also what a RESTART
+        # looks like: the relaunch flow spawns the child before the parent has finished its
+        # ordered teardown, so the mutex is still held for a second or two. Waiting briefly
+        # turns "the app closed and nothing came back" into a normal handover; a genuinely
+        # second interactive launch still exits, just eight seconds later at worst.
+        _WAIT_OBJECT_0, _WAIT_ABANDONED = 0, 0x80
+        _rc = _kernel32.WaitForSingleObject(_s3_mutex, 8000)
+        if _rc not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+            # No console under DETACHED_PROCESS: sys.stderr is None there, and writing to
+            # it is an AttributeError, which is how the relaunch presented as a crash.
+            if sys.stderr is not None:
+                sys.stderr.write("unplugged already running - exiting second instance\n")
+            sys.exit(0)
+    _INSTANCE_MUTEX = _s3_mutex
 
     # TASKBAR IDENTITY. Without an explicit AppUserModelID, Windows groups this
     # process under whatever host identity it infers (a PyInstaller bootloader) and

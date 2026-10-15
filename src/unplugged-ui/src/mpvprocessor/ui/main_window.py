@@ -1564,6 +1564,12 @@ class MainWindow(QMainWindow):
             cmd = [sys.executable, str(root / "launch.py")]
             cwd = str(root)
         _audit.info(f"setup: relaunching — {cmd} cwd={cwd}")
+        # Hand the single-instance mutex back BEFORE spawning: the child checks it in its
+        # first lines, and this process would otherwise hold it until teardown finishes
+        # (engine shutdown alone is bounded at ~10 s), which made the child exit as a
+        # "second instance" and the restart present as the app simply closing.
+        from ..main import release_instance_lock
+        release_instance_lock()
         # Detached so the child is not killed with our process group, and started before
         # we begin tearing down: the child's splash buys five seconds for this process to
         # release the DeckLink before the child tries to capture.
