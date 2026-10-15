@@ -1030,10 +1030,20 @@ class MainWindow(QMainWindow):
             if chrome_up and not completed[0]:
                 self._chrome.show()
                 self._chrome.raise_()
+            self._first_run_dlg = None      # release the strong reference (see _show_first_run)
             dlg.deleteLater()
 
         dlg.setup_complete.connect(_on_complete)
         dlg.finished.connect(_on_done)
+        # STRONG REFERENCE, deliberately. The dialog is parentless (see the modality note
+        # above), so nothing in the C++ tree owns it and the only thing keeping the Python
+        # wrapper — and therefore the whole window — alive is a variable in this function.
+        # Without this the wrapper is collected when _show_first_run returns, the C++
+        # dialog dies under the user's click, and a parentless QTimer.singleShot inside
+        # InputConfigPanel fires into the corpse ("wrapped C/C++ object of type QButtonGroup
+        # has been deleted"). Observed as: step 2 appears for a moment, then the dialog is
+        # simply gone and the app sits on the wallpaper.
+        self._first_run_dlg = dlg
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

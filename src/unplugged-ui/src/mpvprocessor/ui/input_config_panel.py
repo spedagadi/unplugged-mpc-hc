@@ -201,8 +201,15 @@ class InputConfigPanel(QWidget):
         scroll.setWidget(self._list_widget)
         root.addWidget(scroll, 1)
 
-        # Auto-scan after short delay so parent can finish rendering
-        QTimer.singleShot(250, self.scan)
+        # Auto-scan after a short delay so the parent can finish rendering. A MEMBER timer,
+        # not QTimer.singleShot: singleShot's timer is parentless and holds a bound method,
+        # so it fires even after this panel's C++ object has been deleted — which is exactly
+        # how a deleted QButtonGroup got touched from _do_scan (crash.log, 2026-10-15).
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.setInterval(250)
+        self._scan_timer.timeout.connect(self.scan)
+        self._scan_timer.start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -235,6 +242,13 @@ class InputConfigPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _do_scan(self) -> None:
+        # Liveness probe: touching any property of a deleted C++ object raises
+        # RuntimeError. If this panel was orphaned (its dialog collected), a stray timer
+        # must not walk into _rebuild_list and touch the radio group.
+        try:
+            _ = self._radio_group.exclusive
+        except RuntimeError:
+            return
         self._ports = poll_all_ports()
         self._rebuild_list()
         self._rescan_btn.setEnabled(True)
