@@ -79,9 +79,19 @@ ROWS = [
 
 
 def settings_ini_path() -> Path:
-    """Next to the executable (dev tree: the app dir), like the shell's."""
-    base = Path(sys.executable).parent if getattr(sys, "frozen", False) \
-        else Path(__file__).resolve().parents[3]
+    """Where the rail's key=value store lives.
+
+    Packaged builds keep it in the user's home, NOT next to the executable: dist/ is
+    recreated by every PyInstaller build, so an INI stored there was deleted along with
+    the build — taking the user's calibration with it (observed 2026-10-15: no INI anywhere
+    in dist after a package, and a month-stale one in the dev tree). Dev runs keep the
+    old next-to-the-source location so existing workflows are untouched.
+    """
+    if getattr(sys, "frozen", False):
+        home = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".unplugged"
+        home.mkdir(parents=True, exist_ok=True)
+        return home / "s3_shell.ini"
+    base = Path(__file__).resolve().parents[3]
     cand = base / "s3_shell.ini"
     try:
         with open(cand, "a", encoding="utf-8"):
