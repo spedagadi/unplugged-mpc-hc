@@ -833,10 +833,14 @@ def build_rows():
     add("Windows HDR", CYCLE, H, "hdr.toggleDisplay", "DISPLAY TARGET",
         ["Do not change", "On (fullscreen)", "On", "On/off (fullscreen)", "On/off"], 0,
         uncheck=False)
-    # min_ was 200, which made a measured 174-nit projector impossible to enter by hand —
-    # the slider clamped it back up. Projectors live well below 200 nits.
+    # Range is 10..1000, not 10..10000: the slider maps its whole range onto ~200 px of
+    # track, so at a 10000 top end one pixel of drag was ~70 nits and a measured 174-nit
+    # projector could not be landed on (167 -> 237 per adjustment). At 1000 the same drag
+    # is ~5 nits/px. Displays above 1000 nits can still be set by editing hdr.maxNits in
+    # the INI directly; the engine accepts 100..10000 (DX11VideoProcessor clamps there).
+    # min_ was 200 until today, which clamped any sub-200 measurement back up.
     add("Static nits (max)", SLIDER, H, "hdr.maxNits", "DISPLAY TARGET", min_=10,
-        max_=10000, val=1000, default=1000, uncheck=False)
+        max_=1000, val=1000, default=1000, uncheck=False)
     # The display's measured BLACK. The tone mapper builds its destination range
     # as [black, max]; at 0 it assumes an ideal black and compresses the shadow
     # end into a range the panel cannot show. Default 0 = previous behaviour.
