@@ -823,26 +823,27 @@ def build_rows():
     # 0 = off, byte-identical. 0.50 is the value fitted to curve 7.
     add("Highlight desat", SLIDER, H, "hdr.hiDesat", "TONE MAPPING",
         min_=0.0, max_=1.0, val=0.0, default=0.0, uncheck=False)
-    # ── DISPLAY TARGET — per-display calibration, hidden by default ──────────
-    # Every row here is live and reaches the renderer (the [live] hdr: line reads
-    # dispNits/blackNits back from the engine), but all four are set-once-per-display
-    # values, not per-title dials — and two of them (Windows HDR, Static nits) actively
-    # break the picture when fiddled. The daily taste dial, SDR display nits, lives in
-    # TONE MAPPING. So the section is dev-hidden exactly like Prefer DV and the soft-knee
-    # trio: the INI values persist and push_all still sends them, only the discoverability
-    # is gone. ui.showGradeInternals=1 brings the section back for calibration.
+    # ── DISPLAY TARGET — per-display calibration, visible and interactive ────
+    # These are the numbers a display's measurement report fills in: the ceiling
+    # (Static nits), the floor (Display black) and the Windows HDR mode. Set-once-per-
+    # display rather than per-title, but they are USER values — a new projector or a
+    # re-lamp means new numbers, so the section stays interactive. (Briefly dev-hidden on
+    # 2026-10-15 and reverted the same day: hiding the only place a measured calibration
+    # can be entered saves nothing and costs the ability to calibrate at all.)
     add("Windows HDR", CYCLE, H, "hdr.toggleDisplay", "DISPLAY TARGET",
         ["Do not change", "On (fullscreen)", "On", "On/off (fullscreen)", "On/off"], 0,
-        uncheck=False, dev=True)
-    add("Static nits (max)", SLIDER, H, "hdr.maxNits", "DISPLAY TARGET", min_=200,
-        max_=10000, val=1000, default=1000, uncheck=False, dev=True)
+        uncheck=False)
+    # min_ was 200, which made a measured 174-nit projector impossible to enter by hand —
+    # the slider clamped it back up. Projectors live well below 200 nits.
+    add("Static nits (max)", SLIDER, H, "hdr.maxNits", "DISPLAY TARGET", min_=10,
+        max_=10000, val=1000, default=1000, uncheck=False)
     # The display's measured BLACK. The tone mapper builds its destination range
     # as [black, max]; at 0 it assumes an ideal black and compresses the shadow
     # end into a range the panel cannot show. Default 0 = previous behaviour.
     add("Display black (nits)", SLIDER, H, "hdr.blackNits", "DISPLAY TARGET",
-        min_=0.0, max_=2.0, val=0, default=0, uncheck=False, dev=True)
+        min_=0.0, max_=2.0, val=0, default=0, uncheck=False)
     add("Subtitle/OSD brightness", SLIDER, H, "hdr.osdBright", "DISPLAY TARGET", max_=100,
-        val=0, default=0, uncheck=False, dev=True)
+        val=0, default=0, uncheck=False)
 
     # ── Spline (experimental) tone-curve parameter ───────────────────────────
     # The spline is now a first-class "Tone curve" option (value 9), mutually
