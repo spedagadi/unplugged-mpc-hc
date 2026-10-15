@@ -30,6 +30,13 @@ from PyQt6.QtWidgets import QDialog, QScrollArea
 # restore the scroll-area hosting and re-test.
 _USE_SCROLL_AREA = False
 
+# Extra clearance above the screen's bottom edge for the transport/control bars.
+# The bars sit flush at h - height on a fullscreen borderless window, and on a TV or an
+# overscanned monitor the bottom row of pixels is simply not visible — the volume slider
+# and the play/seek bar ended up half off the panel the user can see. Both the chrome
+# window and the pre-chrome layout in main_window add this, so the two placements agree.
+BOTTOM_SAFE_PX = 28
+
 
 class SettingsWindow(QDialog):
     def __init__(self, app_config, profile, parent=None) -> None:
@@ -47,7 +54,6 @@ class SettingsWindow(QDialog):
         self._rail_left = 300
         self._rail_right = 460
         self._bottom_h = 64
-
     # ---------------------------------------------------------------
     def adopt(self, status_panel, settings_panel, bars, rail_left: int = 300,
               rail_right: int = 460, top=None) -> None:
@@ -95,7 +101,7 @@ class SettingsWindow(QDialog):
     def _layout_children(self) -> None:
         r = self.rect()
         w, h = r.width(), r.height()
-        bottom_h = self._bottom_h
+        bottom_h = self._bottom_h + BOTTOM_SAFE_PX
         # TOP strip (status bar: device/status + minimise/close buttons)
         if self._top is not None:
             self._top.setGeometry(0, 0, w, 36)

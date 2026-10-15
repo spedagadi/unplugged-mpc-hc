@@ -240,6 +240,26 @@ class S3Engine(QObject):
         if self._lib:
             self._lib.s3_cmd(json.dumps({"a": "subvisible", "on": 1 if on else 0}).encode("utf-8"))
 
+    def set_volume(self, percent) -> None:
+        """0..100 into the engine's IBasicAudio path (MpcPlayer::SetVolume clamps).
+
+        The old behaviour logged "audio is pass-through; ignored" — an mpv-era assumption
+        that outlived mpv. It is true only in bitstream mode, where the receiver decodes
+        and owns the level; in PCM the engine mixes and the slider is real. The UI disables
+        the slider in bitstream rather than letting it lie.
+        """
+        if self._lib:
+            try:
+                p = int(round(float(percent)))
+            except (TypeError, ValueError):
+                return
+            p = max(0, min(100, p))
+            self._lib.s3_cmd(json.dumps({"a": "volume", "percent": p}).encode("utf-8"))
+
+    def set_muted(self, on: bool) -> None:
+        if self._lib:
+            self._lib.s3_cmd(json.dumps({"a": "mute", "on": 1 if on else 0}).encode("utf-8"))
+
     def set_audio_mode(self, mode: int) -> None:
         """0 = decode to PCM, 1 = bitstream. Triggers an engine re-open to apply."""
         self.apply_settings({"audio": {"mode": int(mode)}})
@@ -346,9 +366,9 @@ class S3Engine(QObject):
         if low == "pause":
             self.pause(bool(value))
         elif low == "mute":
-            log.info("s3: mute %s (audio is pass-through; ignored)", value)
+            self.set_muted(bool(value))
         elif low == "volume":
-            log.info("s3: volume %s (audio is pass-through; ignored)", value)
+            self.set_volume(value)
         else:
             log.debug("s3: set_property(%s)=%r unsupported — ignored", name, value)
             # mpv-only chains (vf / libplacebo / zion) are intentionally inert

@@ -549,7 +549,12 @@ def build_rows():
     # makes the renderer's HDR10/HLG branch win unless preferDoVi is set, and then
     # the RPU — the only thing that yields correct colour for P5 — is never read.
     # Inert on non-DV sources (no RPU to consume).
-    add("Prefer DV over PQ/HLG", TOGGLE, H, "hdr.preferDoVi", "TONE MAPPING", on=True)
+    # Hidden (dev=True) but NOT removed: the value still lives in the INI and push_all
+    # still sends it, so the DV-over-PQ behaviour it selects is unchanged — only the row is
+    # gone from the rail. It is a renderer-internals escape hatch, the same class as the
+    # soft-knee trio, and leaving it discoverable invited exactly the misconfiguration it
+    # exists to override.
+    add("Prefer DV over PQ/HLG", TOGGLE, H, "hdr.preferDoVi", "TONE MAPPING", on=True, dev=True)
     add("Convert to SDR", TOGGLE, H, "hdr.convertToSdr", "TONE MAPPING", on=True, live=False)
     add("SDR display nits", SLIDER, H, "hdr.sdrNits", "TONE MAPPING", min_=25, max_=400, val=50, default=50, uncheck=False)
     # Index 4 = BT-2390, which is iHdrLocalToneMappingType's default (IVideoRenderer.h

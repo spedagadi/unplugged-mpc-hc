@@ -250,9 +250,22 @@ static void PollOnce() {
                   + std::to_string(pos / 10000000LL) + "s"
                 : (std::string("AUDIO SWITCH LOST STATE: ") + st);
             Note(msg.c_str());
-            g_phase = (st == "playing") ? 9 : 20;
+            g_phase = (st == "playing") ? 17 : 20;
             g_phaseAt = now;
         }
+        break;
+    // Volume/mute ABI round trip: the engine echoes both in the status JSON, so the
+    // sub_proof_stats.json dump is the proof that the slider's command reaches the engine
+    // and lands — audible verification is not available to a headless harness.
+    case 17:
+        if (now - g_phaseAt > 500) {
+            Cmd("{\"a\":\"volume\",\"percent\":40}");
+            Cmd("{\"a\":\"mute\",\"on\":1}");
+            g_phase = 18; g_phaseAt = now;
+        }
+        break;
+    case 18:
+        if (now - g_phaseAt > 1500) { g_phase = 9; g_phaseAt = now; }
         break;
     case 9:
         if (now - g_phaseAt > 500) {

@@ -359,6 +359,19 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
         const std::string idx = JsonField(s, "index");
         return (int)g_player()->SetAudioTrack(idx.empty() ? -1 : atoi(idx.c_str()));
     }
+    if (a == "volume") {
+        // {"a":"volume","percent":N} — 0..100, clamped again in MpcPlayer::SetVolume.
+        // Applied through IBasicAudio on the graph, so it is real in PCM mode; in
+        // bitstream mode the receiver decodes and owns the level, and the UI says so
+        // instead of pretending the slider works.
+        const std::string p = JsonField(s, "percent");
+        return (int)g_player()->SetVolume(p.empty() ? 100 : atoi(p.c_str()));
+    }
+    if (a == "mute") {
+        // {"a":"mute","on":0|1}
+        const std::string on = JsonField(s, "on");
+        return (int)g_player()->SetMuted(on.empty() ? 0 : atoi(on.c_str()) != 0);
+    }
     if (a == "subvisible") {
         // {"a":"subvisible","on":0|1} — show/hide the current subtitle without changing
         // which stream is selected, i.e. MPC-HC's "Subtitles" toggle rather than its

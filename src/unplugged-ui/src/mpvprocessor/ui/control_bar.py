@@ -138,6 +138,15 @@ class ControlBar(QWidget):
         self._btn_info.clicked.connect(self.info_clicked)
         layout.addWidget(self._btn_info)
 
+        # Hidden, not deleted: the preset machinery (combo population, manage dialog,
+        # profile_selected signal) is still wired in main_window, and the ℹ button's stats
+        # OSD still has its engine path. Removing the widgets would break those callers;
+        # hiding them takes the clutter off a bar that has to fit a TV-safe area.
+        for w in (preset_lbl, self._profile_combo, self._btn_manage, self._btn_info):
+            w.hide()
+        self._hidden_controls = (preset_lbl, self._profile_combo,
+                                 self._btn_manage, self._btn_info)
+
         layout.addSpacing(4)
 
         self._btn_settings = QPushButton("⚙")

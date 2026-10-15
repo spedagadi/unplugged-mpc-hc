@@ -34,7 +34,7 @@ from ..core.calibrate import (CalibrationSession, CALIBRATE_VIDEO, CALIBRATE_CSV
 
 from .background_widget import BackgroundWidget
 from .mpv_viewport import MpvViewport
-from .settings_window import SettingsWindow
+from .settings_window import SettingsWindow, BOTTOM_SAFE_PX
 from .status_bar import StatusBar
 from .control_bar import ControlBar
 from .media_library_panel import MediaLibraryPanel
@@ -416,7 +416,7 @@ class MainWindow(QMainWindow):
         panel_top_gap = 6
         pb_h  = self._playback_bar.height() if self._playback_bar.isVisible() else 0
         panel_top = sb_h + panel_top_gap
-        sp_h  = h - panel_top - pb_h - cb_h - cb_m - 4
+        sp_h  = h - panel_top - pb_h - cb_h - cb_m - BOTTOM_SAFE_PX - 4
 
         self._background.setGeometry(0, 0, w, h)
         self._viewport.setGeometry(0, 0, w, h)      # fixed: video never moves
@@ -431,8 +431,11 @@ class MainWindow(QMainWindow):
             # Until the chrome window exists these live here; afterwards their
             # geometry belongs to that window (positioning them here would move
             # them inside it).
-            self._control_bar.setGeometry(cb_m, h - cb_h - cb_m, w - cb_m*2, cb_h)
-            self._playback_bar.setGeometry(cb_m, h - cb_h - cb_m - pb_h - 4,
+            # BOTTOM_SAFE_PX: on an overscanned display the flush-at-the-edge placement put
+            # the volume slider and the seek bar half off the visible panel.
+            self._control_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX,
+                                           w - cb_m*2, cb_h)
+            self._playback_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX - pb_h - 4,
                                             w - cb_m*2, pb_h)
             pw = min(_SETTINGS_WIDTH, w)
             sw = min(_STATUS_WIDTH, w - pw - 4)
@@ -855,6 +858,14 @@ class MainWindow(QMainWindow):
             if sig != getattr(self, "_audio_sig", None):
                 self._audio_sig = sig
                 self._s3_settings.set_audio_state(tracks, cur, mode)
+            # The volume slider is only real in PCM: bitstream hands the level to the
+            # receiver. Dim it with the reason instead of letting it move and do nothing.
+            pcm = int(mode) == 0
+            if pcm != getattr(self, "_vol_active", None):
+                self._vol_active = pcm
+                self._playback_bar.set_volume_active(
+                    pcm, "" if pcm else
+                    "Bitstream: your AV receiver controls volume and mute")
 
         # Subtitle tracks — same treatment: the engine enumerates them from the splitter,
         # the rail only repaints when the list or the selection actually moved. The row used

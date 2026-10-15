@@ -186,6 +186,18 @@ class PlaybackBar(QWidget):
     def update_mute(self, muted) -> None:
         self._mute_btn.setText("🔇" if muted else "🔊")
 
+    def set_volume_active(self, enabled: bool, hint: str = "") -> None:
+        """Dim (or light) the volume slider and mute button for the current audio mode.
+
+        In bitstream the receiver decodes and owns the level, so a live slider there is a
+        lie: it moves and nothing happens. Dimming it with the reason in the tooltip is
+        the honest version, and it is what MPC-HC's own behaviour amounts to.
+        """
+        for w in (self._vol, self._mute_btn, self._vol_lbl):
+            w.setEnabled(enabled)
+            if hint:
+                w.setToolTip(hint)
+
     def update_volume(self, vol) -> None:
         try:
             v = int(float(vol))
