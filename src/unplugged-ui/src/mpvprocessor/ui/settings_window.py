@@ -31,11 +31,12 @@ from PyQt6.QtWidgets import QDialog, QScrollArea
 _USE_SCROLL_AREA = False
 
 # Extra clearance above the screen's bottom edge for the transport/control bars.
-# The bars sit flush at h - height on a fullscreen borderless window, and on a TV or an
-# overscanned monitor the bottom row of pixels is simply not visible — the volume slider
-# and the play/seek bar ended up half off the panel the user can see. Both the chrome
-# window and the pre-chrome layout in main_window add this, so the two placements agree.
-BOTTOM_SAFE_PX = 28
+# Was 28, added when the two-row playback bar looked half-clipped on an overscanned
+# display; with the bar reduced to one row the user asked for it flush to the window
+# again, so this is 0. Kept as the single knob rather than deleted: both the chrome window
+# and the pre-chrome layout in main_window add it, so raising it later is one line and
+# the two placements cannot drift apart.
+BOTTOM_SAFE_PX = 0
 
 
 class SettingsWindow(QDialog):
