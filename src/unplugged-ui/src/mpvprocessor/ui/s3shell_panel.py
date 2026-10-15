@@ -18,7 +18,7 @@ from __future__ import annotations
 import os, sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QTimer
+from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontMetrics
 from PyQt6.QtWidgets import QWidget, QApplication
 
@@ -74,6 +74,9 @@ LO      = QColor(0x5A, 0x5A, 0x5A)
 OK      = QColor(0x4C, 0xAF, 0x50)
 HOT     = QColor(0x23, 0x23, 0x27)
 ACTIVE_BG = QColor(0x1E, 0x1E, 0x20)
+# Same gold the HDR group's rail icon uses, reused for a locked HDR input so "signal
+# present" and "HDR" read the same way in both places.
+GOLD = QColor(0xC8, 0xA0, 0x30)
 
 # ── metrics (scaled by g_scale=1 in this standalone) ─────────────────────────
 RIGHT_W     = 440
@@ -141,9 +144,19 @@ GROUPS = [
     ("≡", "SYSTEM", QColor(0x90, 0x90, 0x90), ["App"]),
 ]
 
+# Group index for the SOURCE page. Module-level because set_source_state() builds rows at
+# runtime, outside build_rows() where the other indices are local names.
+SRC = 1
+
 TOGGLE, CYCLE, SLIDER = "toggle", "cycle", "slider"
 FILE = "file"          # a path row: click opens a picker, value is a filename
 ACTION = "action"      # a command row: click runs an action (no stored value)
+# A DeckLink input port: one row per physical port, generated at runtime by
+# set_source_state() rather than declared in build_rows() (the port set is a property of
+# the hardware, not of the settings table). Clicking one does NOT change anything in the
+# panel — it emits input_selected(url) and main_window performs the switch, because the
+# engine call, the INI write and the mode flip all belong there.
+PORT = "port"
 
 # A display LUT is a COMMAND, not a flat grp.name=value setting, so these rows
 # bypass KEY_MAP and go through engine.load_cube_lut() instead.
@@ -371,7 +384,7 @@ class Row:
     def __init__(self, label, type_, group, key, section=None, options=None,
                  opt=0, min_=0, max_=100, val=50, default=50, gate=0,
                  on=False, live=True, uncheck=True, curves=None, dev=False,
-                 wide=False):
+                 wide=False, payload=""):
         self.label = label; self.type = type_; self.group = group; self.key = key
         self.section = section; self.options = options or []
         self.opt = opt; self.min = min_; self.max = max_; self.val = val
@@ -396,6 +409,9 @@ class Row:
         # control column elides them into unreadability, and the label ("Track") adds nothing
         # the subgroup header (AUDIO / SUBTITLES) doesn't already say.
         self.wide = wide
+        # payload: PORT rows carry the decklink:// URL here (the label is the friendly
+        # name, which is not unique and is user-editable, so it cannot be the key).
+        self.payload = payload
         self.text = ""               # FILE rows: the chosen path
         self.enabled = True          # per-control checkbox state
 
@@ -403,15 +419,18 @@ class Row:
 def build_rows():
     """Transcription of BuildRows()'s add(...) table."""
     # GROUPS index: 0 PLAYBACK · 1 SOURCE · 2 HDR · 3 ZION · 4 OUTPUT · 5 SYSTEM
-    # (SOURCE has no rows of its own — its group mirrors the status rail)
+    # SOURCE rows are declared here but the port list itself is generated at runtime by
+    # set_source_state() — the panel cannot know the hardware's port count at build time.
     P, H, Z, O, S = 0, 2, 3, 4, 5
     r = []
 
     def add(label, type_, group, key, section=None, options=None, opt=0,
             min_=0, max_=100, val=50, default=50, gate=0, on=False,
-            live=True, uncheck=True, curves=None, dev=False, wide=False):
+            live=True, uncheck=True, curves=None, dev=False, wide=False,
+            payload=""):
         r.append(Row(label, type_, group, key, section, options, opt, min_, max_,
-                     val, default, gate, on, live, uncheck, curves, dev, wide))
+                     val, default, gate, on, live, uncheck, curves, dev, wide,
+                     payload))
 
     # ── PLAYBACK — media-playback surface ────────────────────────────────────
     # Track rows have no engine backing yet (no track-list API across the C ABI);
@@ -905,13 +924,33 @@ def build_rows():
     # compositing ever enters the file. Key has no engine mapping: it is a
     # command, not a setting (KEY_MAP skips it on apply/ini).
     add("Save frame as PNG", ACTION, O, "__capFrame", "OUTPUT")
+    r[-1].text = "Save…"      # the ACTION branch draws this CTA, not the label
 
     add("Tray icon", TOGGLE, S, "sys.trayIcon", "App", on=True)
+
+    # ── SOURCE — DeckLink inputs ─────────────────────────────────────────────
+    # set_source_state() inserts the port rows ABOVE these three, so "Rescan" stays put
+    # as the list grows. Keys starting "src." are imperative (they emit action_requested)
+    # and are deliberately absent from KEY_MAP, so push_all() can never re-send them at
+    # startup — the same rule the audio/subtitle track rows follow.
+    add("⟳  Rescan inputs", ACTION, SRC, "src.rescan", "Input Device")
+    add("✎  Rename inputs…", ACTION, SRC, "src.rename", "Input Device")
+    add("▶  Run first-time setup…", ACTION, SRC, "src.setup", "Input Device")
+    # Same action from the app-level page too: someone hunting for "re-run setup" is
+    # likelier to open System than Source, and one key means one handler.
+    add("▶  Run first-time setup…", ACTION, S, "src.setup", "App")
     return r
 
 
 class S3ShellPanel(QWidget):
     """The settings panel; paints via a single QPainter pass like the GDI code."""
+
+    # A DeckLink port row was clicked. The panel changes NOTHING itself: switching the
+    # input means an engine call, an INI write and possibly a mode flip, all of which
+    # belong to main_window (and are already implemented in _on_input_changed).
+    input_selected = pyqtSignal(str)          # the decklink:// URL
+    # An "src." action row was clicked (rescan / rename / first-time setup).
+    action_requested = pyqtSignal(str)        # the row key
 
     def __init__(self, rows=None, ini=None, engine=None, parent=None):
         super().__init__(parent)
@@ -1269,6 +1308,55 @@ class S3ShellPanel(QWidget):
         row.opt = 0 if cur < 0 else max(0, min(cur + 1, len(labels) - 1))
         self.update()
 
+    def set_source_state(self, ports, active_url, labels=None):
+        """Rebuild the SOURCE group's port rows from a live poll of the DeckLink card.
+
+        Called from main_window's port timer — NEVER from paint: poll_all_ports() is a
+        ctypes call into decklink_monitor.dll and paintEvent runs at the panel's refresh
+        rate. `ports` is the list of PortStatus (url/locked/unknown/dr_label), `labels`
+        the url -> friendly-name map from AppConfig.
+
+        Like set_audio_state/set_subtitle_state this does not push anything: the engine
+        and the INI are main_window's, and the rail is showing what is already true.
+        """
+        labels = labels or {}
+        rows = [r for r in self.rows if r.type != PORT]
+        new = []
+        for port in ports or []:
+            url = getattr(port, "url", "") or ""
+            row = Row("", PORT, SRC, f"src.port.{url}", "Input Device")
+            row.payload = url
+            row.on = bool(active_url) and url == active_url
+            name = labels.get(url) or self._default_port_name(url)
+            row.label = name
+            if getattr(port, "locked", False):
+                row.text = f"🔒  {getattr(port, 'dr_label', '') or 'SDR'}"
+            elif getattr(port, "unknown", False):
+                row.text = "—  unknown"
+            else:
+                row.text = "○  no signal"
+            new.append(row)
+        # Above the action rows, so "Rescan"/"Rename" don't move as the list grows.
+        at = next((i for i, r in enumerate(rows)
+                   if r.type == ACTION and (r.key or "").startswith("src.")), len(rows))
+        self.rows = rows[:at] + new + rows[at:]
+        self._rebuild()
+        self.update()
+
+    @staticmethod
+    def _default_port_name(url: str) -> str:
+        """A readable name for a port nobody has labelled yet.
+
+        decklink://<device> and decklink://<device>@<n> are what the enumerator produces;
+        the raw URL is what the config stores, so it stays the key — this is only the
+        label shown when the user hasn't named the input themselves.
+        """
+        s = url.split("://", 1)[-1]
+        dev, _, port = s.partition("@")
+        if port.isdigit():
+            return f"{dev} · in {int(port) + 1}"
+        return dev
+
     def push_all(self):
         """Push every mapped INI value to the engine once (engine startup)."""
         if self.engine is None:
@@ -1389,7 +1477,39 @@ class S3ShellPanel(QWidget):
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
         # (no rule under section headers — the accent title carries it)
 
+    def _paint_port_row(self, p, r, y):
+        """One DeckLink input: ● when active, its friendly name, and a live signal badge.
+
+        The active row also gets the rail's selection fill behind it. The dot alone is
+        not enough — at this font size ● and ○ are a two-pixel difference, and picking the
+        wrong HDMI input is the kind of mistake that looks like a broken capture rather
+        than a wrong setting."""
+        rect = QRect(RAIL_W + 2, y, RIGHT_W - RAIL_W - 4, ROW_H)
+        if r.on:
+            p.fillRect(rect, ACTIVE_BG)
+        p.setFont(F_VALUE)
+        p.setPen(ACCENT if r.on else MID)
+        p.drawText(QRect(rect.left() + 6, y, 18, ROW_H),
+                   Qt.AlignmentFlag.AlignCenter, "●" if r.on else "○")
+        p.setFont(F_LABEL)
+        p.setPen(TEXT if r.on else MID)
+        name = QRect(rect.left() + 26, y, rect.width() - 26 - 120, ROW_H)
+        fm = QFontMetrics(p.font())
+        p.drawText(name, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(r.label, Qt.TextElideMode.ElideRight, name.width()))
+        # r.text carries the badge ("🔒 HDR PQ", "○ No signal", "— unknown"), right-aligned
+        # in the same control column every other row type uses.
+        badge = QRect(rect.right() - 118, y, 112, ROW_H)
+        p.setFont(F_STATUS)
+        locked = r.text.startswith("🔒")
+        p.setPen(GOLD if locked else (MID if r.on else LO))
+        p.drawText(badge, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                   r.text or "")
+
     def _paint_row(self, p, r, y):
+        if r.type == PORT:
+            self._paint_port_row(p, r, y)
+            return
         is_slider = r.type == SLIDER
         # label — except on wide rows, where the value takes the label's space (see Row.wide)
         if not (getattr(r, "wide", False) and r.type == CYCLE):
@@ -1417,12 +1537,17 @@ class S3ShellPanel(QWidget):
             return
 
         if r.type == ACTION:
-            # Command row: right-aligned CTA that reads as clickable.
+            # Command row: right-aligned CTA that reads as clickable. The CTA text lives on
+            # the row (set where it is declared) rather than being hardcoded here, because
+            # the SOURCE actions are self-describing labels — "⟳ Rescan inputs" needs no
+            # second verb squeezed into the control column.
+            if not r.text:
+                return
             ct = QRect(RIGHT_W - CONTROL_W, y, CONTROL_W - PAD, ROW_H)
             p.setFont(F_STATUS)
             p.setPen(ACCENT2 if r.text else ACCENT)
             p.drawText(ct, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       "Save…")
+                       r.text)
             return
 
         ct = QRect(RIGHT_W - CONTROL_W, y, CONTROL_W - PAD, ROW_H)
@@ -1545,8 +1670,18 @@ class S3ShellPanel(QWidget):
                 self._rebuild()
         elif r.type == FILE:
             self._pick_lut_file(r)
+        elif r.type == PORT:
+            # Nothing changes here: the panel emits the URL and main_window performs the
+            # switch (engine call, INI write, possible mode flip).
+            if r.payload:
+                log(f"ui-corr: source row -> {r.payload}")
+                self.input_selected.emit(r.payload)
         elif r.type == ACTION:
-            self._save_frame_png(r)
+            if r.key and r.key.startswith("src."):
+                log(f"ui-corr: action row -> {r.key}")
+                self.action_requested.emit(r.key)
+            else:
+                self._save_frame_png(r)
         else:
             # Only a press ON the track starts a drag. A press on the row's label is
             # not a value change — it used to be, and it set the slider to whatever

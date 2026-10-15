@@ -53,7 +53,8 @@ from ..config.model import AppConfig, MpvProfile
 from ..config.serializer import build_mpv_args, build_media_player_args
 from ..profiles.manager import ProfileManager
 from ..core.live_settings import apply_live_change, sync_all_live, ApplyMode, SETTING_GROUPS
-from ..core.decklink_monitor import DeckLinkMonitor
+from ..core.decklink_monitor import DeckLinkMonitor, poll_all_ports
+from .input_config_panel import InputConfigDialog
 
 
 _WALLPAPER_NAME = "alita-battle-angel-movie-uhdpaper.com-4K-5.jpg"
@@ -559,6 +560,20 @@ class MainWindow(QMainWindow):
         # Input selector — switches capture port
         self._input_selector.input_changed.connect(self._on_input_changed)
 
+        # The settings rail's SOURCE page — same switch, different surface. The rail
+        # deliberately does nothing itself (it has no business touching the engine or the
+        # INI), so both of these land in the handlers the status-bar selector already uses.
+        self._s3_settings.input_selected.connect(self._on_source_port_selected)
+        self._s3_settings.action_requested.connect(self._on_source_action)
+
+        # Port enumeration for the SOURCE page. poll_all_ports() is a ctypes call into
+        # decklink_monitor.dll, so it runs on this timer and never inside paintEvent.
+        self._port_timer = QTimer(self)
+        self._port_timer.setInterval(2500)
+        self._port_timer.timeout.connect(self._refresh_ports)
+        self._port_timer.start()
+        QTimer.singleShot(700, self._refresh_ports)   # first paint of the tab has data
+
         # Playback bar → engine
         self._playback_bar.seek_requested.connect(self._on_seek)
         self._playback_bar.pause_toggled.connect(
@@ -964,10 +979,20 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     def _on_first_run_complete(self, mode: str, active_url: str) -> None:
         self._app_config.first_run = False
-        self._app_config.app_mode = mode
         if active_url:
             self._app_config.active_input_url = active_url
             self._profile.input.device = active_url
+        prev = self._app_config.app_mode
+        if mode != prev:
+            # A re-run that CHANGES the mode has to actually stop what was running: the
+            # engine shutdown, the acquire-overlay dismissal and the chrome updates all
+            # live in _force_mode_change, and duplicating part of them here is how a
+            # capture gets left running behind the library screen. It returns early when
+            # the mode is unchanged, which is why the same-mode path follows.
+            self._force_mode_change(mode)
+            return
+        # Same mode, possibly a different input: apply the choice and restart capture.
+        self._app_config.app_mode = mode
         # Apply the chosen mode
         self._status_bar.set_app_mode(mode)
         self._control_bar.set_app_mode(mode)
@@ -1390,6 +1415,77 @@ class MainWindow(QMainWindow):
     def _on_engine_log(self, level: str, component: str, message: str) -> None:
         if level in ("error", "fatal"):
             _log.error(f"[mpv/{component}] {message}")
+
+    # ── SOURCE page (settings rail) ──────────────────────────────────────────
+
+    @pyqtSlot()
+    def _refresh_ports(self) -> None:
+        """Enumerate DeckLink ports and hand them to the rail's SOURCE page.
+
+        Runs on a timer, never from paint: poll_all_ports() crosses into
+        decklink_monitor.dll (ctypes) and reads device state. It is documented read-only
+        — safe while the capture filter holds a port — which is why the status-bar
+        selector has been doing it every 2 s in VP mode all along.
+
+        Skipped when nothing could use the answer: media-player mode with the settings
+        chrome closed. The signature guard means a steady card costs one repaint, not a
+        layout rebuild, every tick.
+        """
+        if (self._app_config.app_mode != "video_processor"
+                and getattr(self, "_chrome", None) is None):
+            return
+        try:
+            ports = poll_all_ports()
+        except Exception:
+            _log.exception("source: poll_all_ports failed")
+            return
+        active = self._app_config.active_input_url or ""
+        sig = (tuple((getattr(p, "url", ""), getattr(p, "locked", False),
+                      getattr(p, "dynamic_range", 0), getattr(p, "unknown", False))
+                     for p in ports), active)
+        if sig == getattr(self, "_ports_sig", None):
+            return
+        self._ports_sig = sig
+        try:
+            self._s3_settings.set_source_state(ports, active,
+                                                self._app_config.get_input_labels())
+        except Exception:
+            _log.exception("source: set_source_state failed")
+
+    @pyqtSlot(str)
+    def _on_source_port_selected(self, url: str) -> None:
+        """A port row on the SOURCE page was clicked.
+
+        In media-player mode this is also a mode change, and it goes through the same
+        _on_app_mode_changed the mode buttons use — that path confirms with the user and
+        shuts the engine down, which is what makes the capture restart safe. A cancelled
+        confirm must not leave a file paused mid-play, so the switch is dropped when the
+        mode is still media_player afterwards.
+        """
+        if not url:
+            return
+        if self._app_config.app_mode != "video_processor":
+            self._on_app_mode_changed("video_processor")
+            if self._app_config.app_mode != "video_processor":
+                _audit.info("user: source pick cancelled at the mode confirm — staying in media player")
+                return
+        self._on_input_changed(url)
+
+    @pyqtSlot(str)
+    def _on_source_action(self, key: str) -> None:
+        if key == "src.rescan":
+            self._ports_sig = None      # force the next refresh to repaint
+            self._refresh_ports()
+        elif key == "src.rename":
+            dlg = InputConfigDialog(self._app_config, parent=self)
+            dlg.input_changed.connect(self._on_source_port_selected)
+            dlg.exec()
+            self._ports_sig = None      # names may have changed
+            self._refresh_ports()
+        elif key == "src.setup":
+            self._show_first_run()
+        else:
+            _audit.info(f"source: unhandled action {key}")
 
     @pyqtSlot(str)
     def _on_input_changed(self, url: str) -> None:

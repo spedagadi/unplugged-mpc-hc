@@ -62,6 +62,33 @@ for sel in (4, 7):
 # What the label function actually produced, as text — the image shows whether it fits.
 row = panel._row("pb.subTrack")
 print("subtitle options:", row.options)
-print("current:", row.opt, "->", row.options[row.opt])
+print("current:", row.opt, "->", row.opt and row.options[row.opt])
 arow = panel._row("pb.audioTrack")
 print("audio options:", arow.options, "current:", arow.options[arow.opt])
+
+# ── SOURCE page: one row per DeckLink port ─────────────────────────────────────
+from mpvprocessor.core.decklink_monitor import PortStatus   # noqa: E402
+
+PORTS = [
+    PortStatus("decklink://DeckLink Quad HDMI Recorder (1)@0", 1, 1),   # locked HDR PQ
+    PortStatus("decklink://DeckLink Quad HDMI Recorder (1)@1", 1, 0),   # locked SDR
+    PortStatus("decklink://DeckLink 8K Pro (2)@0", 0, -1),              # no signal
+    PortStatus("decklink://DeckLink Mini Recorder", -1, -1),            # unknown
+]
+LABELS = {
+    "decklink://DeckLink Quad HDMI Recorder (1)@0": "Apple TV 4K",
+    "decklink://DeckLink Quad HDMI Recorder (1)@1": "Xbox Series X — HDMI out",
+}
+
+panel.group = 1                     # SOURCE
+panel._rebuild()
+panel.set_source_state(PORTS, PORTS[0].url, LABELS)
+img = QImage(panel.size(), QImage.Format.Format_ARGB32_Premultiplied)
+img.fill(QColor(0x14, 0x14, 0x16))
+panel.render(img)
+out = r"C:\code\unplugged-mpc-hc\tools\engine_s3\rail_source.png"
+img.save(out)
+print("wrote", out)
+print("source rows:", [(r.type, r.label, r.text, r.on) for r in panel.rows
+                       if r.group == 1])
+
