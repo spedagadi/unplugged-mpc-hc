@@ -970,6 +970,22 @@ class MainWindow(QMainWindow):
         else:
             self._splash.finished.connect(self._start_vp_capture)
 
+    def _chrome_was_visible(self) -> bool:
+        """Hide the settings chrome and report whether it was up.
+
+        The chrome is a window-modal dialog (settings_window.py:40, "required for input
+        priority") parented to the main window. Qt's window-modality disables every OTHER
+        window in that hierarchy — so any dialog opened while the chrome is up paints fine
+        but is disabled, and every click on it lands nowhere. That is exactly how the
+        first-run dialog presented: visible, inert. Anything modal that must take input
+        while the chrome is open needs the chrome out of the way first.
+        """
+        chrome = getattr(self, "_chrome", None)
+        was = bool(chrome and chrome.isVisible())
+        if was:
+            chrome.hide()
+        return was
+
     def _show_first_run(self) -> None:
         """Present the first-run dialog over the app's idle background, not over whatever
         surface happens to be up.
@@ -986,28 +1002,41 @@ class MainWindow(QMainWindow):
             self._media_library.hide()
             self._viewport.hide()
             self._background.show_instant()
-        dlg = FirstRunDialog(self._app_config, self)
+        chrome_up = self._chrome_was_visible()
+        completed = [False]
+        # Parentless on purpose: as a child of the main window the dialog sits inside the
+        # same hierarchy the window-modal chrome disables, which is one of the two ways it
+        # presented as "visible but inert". Application-modal plus no parent puts it
+        # outside any disabled tree.
+        dlg = FirstRunDialog(self._app_config, None)
 
         def _on_complete(mode: str, url: str) -> None:
             nonlocal was_library, was_viewport
+            completed[0] = True
             was_library = was_viewport = False     # the choice decides what comes next
             dlg.close()
             self._on_first_run_complete(mode, url)
 
         def _on_done(_result) -> None:
-            # Backed out (Esc/close) without completing: put the surface back, or the user
-            # is left staring at a background they never asked for.
+            # Backed out (Esc/close) without completing: put back what was up, or the user
+            # is left staring at a background they never asked for. The chrome comes back
+            # too — it was the surface the request came from.
             if was_library:
                 self._media_library.show()
                 self._media_library.raise_()
             if was_viewport:
                 self._viewport.show()
                 self._viewport.raise_()
+            if chrome_up and not completed[0]:
+                self._chrome.show()
+                self._chrome.raise_()
             dlg.deleteLater()
 
         dlg.setup_complete.connect(_on_complete)
         dlg.finished.connect(_on_done)
         dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     @pyqtSlot(str, str)
     def _on_first_run_complete(self, mode: str, active_url: str) -> None:
@@ -1565,9 +1594,15 @@ class MainWindow(QMainWindow):
             self._ports_sig = None      # force the next refresh to repaint
             self._refresh_ports()
         elif key == "src.rename":
+            # Same modality trap as first-run: the chrome would leave this dialog painted
+            # but disabled, so it gets the chrome to itself for the duration.
+            chrome_up = self._chrome_was_visible()
             dlg = InputConfigDialog(self._app_config, parent=self)
             dlg.input_changed.connect(self._on_source_port_selected)
             dlg.exec()
+            if chrome_up:
+                self._chrome.show()
+                self._chrome.raise_()
             self._ports_sig = None      # names may have changed
             self._refresh_ports()
         elif key == "src.setup":

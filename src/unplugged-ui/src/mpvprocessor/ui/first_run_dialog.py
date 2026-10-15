@@ -86,6 +86,12 @@ class FirstRunDialog(QDialog):
         super().__init__(parent, Qt.WindowType.FramelessWindowHint |
                          Qt.WindowType.WindowStaysOnTopHint)
         self.setModal(True)
+        # Application-modal, not window-modal. Window-modal blocks the parent's hierarchy,
+        # which is exactly where the settings chrome lives — and the chrome is itself
+        # window-modal, so a dialog opened from inside it can end up painted but inert.
+        # Application-modal takes input from everything, which is what a setup dialog that
+        # must be answered actually needs.
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         # Translucent dialog + a bordered card inside it: the accent frame is what makes
         # this read as part of the app rather than a generic dialog, and rounded corners
         # only clip cleanly when the window itself has no opaque background. Same card
