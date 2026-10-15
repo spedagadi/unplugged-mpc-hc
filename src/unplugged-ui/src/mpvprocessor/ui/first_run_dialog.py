@@ -19,8 +19,16 @@ from ..config.model import AppConfig
 from .input_config_panel import InputConfigPanel
 
 
+_ACCENT      = "#E8551F"      # the splash's orange — same value the rail's ACCENT uses
+_ACCENT_RGBA = "rgba(232,85,31,200)"
+
 _STYLE = """
-QDialog { background: #0f0f0f; }
+QDialog { background: transparent; }
+QWidget#card {
+    background: #0e0e0e;
+    border: 1.5px solid rgba(232,85,31,200);
+    border-radius: 14px;
+}
 QWidget { background: transparent; color: #e0e0e0; }
 QScrollArea { background: transparent; border: none; }
 QLineEdit {
@@ -78,12 +86,25 @@ class FirstRunDialog(QDialog):
         super().__init__(parent, Qt.WindowType.FramelessWindowHint |
                          Qt.WindowType.WindowStaysOnTopHint)
         self.setModal(True)
+        # Translucent dialog + a bordered card inside it: the accent frame is what makes
+        # this read as part of the app rather than a generic dialog, and rounded corners
+        # only clip cleanly when the window itself has no opaque background. Same card
+        # treatment as InputConfigDialog, in the splash's orange.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(_STYLE)
         self.setFixedSize(860, 560)
         self._app_config = app_config
         self._input_panel: InputConfigPanel | None = None
 
-        self._root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(2, 2, 2, 2)     # room for the 1.5px border
+        outer.setSpacing(0)
+        card = QWidget(self)
+        card.setObjectName("card")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        outer.addWidget(card)
+
+        self._root = QVBoxLayout(card)
         self._root.setContentsMargins(0, 0, 0, 0)
         self._root.setSpacing(0)
 
@@ -102,10 +123,18 @@ class FirstRunDialog(QDialog):
         layout.setSpacing(16)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Header
+        # Header — the accent bar the input dialog uses, so both setup surfaces read as
+        # one family and the eye lands on the title first.
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        accent = QLabel("▌")
+        accent.setStyleSheet(f"color:{_ACCENT}; font-size:22px;")
+        head.addWidget(accent)
         title = QLabel("Welcome to unplugged")
         title.setStyleSheet("color:#ffffff; font-size:22px; font-weight:700;")
-        layout.addWidget(title)
+        head.addWidget(title)
+        head.addStretch()
+        layout.addLayout(head)
 
         sub = QLabel("How would you like to use unplugged?")
         sub.setStyleSheet("color:#888; font-size:13px;")
@@ -150,9 +179,16 @@ class FirstRunDialog(QDialog):
         layout.setContentsMargins(48, 36, 48, 36)
         layout.setSpacing(14)
 
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        accent = QLabel("▌")
+        accent.setStyleSheet(f"color:{_ACCENT}; font-size:20px;")
+        head.addWidget(accent)
         title = QLabel("Select Capture Input")
         title.setStyleSheet("color:#ffffff; font-size:20px; font-weight:700;")
-        layout.addWidget(title)
+        head.addWidget(title)
+        head.addStretch()
+        layout.addLayout(head)
 
         sub = QLabel("Choose which HDMI port to capture from and give each one a name.")
         sub.setWordWrap(True)
@@ -206,8 +242,16 @@ class FirstRunDialog(QDialog):
     def _clear(self) -> None:
         while self._root.count():
             item = self._root.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                # deleteLater() alone leaves the old page painted until the event loop
+                # happens to run a deferred-delete pass — which is what put step 1's two
+                # mode buttons behind step 2's input list in the offscreen render. Hide it
+                # and drop it out of the card first, so the page that is visible is only
+                # ever the page being built.
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
 
     def _center_on_screen(self) -> None:
         from PyQt6.QtWidgets import QApplication

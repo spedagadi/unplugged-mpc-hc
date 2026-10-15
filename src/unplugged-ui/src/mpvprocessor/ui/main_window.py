@@ -557,8 +557,10 @@ class MainWindow(QMainWindow):
         self._right_panel.app_mode_changed.connect(self._on_app_mode_changed)
         self._right_panel.restart_requested.connect(self._vp_restart_capture)
 
-        # Input selector — switches capture port
-        self._input_selector.input_changed.connect(self._on_input_changed)
+        # Input selector — switches capture port. Routed through the SOURCE page's handler
+        # so the stop-playback warning is asked from one place; the same action reached from
+        # two surfaces must not have two different safety rules.
+        self._input_selector.input_changed.connect(self._on_source_port_selected)
 
         # The settings rail's SOURCE page — same switch, different surface. The rail
         # deliberately does nothing itself (it has no business touching the engine or the
@@ -1452,6 +1454,41 @@ class MainWindow(QMainWindow):
         except Exception:
             _log.exception("source: set_source_state failed")
 
+    def _stop_playback_for_source(self, what: str) -> bool:
+        """Warn, then actually stop, before anything on the SOURCE page replaces what is on
+        screen. Returns False if the user declined (and then nothing has changed).
+
+        The bug this closes: choosing Media Player in a re-run of first-time setup while a
+        file was playing left the film running behind the library, because the mode had not
+        changed and every stop lived in the mode-change path. Stopping at the ENTRY point
+        means the handlers downstream can assume nothing is playing, instead of each one
+        remembering to check.
+        """
+        if not self._engine.is_playing():
+            return True
+        ok = ConfirmDialog.ask(
+            "Stop playback?",
+            f"{what}\n\nPlayback will be stopped if you proceed.",
+            confirm_label="Stop and continue",
+            parent=self,
+        )
+        if not ok:
+            _audit.info("user: declined to stop playback — nothing changed")
+            return False
+        # The same sequence _force_mode_change uses: the engine owns the graph, so it is
+        # stopped and shut down here rather than by a later mode switch that may never
+        # come. The overlay and the retry timers are the UI's half of the same teardown.
+        _audit.info(f"user: stopping playback to proceed — {what}")
+        self._engine.stop()
+        self._engine.shutdown()
+        self._vp_acquiring = False
+        self._vp_retry_timer.stop()
+        self._vp_check_timer.stop()
+        self._acquire_overlay.dismiss()
+        self._set_mode(AppMode.IDLE)
+        self._background.show_instant()
+        return True
+
     @pyqtSlot(str)
     def _on_source_port_selected(self, url: str) -> None:
         """A port row on the SOURCE page was clicked.
@@ -1463,6 +1500,9 @@ class MainWindow(QMainWindow):
         mode is still media_player afterwards.
         """
         if not url:
+            return
+        name = self._app_config.label_for(url) or url.split("://", 1)[-1]
+        if not self._stop_playback_for_source(f"Switching the input to “{name}”."):
             return
         if self._app_config.app_mode != "video_processor":
             self._on_app_mode_changed("video_processor")
@@ -1483,7 +1523,11 @@ class MainWindow(QMainWindow):
             self._ports_sig = None      # names may have changed
             self._refresh_ports()
         elif key == "src.setup":
-            self._show_first_run()
+            # The dialog itself is harmless to look at; it is the choice inside it that
+            # replaces what is on screen, so the warning is asked before it opens — a
+            # user who declines gets the dialog never shown and playback untouched.
+            if self._stop_playback_for_source("Running first-time setup."):
+                self._show_first_run()
         else:
             _audit.info(f"source: unhandled action {key}")
 
