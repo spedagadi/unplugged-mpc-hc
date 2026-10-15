@@ -1551,6 +1551,11 @@ class MainWindow(QMainWindow):
         else:
             _audit.warning("setup: config path unknown — the relaunch will not see first_run")
         self._spawn_relaunch()
+        # The user has already confirmed this exact exit one dialog ago ("The app will
+        # restart and open the setup wizard"). closeEvent asks "Are you sure you want to
+        # exit?" again, which read as two dialogs for one decision. The flag exists for
+        # the automatic end-of-title exit; a deliberate relaunch is the same case.
+        self._exit_without_confirm = True
         self.close()                      # ordered teardown; shutdown(for_exit=True) inside
 
     def _spawn_relaunch(self) -> None:
