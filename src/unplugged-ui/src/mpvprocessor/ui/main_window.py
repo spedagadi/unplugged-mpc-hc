@@ -1028,8 +1028,25 @@ class MainWindow(QMainWindow):
             dlg.close()
             self._on_first_run_complete(mode, url)
 
-        def _on_done(_result) -> None:
-            # Backed out (Esc/close) without completing: put back what was up, or the user
+        dlg.setup_complete.connect(_on_complete)
+        # STRONG REFERENCE, deliberately. The dialog is parentless (see the modality note
+        # above), so nothing in the C++ tree owns it and the only thing keeping the Python
+        # wrapper — and therefore the whole window — alive is a variable in this function.
+        self._first_run_dlg = dlg
+        # exec(), not show(). An application-modal dialog shown with show() and later
+        # deleteLater()'d can leave QApplication's modal state set after the widget is
+        # gone — every window then paints but accepts no input, which is exactly how the
+        # session after a first-run presented: timeline dead, close button dead, rail
+        # silent. exec() enters AND exits the modal bookkeeping, and returns only once the
+        # dialog is finished, so cleanup happens synchronously here. ConfirmDialog and
+        # InputConfigDialog already use exec(); this was the odd one out.
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        dlg.exec()
+        self._first_run_dlg = None
+        if not completed[0]:
+            # Backed out (Esc/close) without choosing: put back what was up, or the user
             # is left staring at a background they never asked for. The chrome comes back
             # too — it was the surface the request came from.
             if was_library:
@@ -1038,26 +1055,10 @@ class MainWindow(QMainWindow):
             if was_viewport:
                 self._viewport.show()
                 self._viewport.raise_()
-            if chrome_up and not completed[0]:
+            if chrome_up:
                 self._chrome.show()
                 self._chrome.raise_()
-            self._first_run_dlg = None      # release the strong reference (see _show_first_run)
-            dlg.deleteLater()
-
-        dlg.setup_complete.connect(_on_complete)
-        dlg.finished.connect(_on_done)
-        # STRONG REFERENCE, deliberately. The dialog is parentless (see the modality note
-        # above), so nothing in the C++ tree owns it and the only thing keeping the Python
-        # wrapper — and therefore the whole window — alive is a variable in this function.
-        # Without this the wrapper is collected when _show_first_run returns, the C++
-        # dialog dies under the user's click, and a parentless QTimer.singleShot inside
-        # InputConfigPanel fires into the corpse ("wrapped C/C++ object of type QButtonGroup
-        # has been deleted"). Observed as: step 2 appears for a moment, then the dialog is
-        # simply gone and the app sits on the wallpaper.
-        self._first_run_dlg = dlg
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
+        dlg.deleteLater()
 
     @pyqtSlot(str, str)
     def _on_first_run_complete(self, mode: str, active_url: str) -> None:
