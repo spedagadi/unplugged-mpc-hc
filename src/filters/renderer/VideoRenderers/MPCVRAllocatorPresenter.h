@@ -33,6 +33,7 @@ namespace DSObjects
 	extern volatile long long g_subRender11Calls;
 	extern volatile REFERENCE_TIME g_subRender11LastRt;
 	extern volatile long long g_subRender11Dropped;
+	extern volatile long long g_subRender11Drew;
 
 	class CMPCVRAllocatorPresenter
 		: public CSubPicAllocatorPresenterImpl

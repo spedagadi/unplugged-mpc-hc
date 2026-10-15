@@ -177,7 +177,16 @@ HRESULT CMPCVRAllocatorPresenter::RenderEx3(REFERENCE_TIME rtStart,
 		m_pSubPicQueue->SetFPS(m_fps);
 	}
 
-	return AlphaBltSubPic(viewportRect, croppedVideoRect, nullptr, videoStretchFactor, xOffsetInPixels);
+	// AlphaBltSubPic returns S_OK only when the queue had a subpic for this exact time and
+	// it was blitted; E_FAIL means there was nothing to draw. Counting the successes is what
+	// separates "this stream delivers no data" (calls climb, drew stays 0) from "it draws and
+	// you cannot see it" (both climb) - the two failure modes look identical on screen.
+	const HRESULT hrDraw = AlphaBltSubPic(viewportRect, croppedVideoRect, nullptr,
+										  videoStretchFactor, xOffsetInPixels);
+	if (SUCCEEDED(hrDraw)) {
+		++DSObjects::g_subRender11Drew;
+	}
+	return hrDraw;
 }
 
 // ISubRender11Callback
@@ -239,6 +248,7 @@ namespace DSObjects {
 	volatile long long g_subRender11Calls   = 0;
 	volatile REFERENCE_TIME g_subRender11LastRt = 0;
 	volatile long long g_subRender11Dropped = 0;
+	volatile long long g_subRender11Drew    = 0;
 }
 
 HRESULT CMPCVRAllocatorPresenter::Render11(

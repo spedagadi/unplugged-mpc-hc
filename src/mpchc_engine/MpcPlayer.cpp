@@ -2739,8 +2739,9 @@ void MpcPlayer::RefreshLive()
         // the filter never invokes us (wrong binary, or a present path that skips
         // DrawSubtitles); a growing count with no text on screen means the queue is being
         // asked at the wrong stream time.
-        Log("[live] subs: render11=%lld lastRt=%.2fs noQueue=%lld",
+        Log("[live] subs: render11=%lld drew=%lld lastRt=%.2fs noQueue=%lld",
             (long long)DSObjects::g_subRender11Calls,
+            (long long)DSObjects::g_subRender11Drew,
             (double)DSObjects::g_subRender11LastRt / 10000000.0,
             (long long)DSObjects::g_subRender11Dropped);
     }
