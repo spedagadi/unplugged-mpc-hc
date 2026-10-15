@@ -935,10 +935,10 @@ def build_rows():
     # startup — the same rule the audio/subtitle track rows follow.
     add("⟳  Rescan inputs", ACTION, SRC, "src.rescan", "Input Device")
     add("✎  Rename inputs…", ACTION, SRC, "src.rename", "Input Device")
-    add("▶  Run first-time setup…", ACTION, SRC, "src.setup", "Input Device")
+    add("▶  First-time setup… (restarts app)", ACTION, SRC, "src.setup", "Input Device")
     # Same action from the app-level page too: someone hunting for "re-run setup" is
     # likelier to open System than Source, and one key means one handler.
-    add("▶  Run first-time setup…", ACTION, S, "src.setup", "App")
+    add("▶  First-time setup… (restarts app)", ACTION, S, "src.setup", "App")
     return r
 
 

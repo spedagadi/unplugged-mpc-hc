@@ -1533,6 +1533,46 @@ class MainWindow(QMainWindow):
         self._engine.pause(True)
         self._engine.stop_capture()
 
+    def _relaunch_for_setup(self) -> None:
+        """Restart the app into the first-run wizard.
+
+        Re-entering setup mid-session means dragging a live engine, an open settings chrome
+        and possibly a playing file into a wizard that was designed to run over a splash
+        screen and an idle background — and every one of those is a window that can out-rank
+        or out-disable the dialog. The startup path is the one that has always worked, so
+        this flags first_run, saves, spawns a detached copy of ourselves and closes. The
+        new process shows splash → wizard, exactly as a genuine first launch does.
+        """
+        cfg = self._app_config
+        cfg.first_run = True
+        path = getattr(cfg, "_config_path", None)
+        if path:
+            cfg.save(Path(path))          # must land before the child reads it
+        else:
+            _audit.warning("setup: config path unknown — the relaunch will not see first_run")
+        self._spawn_relaunch()
+        self.close()                      # ordered teardown; shutdown(for_exit=True) inside
+
+    def _spawn_relaunch(self) -> None:
+        import subprocess
+
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]                       # the packaged exe
+            cwd = str(Path(sys.executable).parent)
+        else:
+            root = Path(__file__).resolve().parents[3]   # .../src/unplugged-ui
+            cmd = [sys.executable, str(root / "launch.py")]
+            cwd = str(root)
+        _audit.info(f"setup: relaunching — {cmd} cwd={cwd}")
+        # Detached so the child is not killed with our process group, and started before
+        # we begin tearing down: the child's splash buys five seconds for this process to
+        # release the DeckLink before the child tries to capture.
+        subprocess.Popen(
+            cmd, cwd=cwd, close_fds=True,
+            creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+        )
+
     def _stop_playback_for_source(self, what: str) -> bool:
         """Warn, then actually stop, before anything on the SOURCE page replaces what is on
         screen. Returns False if the user declined (and then nothing has changed).
@@ -1606,11 +1646,19 @@ class MainWindow(QMainWindow):
             self._ports_sig = None      # names may have changed
             self._refresh_ports()
         elif key == "src.setup":
-            # The dialog itself is harmless to look at; it is the choice inside it that
-            # replaces what is on screen, so the warning is asked before it opens — a
-            # user who declines gets the dialog never shown and playback untouched.
-            if self._stop_playback_for_source("Running first-time setup."):
-                self._show_first_run()
+            # Restart, not an in-place dialog. The wizard was designed to run over the
+            # splash and an idle background; running it inside a live session is what
+            # produced the painted-but-inert dialog. The warning names both costs.
+            ok = ConfirmDialog.ask(
+                "Run first-time setup?",
+                "The app will restart and open the setup wizard.\n\n"
+                "Playback will be stopped if you proceed.",
+                confirm_label="Restart and set up",
+                parent=self,
+            )
+            if ok:
+                _audit.info("user: restarting into first-time setup")
+                self._relaunch_for_setup()
         else:
             _audit.info(f"source: unhandled action {key}")
 

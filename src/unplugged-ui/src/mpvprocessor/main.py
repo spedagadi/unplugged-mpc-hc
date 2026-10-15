@@ -217,6 +217,9 @@ def main() -> None:
     config_path = config_dir / "app_config.json"
 
     app_config = AppConfig.load(config_path)
+    # Not a dataclass field (so it never lands in the saved JSON): the window needs the
+    # path to save early, for the restart-into-setup flow.
+    app_config._config_path = str(config_path)
     app_config.profiles_dir = str(config_dir / "profiles")
 
     profile_manager = ProfileManager(Path(app_config.profiles_dir))
