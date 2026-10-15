@@ -87,7 +87,7 @@ class PlaybackBar(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"QWidget {{ {_BAR_BG} }}")
-        self.setFixedHeight(72)
+        self.setFixedHeight(48)   # one row now; 72 was sized for the old two-row stack
 
         self._duration: float = 0.0
         self._position: float = 0.0
@@ -97,9 +97,19 @@ class PlaybackBar(QWidget):
         root.setContentsMargins(16, 6, 16, 4)
         root.setSpacing(4)
 
-        # ── Seek bar row ──────────────────────────────────────────────
+        # ── One row: transport · position · seek · duration · mute · volume ──
+        # Was two rows with a stretch between the pause button and the volume group, which
+        # read as dead space above and below a thin seek bar. The seek slider takes all the
+        # slack in a single row, so the empty middle disappears and the bar is half the
+        # height — which also lifts the control bar's contents clear of the screen edge.
         seek_row = QHBoxLayout()
         seek_row.setSpacing(10)
+
+        self._pause_btn = QPushButton("⏸")
+        self._pause_btn.setStyleSheet(_BTN)
+        self._pause_btn.setToolTip("Pause / Resume  (Space)")
+        self._pause_btn.clicked.connect(self.pause_toggled)
+        seek_row.addWidget(self._pause_btn)
 
         self._pos_lbl = QLabel("0:00")
         self._pos_lbl.setStyleSheet(_TIME)
@@ -119,25 +129,12 @@ class PlaybackBar(QWidget):
         self._dur_lbl.setFixedWidth(42)
         self._dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         seek_row.addWidget(self._dur_lbl)
-        root.addLayout(seek_row)
-
-        # ── Controls row ──────────────────────────────────────────────
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(4)
-
-        self._pause_btn = QPushButton("⏸")
-        self._pause_btn.setStyleSheet(_BTN)
-        self._pause_btn.setToolTip("Pause / Resume  (Space)")
-        self._pause_btn.clicked.connect(self.pause_toggled)
-        ctrl_row.addWidget(self._pause_btn)
-
-        ctrl_row.addStretch()
 
         self._mute_btn = QPushButton("🔊")
         self._mute_btn.setStyleSheet(_BTN)
         self._mute_btn.setToolTip("Mute / Unmute  (M)")
         self._mute_btn.clicked.connect(self.mute_toggled)
-        ctrl_row.addWidget(self._mute_btn)
+        seek_row.addWidget(self._mute_btn)
 
         self._vol = QSlider(Qt.Orientation.Horizontal)
         self._vol.setRange(0, 130)   # mpv supports 0-130%
@@ -145,14 +142,14 @@ class PlaybackBar(QWidget):
         self._vol.setFixedWidth(90)
         self._vol.setStyleSheet(_VOL_GROOVE)
         self._vol.valueChanged.connect(self.volume_changed)
-        ctrl_row.addWidget(self._vol)
+        seek_row.addWidget(self._vol)
 
         self._vol_lbl = QLabel("100%")
         self._vol_lbl.setStyleSheet(_TIME)
         self._vol_lbl.setFixedWidth(36)
-        ctrl_row.addWidget(self._vol_lbl)
+        seek_row.addWidget(self._vol_lbl)
 
-        root.addLayout(ctrl_row)
+        root.addLayout(seek_row)
 
     # ------------------------------------------------------------------
     # State updates — called from MainWindow via IPC property signals
