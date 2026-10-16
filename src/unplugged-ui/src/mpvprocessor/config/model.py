@@ -505,6 +505,30 @@ class AppConfig:
             labels.pop(url, None)
         self.input_labels_json = json.dumps(labels)
 
+    # Per-user "this install has been set up" marker. app_config.json deliberately
+    # survives uninstall (a re-install must not cost anyone their tuned curve), which
+    # also meant first_run stayed False across a reinstall and the setup wizard never
+    # reappeared. The INSTALLER deletes this registry value on every install
+    # (unplugged.iss, ssPostInstall); the app writes it when setup completes. Config
+    # keeps the tuning, the marker tracks the install, and the two stop fighting.
+    # It lives under Software\Unplugged as a VALUE, not a key, so deleting or writing
+    # it cannot touch the renderer's Software\Unplugged\Renderer subkey.
+    @staticmethod
+    def seen_setup_marker() -> bool:
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Unplugged") as k:
+                winreg.QueryValueEx(k, "SeenSetup")
+                return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def write_seen_setup_marker() -> None:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Unplugged") as k:
+            winreg.SetValueEx(k, "SeenSetup", 0, winreg.REG_SZ, "1")
+
     def label_for(self, url: str) -> str:
         """Return user label for a URL, or a clean default."""
         labels = self.get_input_labels()

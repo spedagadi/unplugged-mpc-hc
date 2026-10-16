@@ -983,7 +983,15 @@ def build_rows():
     add("Save frame as PNG", ACTION, O, "__capFrame", "OUTPUT")
     r[-1].text = "Save…"      # the ACTION branch draws this CTA, not the label
 
-    add("Tray icon", TOGGLE, S, "sys.trayIcon", "App", on=True)
+    # Hidden and off: the tray icon belongs to the renderer (out.tray) and nobody asked
+    # for it on an HTPC that lives on a TV. The row is dev-hidden rather than deleted so
+    # the key still pushes; on=False means a fresh seed turns the icon off instead of on.
+    add("Tray icon", TOGGLE, S, "sys.trayIcon", "App", on=False, dev=True)
+    # Forgets what a previous session or machine left in the renderer's registry key.
+    # Destructive-looking but not: the rail's INI is re-pushed on the next generation,
+    # so this restores "what the app says", not factory chaos.
+    add("⟲  Reset renderer settings", ACTION, S, "sys.resetRenderer", "App")
+    r[-1].text = "Reset"
 
     # ── SOURCE — DeckLink inputs ─────────────────────────────────────────────
     # set_source_state() inserts the port rows ABOVE these three, so "Rescan" stays put

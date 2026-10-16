@@ -1063,6 +1063,12 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     def _on_first_run_complete(self, mode: str, active_url: str) -> None:
         self._app_config.first_run = False
+        # The installer deletes this marker on every install; writing it here is what
+        # stops the wizard from reappearing on every launch until the next install.
+        try:
+            self._app_config.write_seen_setup_marker()
+        except OSError:
+            _audit.warning("setup: could not write the SeenSetup marker; wizard will reappear")
         if active_url:
             self._app_config.active_input_url = active_url
             self._profile.input.device = active_url
@@ -1678,6 +1684,22 @@ class MainWindow(QMainWindow):
                 self._chrome.raise_()
             self._ports_sig = None      # names may have changed
             self._refresh_ports()
+        elif key == "sys.resetRenderer":
+            ok = ConfirmDialog.ask(
+                "Reset renderer settings?",
+                "The renderer's stored settings are deleted and the next graph starts\n"
+                "from compiled defaults. Your rail settings are then re-applied, so this\n"
+                "undoes registry state, not your configuration.",
+                confirm_label="Reset",
+                parent=self,
+            )
+            if not ok:
+                return
+            self._engine.reset_renderer_settings()
+            # Re-apply the rail's values to the LIVE instance now, rather than waiting
+            # for the next graph generation, so the picture matches the rail immediately.
+            self._s3_settings.push_all()
+            _audit.info("user: renderer settings registry reset and rail re-pushed")
         elif key == "src.setup":
             # Restart, not an in-place dialog. The wizard was designed to run over the
             # splash and an idle background; running it inside a live session is what

@@ -392,6 +392,9 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
     // is live-only, so without this a graph rebuild re-reads a stale key and every
     // pushed setting is silently lost. The UI sends this once a change settles.
     if (a == "save") return (int)g_player()->SaveRendererSettings();
+    // {"a":"resetrenderer"} — delete the renderer's persisted Settings_t (current key and
+    // the legacy key it migrates from) so the next graph starts from compiled defaults.
+    if (a == "resetrenderer") return (int)g_player()->ResetRendererSettings();
     if (a == "lut") {
         // {"a":"lut","file":"C:\\...\\display.cube","mode":2}
         //   empty file unloads; mode 0=off 1=gamma 2=greyscale 3=full (default)

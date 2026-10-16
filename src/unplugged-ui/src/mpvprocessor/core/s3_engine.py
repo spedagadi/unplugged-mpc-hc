@@ -273,6 +273,14 @@ class S3Engine(QObject):
     # filter's thread. It faulted the renderer. Kept on the caller's thread, as
     # it was before.
 
+    def reset_renderer_settings(self) -> None:
+        """Delete the renderer's persisted settings so the next graph starts from
+        compiled defaults. The rail re-pushes its INI values on the new generation,
+        so this is 'forget everything a previous session left in the registry',
+        not 'lose my settings' — those live in the INI."""
+        if self._lib:
+            self._lib.s3_cmd(b'{"a":"resetrenderer"}')
+
     def save_settings(self) -> None:
         """Persist the renderer's live settings to its own registry key.
 

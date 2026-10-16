@@ -254,6 +254,11 @@ def main() -> None:
     # Not a dataclass field (so it never lands in the saved JSON): the window needs the
     # path to save early, for the restart-into-setup flow.
     app_config._config_path = str(config_path)
+    # A fresh install must show the setup wizard even though app_config.json survived the
+    # uninstall on purpose. The installer deletes the per-user SeenSetup marker; its
+    # absence means "nobody has completed setup since this install".
+    if not AppConfig.seen_setup_marker():
+        app_config.first_run = True
     app_config.profiles_dir = str(config_dir / "profiles")
 
     profile_manager = ProfileManager(Path(app_config.profiles_dir))

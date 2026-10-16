@@ -2172,6 +2172,45 @@ HRESULT MpcPlayer::SaveRendererSettings()
     return vr->SaveSettings();
 }
 
+HRESULT MpcPlayer::ResetRendererSettings()
+{
+    // The renderer persists Settings_t at HKCU\Software\Unplugged\Renderer and, on
+    // construction, migrates anything it finds in the legacy MPC-BE key
+    // (VideoRenderer.cpp:47-48 and 228-272). Deleting only the fresh key therefore
+    // resurrects the old values on the next graph build — both keys go.
+    //
+    // This is the one place the engine touches the registry. The invariant that it
+    // otherwise never does exists so two writers cannot fight over Settings_t; an
+    // explicit user-requested delete is not a second writer, it is the eraser. The
+    // rail re-pushes its INI values on the next graph generation, so the key is
+    // rebuilt from the app's own state rather than from whatever a previous session
+    // or a previous machine left behind.
+    // CRegKey::RecurseDeleteKey is a member on an already-open parent key, so both
+    // deletes open HKCU\Software first. A missing key reports ERROR_FILE_NOT_FOUND,
+    // which is a success for our purposes and is logged as such.
+    LONG fresh = ERROR_FILE_NOT_FOUND, legacy = ERROR_FILE_NOT_FOUND;
+    {
+        CRegKey software;
+        if (software.Open(HKEY_CURRENT_USER, L"Software", KEY_ALL_ACCESS) == ERROR_SUCCESS) {
+            fresh = software.RecurseDeleteKey(L"Unplugged\\Renderer");
+            CRegKey mpcbe;
+            if (mpcbe.Open(software, L"MPC-BE Filters", KEY_ALL_ACCESS) == ERROR_SUCCESS) {
+                legacy = mpcbe.RecurseDeleteKey(L"MPC Video Renderer");
+                mpcbe.Close();
+            } else {
+                legacy = software.RecurseDeleteKey(L"MPC-BE Filters\\MPC Video Renderer");
+            }
+            software.Close();
+        }
+    }
+    Log("[ENGINE] renderer registry reset: fresh=%ld legacy=%ld (0=deleted, 2=was not present)",
+        fresh, legacy);
+    if (!snapshot_.source.empty()) {
+        m_fileRebuildPending = true;   // next graph reads compiled defaults, then the rail re-pushes
+    }
+    return S_OK;
+}
+
 // Grab the frame the renderer is CURRENTLY producing into a 32-bit BMP.
 //
 // This exists because "the picture did not change" is the hardest class of bug

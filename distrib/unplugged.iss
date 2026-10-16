@@ -351,6 +351,13 @@ var
 begin
   if CurStep <> ssPostInstall then
     Exit;
+  // Every install asks for setup again: the app shows its first-run wizard when this
+  // per-user value is absent, and writes it once setup completes. app_config.json
+  // deliberately survives uninstall (tuned settings must not die with an install), so
+  // first_run alone could not tell "reinstalled" from "launched again". Deleting a VALUE
+  // under Software\Unplugged cannot touch the renderer's Software\Unplugged\Renderer
+  // subkey, which is where its settings live.
+  RegDeleteValue(HKEY_CURRENT_USER, 'Software\Unplugged', 'SeenSetup');
   SetArrayLength(names, 5);
   names[0] := 'unplugged_vr.ax';
   names[1] := 'LAVSplitter.ax';

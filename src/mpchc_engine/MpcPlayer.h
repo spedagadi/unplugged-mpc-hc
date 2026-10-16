@@ -444,6 +444,10 @@ public:
     // there wins instead. That made the same toggle appear to work one day and
     // do nothing the next.
     HRESULT SaveRendererSettings();
+    // Delete the renderer's persisted Settings_t (both the current key and the legacy
+    // key it migrates from) so the next graph starts from compiled defaults. See the
+    // definition for why this is the engine's only registry write.
+    HRESULT ResetRendererSettings();
     // Cash in a renderer-window detach requested by the live thread at end-of-title.
     // Public because the host's poll (s3_stats, UI thread) is what calls it: window
     // operations belong to the thread that owns the window. See the definition.
