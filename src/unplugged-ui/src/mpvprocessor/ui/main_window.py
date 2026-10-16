@@ -569,7 +569,7 @@ class MainWindow(QMainWindow):
         # deliberately does nothing itself (it has no business touching the engine or the
         # INI), so both of these land in the handlers the status-bar selector already uses.
         self._s3_settings.input_selected.connect(self._on_source_port_selected)
-        self._s3_settings.action_requested.connect(self._on_source_action)
+        self._s3_settings.action_requested.connect(self._on_action_requested)
 
         # Port enumeration for the SOURCE page. poll_all_ports() is a ctypes call into
         # decklink_monitor.dll, so it runs on this timer and never inside paintEvent.
@@ -1662,7 +1662,7 @@ class MainWindow(QMainWindow):
         self._on_input_changed(url)
 
     @pyqtSlot(str)
-    def _on_source_action(self, key: str) -> None:
+    def _on_action_requested(self, key: str) -> None:
         if key == "src.rescan":
             self._ports_sig = None      # force the next refresh to repaint
             self._refresh_ports()
@@ -1692,6 +1692,21 @@ class MainWindow(QMainWindow):
             if ok:
                 _audit.info("user: restarting into first-time setup")
                 self._relaunch_for_setup()
+        elif key == "zion.reset":
+            # Destructive and silent-looking from the rail's point of view, so the
+            # confirmation and the audit trail live here, next to the other confirms.
+            ok = ConfirmDialog.ask(
+                "Reset Zion grade?",
+                "Every row on the Zion tab returns to its default value.\n\n"
+                "Your current grade will be overwritten.",
+                confirm_label="Reset",
+                parent=self,
+            )
+            if not ok:
+                _audit.info("user: declined the Zion grade reset")
+                return
+            changed = self._s3_settings.reset_group_defaults(3)   # GROUPS[3] = ZION
+            _audit.info(f"user: Zion grade reset — {len(changed)} row(s) restored: {changed}")
         else:
             _audit.info(f"source: unhandled action {key}")
 

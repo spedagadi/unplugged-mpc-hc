@@ -382,13 +382,20 @@ CURVES_CHROMA   = {CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS,
 
 class Row:
     def __init__(self, label, type_, group, key, section=None, options=None,
-                 opt=0, min_=0, max_=100, val=50, default=50, gate=0,
+                 opt=0, min_=0, max_=100, val=50, default=None, gate=0,
                  on=False, live=True, uncheck=True, curves=None, dev=False,
                  wide=False, payload=""):
         self.label = label; self.type = type_; self.group = group; self.key = key
         self.section = section; self.options = options or []
         self.opt = opt; self.min = min_; self.max = max_; self.val = val
         self.default = default; self.gate = gate; self.on = on; self.live = live
+        # "Reset to defaults" needs the value each row was BORN with, for all three row
+        # kinds. default used to be a bare 50 when omitted, which made resetting a 0..1
+        # slider "restore" it to 50; None now means "the initial val is the default".
+        if self.default is None:
+            self.default = val
+        self.default_on = on
+        self.default_opt = opt
         self.has_uncheck = uncheck
         # curves: set of TONE-CURVE engine values for which this row is VISIBLE.
         # None = always visible. Lets a dial that only matters for some curves
@@ -425,7 +432,7 @@ def build_rows():
     r = []
 
     def add(label, type_, group, key, section=None, options=None, opt=0,
-            min_=0, max_=100, val=50, default=50, gate=0, on=False,
+            min_=0, max_=100, val=50, default=None, gate=0, on=False,
             live=True, uncheck=True, curves=None, dev=False, wide=False,
             payload=""):
         r.append(Row(label, type_, group, key, section, options, opt, min_, max_,
@@ -529,6 +536,11 @@ def build_rows():
     add("Strength", SLIDER, Z, "zion.contrastStrength", "MICRO CONTRAST", max_=0.5, val=0.15, default=0.15)
     add("Zone lo", SLIDER, Z, "zion.contrastZoneLo", "MICRO CONTRAST", max_=0.6, val=0.15, default=0.15)
     add("Ratio cap", SLIDER, Z, "zion.contrastRatioCap", "MICRO CONTRAST", min_=1.0, max_=2.0, val=1.4, default=1.4)
+    # Destructive, so it confirms in main_window (which owns ConfirmDialog) and reports
+    # back which keys moved. section=None: it trails the last header instead of earning
+    # one of its own for a single row.
+    add("⟲  Reset grade to defaults", ACTION, Z, "zion.reset", None)
+    r[-1].text = "Reset"
     add("Skin protect", SLIDER, Z, "zion.contrastSkinProtect", "MICRO CONTRAST", max_=1.0, val=0.65, default=0.65)
     add("HDR passthrough", TOGGLE, Z, "hdr.hdrPass", "DEBUG", live=False)
     add("Tone curve passthrough", TOGGLE, Z, "zion.debugCopyShaders", "DEBUG", live=False)
@@ -1378,6 +1390,35 @@ class S3ShellPanel(QWidget):
             return f"{dev} · in {int(port) + 1}"
         return dev
 
+    def reset_group_defaults(self, group: int) -> list:
+        """Put every row of one tab back on the value it was born with, and push each
+        change to the engine and the INI. Returns the keys that actually moved, so the
+        caller can confirm beforehand and audit afterwards.
+
+        Defaults are the build_rows() values - the transcription of the shell's table -
+        not anything learned at runtime, so a reset is reproducible from the source alone.
+        """
+        changed = []
+        for r in self.rows:
+            if r.group != group:
+                continue
+            if r.type == SLIDER and r.val != float(r.default):
+                r.val = float(r.default)
+                changed.append(r.key)
+            elif r.type == TOGGLE and r.on != r.default_on:
+                r.on = r.default_on
+                changed.append(r.key)
+            elif r.type == CYCLE and r.opt != r.default_opt:
+                r.opt = r.default_opt
+                changed.append(r.key)
+        for key in changed:
+            row = self._row(key)
+            if row is not None:
+                self._set(row)
+        if changed:
+            self.update()
+        return changed
+
     def push_all(self):
         """Push every mapped INI value to the engine once (engine startup)."""
         if self.engine is None:
@@ -1698,11 +1739,14 @@ class S3ShellPanel(QWidget):
                 log(f"ui-corr: source row -> {r.payload}")
                 self.input_selected.emit(r.payload)
         elif r.type == ACTION:
-            if r.key and r.key.startswith("src."):
+            # The frame grab is the one action the panel can perform alone; everything
+            # else needs main_window (a confirm dialog, or state it owns), so it is
+            # reported by key and handled there.
+            if r.key == "__capFrame":
+                self._save_frame_png(r)
+            else:
                 log(f"ui-corr: action row -> {r.key}")
                 self.action_requested.emit(r.key)
-            else:
-                self._save_frame_png(r)
         else:
             # Only a press ON the track starts a drag. A press on the row's label is
             # not a value change — it used to be, and it set the slider to whatever
