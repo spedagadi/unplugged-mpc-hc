@@ -148,6 +148,11 @@ GROUPS = [
 # runtime, outside build_rows() where the other indices are local names.
 SRC = 1
 
+# Label column width on wide cycle rows. Sized for "Output gamut" / "Subtitle" class
+# labels; the value's chevrons take the remaining ~210 px, which fits "BT.709 (standard)"
+# and "Deutsch TrueHD Atmos 7.1" without elision.
+_WIDE_LABEL_W = 104
+
 TOGGLE, CYCLE, SLIDER = "toggle", "cycle", "slider"
 FILE = "file"          # a path row: click opens a picker, value is a filename
 ACTION = "action"      # a command row: click runs an action (no stored value)
@@ -802,8 +807,10 @@ def build_rows():
     # wider colour for a display whose gamut EXCEEDS Rec.709 — not a standards
     # target, and the display must be set to match. Only affects HDR sources:
     # the conversion shader does not run for SDR input.
+    # wide: "BT.709 (standard)" needs ~140 px and the default value column is 132, so it
+    # was elided inside its own chevrons. Wide rows give the value the rest of the row.
     add("Output gamut", CYCLE, H, "hdr.outputGamut", "TONE MAPPING",
-        ["BT.709 (standard)", "BT.2020 (wide)"], 0, uncheck=False)
+        ["BT.709 (standard)", "BT.2020 (wide)"], 0, uncheck=False, wide=True)
     # GAMUT CAPACITY — only does anything when Output gamut is BT.709.
     #
     # Measured on the Everest sky: we rendered R=0, G=64, B=119 at a gamut fill of
@@ -1582,13 +1589,17 @@ class S3ShellPanel(QWidget):
             self._paint_port_row(p, r, y)
             return
         is_slider = r.type == SLIDER
-        # label — except on wide rows, where the value takes the label's space (see Row.wide)
-        if not (getattr(r, "wide", False) and r.type == CYCLE):
-            p.setFont(F_LABEL); p.setPen(TEXT)
-            lb = QRect(RAIL_W + PAD + 6, y,
-                       (RAIL_W + 150 - 8) if is_slider else (RIGHT_W - 150),
-                       ROW_H)
-            p.drawText(lb, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r.label)
+        is_wide = getattr(r, "wide", False) and r.type == CYCLE
+        p.setFont(F_LABEL); p.setPen(TEXT)
+        # Wide rows keep their label but in a narrow column: the value's chevrons get
+        # everything else, which is the whole point of wide. Dropping the label entirely
+        # (the first version) squeezed nothing but cost rows like "Output gamut" their
+        # only identifier, since their section header does not name them.
+        lb_w = _WIDE_LABEL_W if is_wide else ((RAIL_W + 150 - 8) if is_slider else (RIGHT_W - 150))
+        lb = QRect(RAIL_W + PAD + 6, y, lb_w, ROW_H)
+        fm = QFontMetrics(p.font())
+        p.drawText(lb, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(r.label, Qt.TextElideMode.ElideRight, lb_w))
 
         if is_slider:
             self._paint_slider(p, r, y)
@@ -1640,7 +1651,7 @@ class S3ShellPanel(QWidget):
                 # (the subgroup header already says AUDIO or SUBTITLES). Keeping the
                 # brackets around the text matters: chevrons standing alone at the right
                 # edge read as a separate widget, and the name looked unclaimed.
-                left   = RAIL_W + PAD + 6
+                left   = RAIL_W + PAD + 6 + _WIDE_LABEL_W + 4
                 right  = RIGHT_W - PAD
                 chevW  = 20
                 live   = bool(r.options) and len(r.options) > 1
