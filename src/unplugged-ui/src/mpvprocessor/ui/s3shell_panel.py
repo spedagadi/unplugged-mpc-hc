@@ -450,6 +450,12 @@ def build_rows():
     add("Track", CYCLE, P, "pb.subTrack", "SUBTITLES", ["Off"], 0, uncheck=False, wide=True)
 
     add("Enable ML grade", TOGGLE, Z, "zion.enabled", on=True)
+    # Destructive, so it confirms in main_window (which owns ConfirmDialog) and reports
+    # back which keys moved. Sits next to Enable ML grade because that pairing is the
+    # question a confused user actually has: "is the grade on, and how do I get back to
+    # the known-good one?"
+    add("⟲  Reset grade to defaults", ACTION, Z, "zion.reset", None)
+    r[-1].text = "Reset"
     # JOINT BAND CONTROLLER. Solves the three grade actuators (shadow pedestal, gamma,
     # highlight rolloff) TOGETHER so the delivered p25/p50/p95 land on house targets,
     # inverting the grade's own closed-form chain per frame.
@@ -463,7 +469,15 @@ def build_rows():
     # ON:  the controller owns pedestal/gamma/rolloff. The legacy multiplicative toe
     #      and the manual top-up stand down, because stacking them would double-act.
     # OFF: today's behaviour exactly.
-    add("Band controller", TOGGLE, Z, "zion.ctl", "TONE CURVE", on=False)
+    # ON by default: with the controller enabled it owns the shadow/gamma/rolloff bands as
+    # the closed loop on top of the model's prior, and the legacy multiplicative toe stands
+    # down (DX11VideoProcessor.cpp:3272-3276). That closed loop is the measured design -
+    # replacing the model gamma outright halved face luma in dark scenes, which is what the
+    # controller exists to prevent. It shipped off as opt-in while it was being validated;
+    # the validation landed, so off-as-default was stale caution, and OFF now means the
+    # legacy open-loop path. Existing INI values win over this default, so an install that
+    # already chose off keeps off until it resets or toggles.
+    add("Band controller", TOGGLE, Z, "zion.ctl", "TONE CURVE", on=True)
     # HOUSE WHITE — RETIRED. Pinned at MlSettings::ctlWhite = 203, which is not a
     # taste value: 203 cd/m² is ITU-R BT.2408's diffuse-white convention, cited at
     # Source/csputils.h:104 as MP_REF_WHITE and used by libplacebo as PL_COLOR_SDR_WHITE.
@@ -536,11 +550,6 @@ def build_rows():
     add("Strength", SLIDER, Z, "zion.contrastStrength", "MICRO CONTRAST", max_=0.5, val=0.15, default=0.15)
     add("Zone lo", SLIDER, Z, "zion.contrastZoneLo", "MICRO CONTRAST", max_=0.6, val=0.15, default=0.15)
     add("Ratio cap", SLIDER, Z, "zion.contrastRatioCap", "MICRO CONTRAST", min_=1.0, max_=2.0, val=1.4, default=1.4)
-    # Destructive, so it confirms in main_window (which owns ConfirmDialog) and reports
-    # back which keys moved. section=None: it trails the last header instead of earning
-    # one of its own for a single row.
-    add("⟲  Reset grade to defaults", ACTION, Z, "zion.reset", None)
-    r[-1].text = "Reset"
     add("Skin protect", SLIDER, Z, "zion.contrastSkinProtect", "MICRO CONTRAST", max_=1.0, val=0.65, default=0.65)
     add("HDR passthrough", TOGGLE, Z, "hdr.hdrPass", "DEBUG", live=False)
     add("Tone curve passthrough", TOGGLE, Z, "zion.debugCopyShaders", "DEBUG", live=False)
