@@ -8,7 +8,7 @@ renderer and a fork of LAV Filters.
 ## Installer
 
 `Unplugged-setup-1.0.0.exe` — SHA-256
-`F0D0B787E28565A22857A9535B38FA3F594F0E28E77EE2BBAA80692D70C1AF16`
+`078AC98692CFDB468C824D9C9BF7BDA34E2B788D7FFF5AD67A667D03A0FA4A22`
 
 The setup registers its DirectShow filters at install time and unregisters them
 at uninstall. It shows two mandatory licence pages: the Blackmagic DeckLink SDK

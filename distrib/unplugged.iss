@@ -139,13 +139,17 @@ Source: "{#AppSrc}\*"; DestDir: "{app}"; Excludes: "*.log"; Flags: ignoreversion
 ; no error. regserver does DllRegisterServer on install and DllUnregisterServer on
 ; uninstall, which now registers our own CLSID and leaves any install of the upstream
 ; filter on the machine alone.
-Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 Source: "{#FiltersSrc}\onnxruntime.dll";        DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#FiltersSrc}\xgb_gamma_model.plxgb";          DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\xgb_highlight_rolloff.plxgb";    DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\xgb_shadow_recovery.plxgb";      DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\yolo26n-seg_op21.onnx";           DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\yolo26n-sem.onnx";                DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
+; The filter LAST: Inno runs DllRegisterServer the moment a regserver entry is
+; copied, and registration loads the module — with onnxruntime.dll not yet beside
+; it, a clean install failed regsvr32 with 0x3. Older installs masked this because
+; the previous install's DLLs were already in the folder.
+Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 
 ; ---- LAV fork and DeckLink source: conditional on not skipping --------------
 ; These two groups carry the only third-party obligations in the product (GPL
@@ -154,9 +158,6 @@ Source: "{#FiltersSrc}\yolo26n-sem.onnx";                DestDir: "{app}\filters
 ; legitimate rather than a workaround.
 #ifndef SkipFilters
 ; ---- LAV fork: filters plus the ffmpeg DLLs they link ----------------------
-Source: "{#LavSrc}\LAVSplitter.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
-Source: "{#LavSrc}\LAVVideo.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
-Source: "{#LavSrc}\LAVAudio.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 Source: "{#LavSrc}\avcodec-lav-63.dll";   DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\avdevice-lav-63.dll";  DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\avfilter-lav-12.dll";  DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
@@ -168,6 +169,11 @@ Source: "{#LavSrc}\libbluray.dll";        DestDir: "{app}\filters"; Flags: 64bit
 Source: "{#LavSrc}\libwinpthread-1.dll";  DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\zlib1.dll";            DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\IntelQuickSyncDecoder.dll"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
+; The filters LAST, after every DLL they import: same registration-order reason as
+; the renderer above. This is the fix for regsvr32 exit 0x3 on a clean install.
+Source: "{#LavSrc}\LAVSplitter.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+Source: "{#LavSrc}\LAVVideo.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+Source: "{#LavSrc}\LAVAudio.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
 
 ; ---- DeckLink ingest source -------------------------------------------------
 Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
