@@ -560,7 +560,11 @@ def build_rows():
     add("Tone curve passthrough", TOGGLE, Z, "zion.debugCopyShaders", "DEBUG", live=False)
     add("Frame log", TOGGLE, Z, "zion.debugFrameLog", "DEBUG", live=False)
     add("MC heat", TOGGLE, Z, "zion.contrastDebugVis", "DEBUG", live=False)
-    add("Repaint bars", TOGGLE, Z, "zion.barsRepaint", "BLACK BARS", on=True)
+    # Off by default. The repaint overwrites the letterbox matte every frame; it exists
+    # for sources whose bars carry lifted noise, and on clean masters it is an extra pass
+    # over pixels that were already correct. Shipped on by mistake, and installs that
+    # seeded the key keep their stored value - flip those by hand or via Reset.
+    add("Repaint bars", TOGGLE, Z, "zion.barsRepaint", "BLACK BARS", on=False)
     add("Highlight bars", TOGGLE, Z, "zion.barsHighlight", "BLACK BARS")
     add("Enable", TOGGLE, Z, "zion.skyEnabled", "SKY SEG")
     add("Strength", SLIDER, Z, "zion.skyStrength", "SKY SEG", max_=1.0, val=0.6, default=0.6)
