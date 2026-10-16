@@ -235,10 +235,11 @@ Type: filesandordirs; Name: "{app}\logs"
 // SECOND, MANDATORY ACCEPTANCE PAGE.
 //
 // Inno's LicenseFile page carries the third-party licences (Blackmagic's among
-// them). This page carries OUR terms -- responsibility for captured content, the
-// no-circumvention statement, the independence disclaimer -- because those are
-// the points a user must actually confront, and burying them in a combined
-// licence blob is how they stop being read.
+// them). This page carries OUR terms, deliberately short: responsibility for
+// one's own use, no warranty, and the pointer to the third-party licences that
+// govern the bundled components. Longer enumerations of what a user might do
+// with a capture tool were cut on purpose - a terms page that lists acts draws
+// more attention to them than the single neutral responsibility sentence does.
 //
 // It is enforced in NextButtonClick, not by hiding the Next button: a disabled
 // button invites "why is this stuck", while a refused advance with a message
@@ -262,8 +263,8 @@ begin
     'End-User Terms',
     'Read the terms under which this software is provided, then accept to '
     + 'continue. Your acceptance covers in particular that you are solely '
-    + 'responsible for what you capture with this software, and that it does '
-    + 'not and cannot circumvent copy protection.');
+    + 'responsible for your use of this software and for complying with the '
+    + 'law and the rights of others that apply to that use.');
 
   EulaMemo := TNewMemo.Create(EulaPage);
   EulaMemo.Parent := EulaPage.Surface;

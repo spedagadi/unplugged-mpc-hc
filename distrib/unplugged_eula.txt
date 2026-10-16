@@ -1,35 +1,19 @@
 UNPLUGGED -- END-USER TERMS
 
-Unplugged is a video playback and capture tool. By installing and using it you
-agree to the following.
+By installing or using Unplugged you accept these terms.
 
-1. YOUR CONTENT, YOUR RESPONSIBILITY.
-   You are solely responsible for what you capture, record, copy or
-   redistribute with this software, and for complying with the law and with any
-   rights subsisting in the material you handle, in your jurisdiction. Nothing
-   in this software grants you any right to any content.
+1. YOUR RESPONSIBILITY.
+   You are solely responsible for your use of this software, and for complying
+   with the law and with the rights of others that apply to that use. Nothing
+   in these terms grants you any right to any content.
 
-2. NO CIRCUMVENTION.
-   Unplugged does not circumvent copy protection and contains no means to do
-   so. It cannot receive HDCP-encrypted content: such a stream simply does not
-   arrive at a capture input. If any device in your hardware chain removes or
-   defeats such protection, that is your hardware and your responsibility, and
-   use of it may be unlawful in your jurisdiction.
-
-3. INDEPENDENCE.
-   Unplugged is independent software. It is not affiliated with, endorsed by,
-   sponsored by or supported by Blackmagic Design. Its capture support is built
-   against the Blackmagic DeckLink SDK under Blackmagic's own licence, included
-   with this installer and in the licenses directory of the installed product.
-
-4. NO WARRANTY.
+2. NO WARRANTY.
    The software is provided as-is, without warranty of any kind, express or
-   implied, including merchantability and fitness for a particular purpose, to
-   the fullest extent permitted by law.
+   implied, to the fullest extent permitted by law.
 
-5. THIRD-PARTY COMPONENTS.
-   Unplugged bundles third-party software under its own licences, including the
-   GNU General Public License (LAV Filters) and the GNU Lesser General Public
-   License (Qt). Those licences, and the source offer that accompanies the GPL
-   components, are in {app}\licenses and override anything here to the extent
-   they conflict.
+3. THIRD-PARTY TERMS.
+   Unplugged includes third-party components under their own licences, among
+   them the GNU General Public License and the Blackmagic Design DeckLink SDK
+   licence. Those licences are shown during installation, ship in the licenses
+   folder of the installed product, and govern those components. Unplugged is
+   not affiliated with or endorsed by Blackmagic Design.
