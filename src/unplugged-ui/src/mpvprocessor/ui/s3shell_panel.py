@@ -1779,6 +1779,35 @@ class S3ShellPanel(QWidget):
             except OSError:
                 pass
 
+    def wheelEvent(self, event) -> None:    # noqa: N802
+        """Fine adjust: exactly one increment per notch while the cursor is over a slider
+        track.
+
+        The track is 132 px wide, so a drag cannot resolve single units on a wide range —
+        Static nits at 10..1000 moves ~7.5 nits per pixel, which is why landing on a
+        measured 174 by dragging was impossible. Over the track the wheel steps one unit
+        (one nit on the int rows, 0.01 on float rows, matching the readout's precision);
+        anywhere else the event is ignored and bubbles to the chrome, which scrolls the
+        rail exactly as before (settings_window.py:164 relies on the panel ignoring wheel).
+        """
+        x, y = int(event.position().x()), int(event.position().y())
+        dy = event.angleDelta().y()
+        is_header, idx, _text = self._hit(y)
+        r = None if is_header or not (0 <= idx < len(self.rows)) else self.rows[idx]
+        if r is not None and r.type == SLIDER and dy and self._on_slider_track(r, x):
+            step = 1.0 if r.key in INT_SLIDERS else 10 ** -_SLIDER_DECIMALS
+            val = r.val + (step if dy > 0 else -step)
+            r.val = float(int(round(val))) if r.key in INT_SLIDERS \
+                else round(min(r.max, max(r.min, val)), _SLIDER_DECIMALS)
+            if r.key in INT_SLIDERS:
+                r.val = float(min(int(r.max), max(int(r.min), int(r.val))))
+            log(f"wheel {r.key} -> {r.val:g}")
+            self._set(r)
+            self.update()
+            event.accept()
+            return
+        event.ignore()
+
     def _drag_slider(self, r, x):
         lo, hi = self._slider_span(r)
         frac = (x - lo) / (hi - lo) if hi > lo else 0
