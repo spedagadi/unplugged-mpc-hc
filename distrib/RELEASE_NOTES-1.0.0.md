@@ -1,4 +1,4 @@
-# Unplugged 1.0.0
+﻿# Unplugged 1.0.0
 
 HDR capture and playback for the HTPC: live HDMI in through a Blackmagic
 DeckLink card with tone mapping, and local file playback through the same
@@ -7,8 +7,8 @@ renderer and a fork of LAV Filters.
 
 ## Installer
 
-`Unplugged-setup-1.0.0.exe` — SHA-256
-`078AC98692CFDB468C824D9C9BF7BDA34E2B788D7FFF5AD67A667D03A0FA4A22`
+`Unplugged-setup-1.0.0.exe` â€” SHA-256
+`A32E56688D1B97356C268DC84BF4699A74FA256F604BC31B90186DD1D2F72C15`
 
 The setup registers its DirectShow filters at install time and unregisters them
 at uninstall. It shows two mandatory licence pages: the Blackmagic DeckLink SDK

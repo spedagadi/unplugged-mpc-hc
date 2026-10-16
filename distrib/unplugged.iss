@@ -291,3 +291,53 @@ begin
     Result := False;
   end;
 end;
+
+// ---------------------------------------------------------------------------
+// REGISTRATION THAT SURVIVES THE ANTIVIRUS RACE.
+//
+// Inno's regserver flag registers each filter the moment it is copied, and on a
+// clean machine that lost a race: regsvr32 exited 0x3 (module load failure) on
+// LAVSplitter.ax while the filter's own ffmpeg DLLs - written seconds earlier -
+// were still held by Defender's on-access scan. The same regsvr32 run by hand a
+// minute later succeeded instantly, which is what identifies a transient lock
+// rather than a missing dependency or a bad binary.
+//
+// So registration is retried after ALL files exist, when the scan has had time
+// to finish. Idempotent: a filter the regserver flag already registered is
+// simply registered again. Failures after the retries are logged, not silent.
+// ---------------------------------------------------------------------------
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  names: array of String;
+  i, attempt: Integer;
+  rc: LongInt;
+  ok: Boolean;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  SetArrayLength(names, 5);
+  names[0] := 'unplugged_vr.ax';
+  names[1] := 'LAVSplitter.ax';
+  names[2] := 'LAVVideo.ax';
+  names[3] := 'LAVAudio.ax';
+  names[4] := 'DeckLinkSource.ax';
+  for i := 0 to GetArrayLength(names) - 1 do
+  begin
+    ok := False;
+    for attempt := 1 to 6 do
+    begin
+      if Exec(ExpandConstant('{sys}\regsvr32.exe'),
+              '/s "' + ExpandConstant('{app}\filters\' + names[i]) + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
+      begin
+        ok := True;
+        Break;
+      end;
+      Log('registration attempt ' + IntToStr(attempt) + ' for ' + names[i] +
+          ' rc=' + IntToStr(rc) + ' — waiting for the file to settle');
+      Sleep(800);
+    end;
+    if not ok then
+      Log('REGISTRATION FAILED after retries: ' + names[i] + ' rc=' + IntToStr(rc));
+  end;
+end;
