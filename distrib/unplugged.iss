@@ -1,4 +1,4 @@
-; ---------------------------------------------------------------------------
+﻿; ---------------------------------------------------------------------------
 ; unplugged.iss -- installer for the Unplugged HTPC app and its filter chain.
 ;
 ; Derived in structure from mpc-hc_setup.iss and LAVFilters.iss in this tree;
@@ -91,7 +91,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; nobody should have to answer at install time. Showing the licence inventory of
 ; the product being installed is the right content regardless.
 ; Inno's LicenseFile accepts ONE file; a comma list aborts the compile with
-; "Could not read <the whole list as a path>" — which is what kept every build
+; "Could not read <the whole list as a path>" â€” which is what kept every build
 ; after 2026-10-08 from compiling at all. The accept page carries the Blackmagic
 ; terms (the only licence here that gates use of the payload); the notice and the
 ; third-party inventory travel as files in {app}\licenses below, which is where
@@ -146,10 +146,10 @@ Source: "{#FiltersSrc}\xgb_shadow_recovery.plxgb";      DestDir: "{app}\filters"
 Source: "{#FiltersSrc}\yolo26n-seg_op21.onnx";           DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#FiltersSrc}\yolo26n-sem.onnx";                DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 ; The filter LAST: Inno runs DllRegisterServer the moment a regserver entry is
-; copied, and registration loads the module — with onnxruntime.dll not yet beside
+; copied, and registration loads the module â€” with onnxruntime.dll not yet beside
 ; it, a clean install failed regsvr32 with 0x3. Older installs masked this because
 ; the previous install's DLLs were already in the folder.
-Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 
 ; ---- LAV fork and DeckLink source: conditional on not skipping --------------
 ; These two groups carry the only third-party obligations in the product (GPL
@@ -171,12 +171,12 @@ Source: "{#LavSrc}\zlib1.dll";            DestDir: "{app}\filters"; Flags: 64bit
 Source: "{#LavSrc}\IntelQuickSyncDecoder.dll"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 ; The filters LAST, after every DLL they import: same registration-order reason as
 ; the renderer above. This is the fix for regsvr32 exit 0x3 on a clean install.
-Source: "{#LavSrc}\LAVSplitter.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
-Source: "{#LavSrc}\LAVVideo.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
-Source: "{#LavSrc}\LAVAudio.ax";    DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+Source: "{#LavSrc}\LAVSplitter.ax"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
+Source: "{#LavSrc}\LAVVideo.ax";    DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
+Source: "{#LavSrc}\LAVAudio.ax";    DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 
 ; ---- DeckLink ingest source -------------------------------------------------
-Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit regserver ignoreversion restartreplace uninsrestartdelete
+Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 #endif
 
 ; ---- VC++ runtime, only if you drop it in distrib\redist\ --------------------
@@ -334,10 +334,37 @@ begin
         Break;
       end;
       Log('registration attempt ' + IntToStr(attempt) + ' for ' + names[i] +
-          ' rc=' + IntToStr(rc) + ' — waiting for the file to settle');
+          ' rc=' + IntToStr(rc) + ' â€” waiting for the file to settle');
       Sleep(800);
     end;
     if not ok then
       Log('REGISTRATION FAILED after retries: ' + names[i] + ' rc=' + IntToStr(rc));
+  end;
+end;
+
+// The regserver flag no longer owns registration (see above), so it no longer owns
+// unregistration either. Best effort, one attempt each: a filter that will not unload
+// here is one some process still holds, and fighting that with retries would only make
+// uninstall slow. Leftover registrations are logged so they are not silent.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  names: array of String;
+  i: Integer;
+  rc: LongInt;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  SetArrayLength(names, 5);
+  names[0] := 'unplugged_vr.ax';
+  names[1] := 'LAVSplitter.ax';
+  names[2] := 'LAVVideo.ax';
+  names[3] := 'LAVAudio.ax';
+  names[4] := 'DeckLinkSource.ax';
+  for i := 0 to GetArrayLength(names) - 1 do
+  begin
+    if not Exec(ExpandConstant('{sys}\regsvr32.exe'),
+                '/s /u "' + ExpandConstant('{app}\filters\' + names[i]) + '"',
+                '', SW_HIDE, ewWaitUntilTerminated, rc) or (rc <> 0) then
+      Log('unregistration failed for ' + names[i] + ' rc=' + IntToStr(rc));
   end;
 end;
