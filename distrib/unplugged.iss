@@ -250,6 +250,27 @@ var
   EulaMemo: TNewMemo;
   EulaCheck: TNewCheckBox;
 
+function InitializeSetup(): Boolean;
+begin
+  // PrivilegesRequired=admin already makes Inno re-spawn the setup elevated when it is
+  // launched without rights, so in the normal case this is never reached. It IS reached
+  // on machines where the re-spawn cannot happen - UAC disabled by policy, a launcher
+  // that strips elevation - and there the install would run unprivileged and fail later
+  // in regsvr32 exit codes and Program Files write errors, which read as a broken
+  // package rather than as a missing token. Registering DirectShow filters writes
+  // machine-wide CLSID keys and the payload lands in Program Files, so admin is not a
+  // preference here; say so in one sentence at the door.
+  if not IsAdmin then
+  begin
+    MsgBox('This installer must run with administrator rights.'#13#10 +
+           'Right-click the setup file and choose "Run as administrator".',
+           mbCriticalError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  Result := True;
+end;
+
 procedure InitializeWizard;
 var
   lines: TArrayOfString;
