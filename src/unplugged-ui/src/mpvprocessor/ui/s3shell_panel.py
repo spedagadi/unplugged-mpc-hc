@@ -621,7 +621,7 @@ def build_rows():
     # a taste control, and the moment a brightness lever needs a nits value it stops
     # being one. Input gain rather than output: brightening after the curve clips,
     # brightening before it is absorbed by the shoulder.
-    add("Exposure trim (1/3 stops)", SLIDER, H, "hdr.exposureTrim", "TONE MAPPING",
+    add("Exposure", SLIDER, H, "hdr.exposureTrim", "TONE MAPPING",
         min_=-5, max_=5, val=0, default=0, uncheck=False)
     # S-curve taste, on Reference and the DV identity transfer only.
     # Shadow DETAIL, not shadow lift: it redistributes slope (c' = 1-(1-c)^q), so +
@@ -631,7 +631,11 @@ def build_rows():
     # exact no-op, so every existing look is safe.
     add("Shadow detail", SLIDER, H, "hdr.shadowLift", "TONE MAPPING",
         min_=-5, max_=5, val=0, default=0, uncheck=False)
-    add("Punch", SLIDER, H, "hdr.punch", "TONE MAPPING",
+    # Named for what it is: ps_ml_taste.hlsl implements it as a symmetric contrast curve
+    # pivoted on mid grey (black, mid and white stay exactly put). "Punch" was flavour;
+    # the MICRO CONTRAST section below is a different, local operator, so plain
+    # "Contrast" here is unambiguous in context.
+    add("Contrast", SLIDER, H, "hdr.punch", "TONE MAPPING",
         min_=-5, max_=5, val=0, default=0, uncheck=False)
     # ── CURVE SETTINGS — dials that only matter for specific tone curves ─────
     # Collapsible like any section; each row HIDES itself unless the selected Tone
@@ -1239,6 +1243,16 @@ class S3ShellPanel(QWidget):
             log(f"lut -> {path or '(cleared)'} mode={mode}")
         except Exception:
             log_exc("push_lut")
+            return
+        # An empty push must also reach the renderer's OWN persisted settings, or the next
+        # graph build re-reads the cube path from its registry and the "no LUT" state lasts
+        # only until the next rebuild — which is how a calibration from one machine kept
+        # reappearing as the default on it. Save-on-clear makes empty stick.
+        if not path:
+            try:
+                self.engine.save_settings()
+            except Exception:
+                log_exc("push_lut save")
 
     def _apply_engine(self, r):
         if self.engine is None:
