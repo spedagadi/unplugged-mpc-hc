@@ -1,3 +1,6 @@
 C:\code\unplugged-mpc-hc\src\mpchc_engine\MpcPlayer.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\MpcPlayer.obj
 C:\code\unplugged-mpc-hc\src\mpchc_engine\DeckLinkMonitor.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\DeckLinkMonitor.obj
 C:\code\unplugged-mpc-hc\src\mpchc_engine\IngestController.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\IngestController.obj
+C:\code\unplugged-mpc-hc\src\mpc-hc\TextPassThruFilter.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\TextPassThruFilter.obj
+C:\code\unplugged-mpc-hc\src\DSUtil\NullRenderers.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\NullRenderers.obj
+C:\code\unplugged-mpc-hc\src\filters\renderer\VideoRenderers\MPCVRAllocatorPresenter.cpp;C:\code\unplugged-mpc-hc\src\mpchc_engine\bin\obj\Release_x64\mpchc_engine\MPCVRAllocatorPresenter.obj
