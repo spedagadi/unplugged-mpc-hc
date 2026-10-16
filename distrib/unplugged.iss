@@ -157,7 +157,15 @@ Source: "{#FiltersSrc}\unplugged_vr.ax"; DestDir: "{app}\filters"; Flags: 64bit 
 ; binaries AND both obligations, which is what makes a gate-free test build
 ; legitimate rather than a workaround.
 #ifndef SkipFilters
-; ---- LAV fork: filters plus the ffmpeg DLLs they link ----------------------
+; ---- LAV fork: the ffmpeg DLLs FIRST, then the filters that import them -----
+; The side-by-side manifest the LAV filters' embedded manifests depend on. Each .ax
+; carries <dependency><assemblyIdentity name="LAVFilters.Dependencies">, a PRIVATE
+; assembly resolved from the directory of the module being loaded; without this file
+; beside the filters every load fails with error 14001 (side-by-side configuration
+; incorrect) and regsvr32 exits 3. That - not file order, not a race, not a missing
+; import - is what the install-time "registration failed" dialog was. LAV's own
+; installer ships this manifest for exactly this reason.
+Source: "{#LavSrc}\LAVFilters.Dependencies.manifest"; DestDir: "{app}\filters"; Flags: ignoreversion restartreplace
 Source: "{#LavSrc}\avcodec-lav-63.dll";   DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\avdevice-lav-63.dll";  DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 Source: "{#LavSrc}\avfilter-lav-12.dll";  DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
@@ -285,6 +293,12 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  // A silent install has no page to tick a box on, yet Inno still runs this handler;
+  // without this guard /VERYSILENT died on our own MsgBox demanding an acceptance that
+  // could never be given. Silent invocation is the operator's acceptance — the same
+  // convention every unattended installer follows. Interactive installs keep the gate.
+  if WizardSilent then
+    Exit;
   if (CurPageID = EulaPage.ID) and (not EulaCheck.Checked) then
   begin
     MsgBox('You must accept the End-User Terms to install this software.', mbError, MB_OK);
