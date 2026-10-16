@@ -12,17 +12,21 @@ which adds a DeckLink capture source path to LAVSplitter among other changes.
 The GPL therefore requires that the corresponding source for those modifications
 be available to you.
 
-SOURCE OFFER
-------------
+SOURCE AVAILABILITY
+-------------------
 The complete corresponding source code for the modified LAV Filters bundled in
-this product, including the modifications, is offered for a charge no more than
-the cost of physically performing distribution, and is also available at:
+this product, including every modification, is published at:
 
-    SOURCE_OFFER_URL_PLACEHOLDER
+    https://github.com/spedagadi/unplugged-LAVFilters
 
-This offer is valid for at least three years from the date of this product's
-distribution, and for as long as spare parts or support for this product are
-offered, to anyone in possession of this product.
+at tag v1.0.0 — the exact tree these binaries were built from, including the
+pinned FFmpeg submodule. Citing a tag rather than a branch is deliberate: a
+branch moves, and an offer that points at moving source silently stops matching
+the binaries it ships with.
+
+The source remains available there for at least three years from the date of
+this product's distribution, and for as long as spare parts or support for this
+product are offered, to anyone in possession of this product.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt>

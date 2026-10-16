@@ -90,7 +90,13 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; anchored to a page the wizard never shows is a question about Inno internals
 ; nobody should have to answer at install time. Showing the licence inventory of
 ; the product being installed is the right content regardless.
-LicenseFile=decklink_sdk_license.txt,blackmagic_sdk_notice.txt,licenses\third_party_notices.txt
+; Inno's LicenseFile accepts ONE file; a comma list aborts the compile with
+; "Could not read <the whole list as a path>" — which is what kept every build
+; after 2026-10-08 from compiling at all. The accept page carries the Blackmagic
+; terms (the only licence here that gates use of the payload); the notice and the
+; third-party inventory travel as files in {app}\licenses below, which is where
+; an accompanying notice belongs rather than on an accept-or-abort page.
+LicenseFile=decklink_sdk_license.txt
 ; The app holds its own .ax open while running; without this the install fails
 ; halfway with a sharing violation and leaves mixed versions on disk.
 CloseApplications=yes
