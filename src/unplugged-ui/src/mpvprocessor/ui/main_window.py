@@ -643,6 +643,7 @@ class MainWindow(QMainWindow):
         self._status_bar.set_app_mode(self._app_config.app_mode)
         self._control_bar.set_app_mode(self._app_config.app_mode)
         self._playback_bar.set_app_mode(self._app_config.app_mode)
+        self._s3_settings.set_app_mode(self._app_config.app_mode)
         self._right_panel.set_app_mode(self._app_config.app_mode)
         self._status_panel.set_app_mode(self._app_config.app_mode)
 
@@ -1105,6 +1106,7 @@ class MainWindow(QMainWindow):
         self._status_bar.set_app_mode(mode)
         self._control_bar.set_app_mode(mode)
         self._playback_bar.set_app_mode(mode)
+        self._s3_settings.set_app_mode(mode)
         self._right_panel.set_app_mode(mode)
         self._status_panel.set_app_mode(mode)
         is_vp = mode == "video_processor"
@@ -2177,6 +2179,7 @@ class MainWindow(QMainWindow):
         self._status_bar.set_app_mode(mode)
         self._control_bar.set_app_mode(mode)
         self._playback_bar.set_app_mode(mode)
+        self._s3_settings.set_app_mode(mode)
         self._right_panel.set_app_mode(mode)
         self._status_panel.set_app_mode(mode)
         is_vp = mode == "video_processor"

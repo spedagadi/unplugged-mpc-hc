@@ -147,6 +147,9 @@ GROUPS = [
 # Group index for the SOURCE page. Module-level because set_source_state() builds rows at
 # runtime, outside build_rows() where the other indices are local names.
 SRC = 1
+# PLAYBACK is the other one named, because it is the node that live capture has no
+# business showing — see S3ShellPanel.set_app_mode.
+PLAYBACK = 0
 
 # Label column width on wide cycle rows. Sized for "Output gamut" / "Subtitle" class
 # labels; the value's chevrons take the remaining ~210 px, which fits "BT.709 (standard)"
@@ -1032,6 +1035,10 @@ class S3ShellPanel(QWidget):
         # new graph generation (see MainWindow._on_s3_status), which covers
         # everything this rail manages without touching fields it does not.
         self.group = 3               # ZION (g_sysGroup default)
+        # Group indices the current app mode refuses. Populated by set_app_mode(); read
+        # by paintEvent and by _press, and set before the first paint so a node is never
+        # drawn live and greyed on the next frame.
+        self.blocked_groups = set()
         # Read before any layout pass: _rebuild() filters dev rows on it, and a row that
         # is hidden must never be painted on the first frame and removed on the second.
         self.show_internals = self._ini_flag(DEV_INI_KEY)
@@ -1384,6 +1391,30 @@ class S3ShellPanel(QWidget):
         row.opt = 0 if cur < 0 else max(0, min(cur + 1, len(labels) - 1))
         self.update()
 
+    def set_app_mode(self, mode: str) -> None:
+        """Live capture gets no PLAYBACK node.
+
+        Every row there addresses a graph this mode does not build: the audio and
+        subtitle track lists, HD-audio output mode and audio delay all talk to a splitter
+        and LAVAudio that a decklink:// source never has. Clicking inside the node hung
+        the app and lost the picture (reported 2026-10-17), and the capture did not come
+        back on its own — a request to an engine that cannot answer it, and never will.
+
+        So the node is blocked, not hidden: the icon stays in place so the rail does not
+        reflow between modes, it is drawn dimmed, and it does not answer the click. If
+        the user is standing on PLAYBACK when capture starts, the rail moves them to
+        SOURCE — the node that IS about live input — rather than leaving them on a page
+        that has just become unreachable.
+        """
+        blocked = {PLAYBACK} if mode == "video_processor" else set()
+        if blocked == self.blocked_groups:
+            return
+        self.blocked_groups = blocked
+        if self.group in blocked:
+            self.group = SRC
+            self._rebuild()
+        self.update()
+
     def set_source_state(self, ports, active_url, labels=None):
         """Rebuild the SOURCE group's port rows from a live poll of the DeckLink card.
 
@@ -1538,6 +1569,9 @@ class S3ShellPanel(QWidget):
             top = LIST_TOP + i * ICON_STEP
             g = QRect(0, top, RAIL_W, ICON_H)
             active = (i == self.group)
+            # A node the mode refuses is still drawn — so the rail does not jump between
+            # modes — but at a third of its weight, which reads as "there, not yours".
+            p.setOpacity(0.30 if i in self.blocked_groups else 1.0)
             if active:
                 p.fillRect(g, ACTIVE_BG)
                 p.fillRect(QRect(0, top, 3, ICON_H), ACCENT)
@@ -1546,6 +1580,7 @@ class S3ShellPanel(QWidget):
             p.setFont(F_RAIL)
             p.setPen(TEXT if active else MID)
             p.drawText(QRect(0, top + 38, RAIL_W, 20), Qt.AlignmentFlag.AlignCenter, label)
+            p.setOpacity(1.0)
         # (no rail divider — the panel reads as one surface)
 
         # content
@@ -1753,6 +1788,11 @@ class S3ShellPanel(QWidget):
         if x < RAIL_W:
             i = (y - LIST_TOP) // ICON_STEP
             if 0 <= i < len(GROUPS):
+                if i in self.blocked_groups:
+                    # Logged, because "I clicked it and nothing happened" is the report
+                    # this guard exists to make answerable.
+                    log(f"ignored switch to {GROUPS[i][1]}: blocked by app mode")
+                    return
                 log(f"switch rail group -> {i}")
                 self.group = i
                 self._rebuild(); self.update()
