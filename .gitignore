@@ -47,3 +47,9 @@ ipch
 # hundreds of MB per build. A plain `git add .` would stage all of it.
 /distrib/out/
 /distrib/*.log
+# The VC++ 2015-2022 x64 redist the installer bundles. 25 MB of Microsoft binary
+# has no business in a source repo, and it must not be committed under a
+# redistributable claim the source offer can't back. build_unplugged_setup.ps1
+# refuses to build without it and prints the official URL, so an absent file is a
+# loud error rather than a runtime-less payload.
+/distrib/redist/

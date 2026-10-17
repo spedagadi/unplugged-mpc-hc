@@ -1,8 +1,10 @@
 # build_unplugged_setup.ps1 -- compile distrib\unplugged.iss into a setup.exe.
 #
-# Five gates before ISCC runs, because each failure mode here is silent
+# Gates before ISCC runs, because each failure mode here is silent
 # otherwise:
 #   1.  the compiler exists,
+#   1b. the bundled VC++ runtime is present, Microsoft-signed, and the same
+#       version the .iss skips on,
 #   2.  the DeckLink EULA page carries real text, not the placeholder -- EVERY
 #       build, because the application payload itself contains SDK-derived code,
 #   2b. the Blackmagic notice travels with it, and is not a stub,
@@ -52,6 +54,58 @@ if (-not $iscc) {
     Write-Host "ERROR: Inno Setup 6 not found. Install it (winget install JRSoftware.InnoSetup) and re-run." -ForegroundColor Red
     exit 1
 }
+
+# 1b. the VC++ runtime, and only the real one ----------------------------------
+# Every binary in this payload is MSVC /MD. On a machine with no 2015-2022 x64
+# runtime the app fails at load, before any window or log line exists, so it
+# looks like a broken install rather than a missing DLL. The installer therefore
+# carries the redist; it is not optional, and it must be the genuine Microsoft
+# package.
+#
+# The version check is not ceremony. unplugged.iss's NeedVCRedist skips the
+# bundled redist when the box already reports 14.44.35211 or newer, and the one
+# safe direction of that comparison is "installed >= bundled". If someone drops a
+# NEWER redist in without updating the constant, the skip stays correct; drop an
+# OLDER one and the installer would refuse to upgrade a box that has the newer
+# runtime while shipping a payload that needs the newer one. So the two have to
+# agree, which is only true if the bundled file is the version the constant names.
+$vc = Join-Path $here 'redist\vc_redist.x64.exe'
+# The skip threshold is not repeated here; it is read out of the script that uses
+# it, so a redist bump is a one-line change in distrib\vc_runtime.iss.
+$vcm = Select-String -Path (Join-Path $here 'vc_runtime.iss') -Pattern '^#define\s+VC_REQ_(MAJ|MIN|BLD)\s+(\d+)' -AllMatches
+$vcParts = @{}
+foreach ($m in $vcm) { $vcParts[$m.Matches[0].Groups[1].Value] = $m.Matches[0].Groups[2].Value }
+if (-not $vcParts['MAJ'] -or -not $vcParts['MIN'] -or -not $vcParts['BLD']) {
+    Write-Host "ERROR: could not read VC_REQ_MAJ/MIN/BLD from distrib\vc_runtime.iss." -ForegroundColor Red
+    exit 1
+}
+$vcNeed = "$($vcParts['MAJ']).$($vcParts['MIN']).$($vcParts['BLD'])"
+if (-not (Test-Path $vc)) {
+    Write-Host "ERROR: distrib\redist\vc_redist.x64.exe is missing." -ForegroundColor Red
+    Write-Host "       The installer bundles the VC++ 2015-2022 x64 runtime; a build" -ForegroundColor Red
+    Write-Host "       without it ships /MD binaries that cannot start on a clean box." -ForegroundColor Red
+    Write-Host "       Fetch the official package:" -ForegroundColor Yellow
+    Write-Host "         Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile distrib\redist\vc_redist.x64.exe" -ForegroundColor Yellow
+    Write-Host "       Expected version $vcNeed (read from distrib\vc_runtime.iss). If" -ForegroundColor Yellow
+    Write-Host "       Microsoft has moved on, bump VC_REQ_MAJ/MIN/BLD there to match." -ForegroundColor Yellow
+    exit 1
+}
+$sig = Get-AuthenticodeSignature $vc
+if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+    Write-Host "ERROR: distrib\redist\vc_redist.x64.exe is not a valid Microsoft-signed" -ForegroundColor Red
+    Write-Host "       binary (status=$($sig.SignerStatus.Status) subject=$($sig.SignerCertificate.Subject))." -ForegroundColor Red
+    Write-Host "       Replace it with the official download; do not bundle a repacked runtime." -ForegroundColor Red
+    exit 1
+}
+$vcVer = ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($vc)).FileVersion -replace '\.\d+$',''
+if ($vcVer -ne $vcNeed) {
+    Write-Host "ERROR: bundled redist is $vcVer but the installer skips on >= $vcNeed." -ForegroundColor Red
+    Write-Host "       Set VC_REQ_MAJ/VC_REQ_MIN/VC_REQ_BLD in distrib\vc_runtime.iss to" -ForegroundColor Red
+    Write-Host "       the version actually in distrib\redist\, so the skip can never" -ForegroundColor Red
+    Write-Host "       protect a machine that is missing what this payload needs." -ForegroundColor Red
+    exit 1
+}
+Write-Host "gate ok: VC++ redist $vcVer, Microsoft-signed, matching the .iss skip threshold" -ForegroundColor DarkGray
 
 # 2. Blackmagic EULA gate -- UNCONDITIONAL ------------------------------------
 # This used to be skipped by -SkipFilters, on the reasoning that the obligation

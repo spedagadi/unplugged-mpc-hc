@@ -1222,7 +1222,22 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // this graph connects pins by hand, so the sink is added explicitly and the
     // splitter's subtitle pins are wired to it in ConnectSubtitles. Without a sink the
     // pins stay unconnected and CTextPassThruFilter has nothing to sit in front of.
-    {
+    //
+    // CAPTURE GRAPHS DO NOT GET ONE. A decklink:// source has no splitter and no
+    // subtitle pin -- ConnectAudio and SpliceSubtitleFilters below are already gated to
+    // !bDeckLink -- so this filter could never be connected to anything. It was created
+    // anyway, added to the graph, and then released in step 4f of every teardown. That
+    // release is where the live-input crash faulted: s3engine.dll+0x14a32,
+    // MpcPlayer.cpp:519, an HDMI source renegotiating SDR<->HDR (the card restarts the
+    // graph on its own, "engine owns the restart"), with a heap-corruption fault in the
+    // same session 27 s later. Nothing on the capture path needs a subtitle sink, so
+    // nothing on the capture path should be able to die releasing one.
+    //
+    // Attach() is also no longer reached with a live pointer: it overwrites without
+    // releasing, so a second BuildGraph over a graph that had not been torn down would
+    // orphan the previous sink in the dying graph while subSink_ pointed at the new one.
+    // The gate removes the only case where that could happen on a running system.
+    if (!bDeckLink) {
         HRESULT hrSink = S_OK;
         subSink_.Attach(DEBUG_NEW CNullTextRenderer(nullptr, &hrSink));
         if (subSink_ && SUCCEEDED(hrSink)) {
@@ -1232,6 +1247,8 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
             Log("[SUBS] null text renderer unavailable hr=0x%08X -- embedded subtitles off",
                 (unsigned)hrSink);
         }
+    } else {
+        Log("[SUBS] capture graph: no subtitle sink, no audio path -- nothing to release on restart");
     }
 
     // Apply the user's settings BEFORE the pins negotiate. Any setting that

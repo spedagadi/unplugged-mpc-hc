@@ -225,7 +225,16 @@ class DeviceInfo:
 
 class PortStatus:
     """Signal status for one physical input port."""
-    DR_LABELS = {0: "SDR", 1: "HDR PQ", 2: "HDR HLG", -1: ""}
+    # 3 = Dolby Vision. It is not a card reading: the card cannot see it (the player
+    # replaces the HDR10 InfoFrame with Dolby's VSIF, so no static HDR flag survives and
+    # the detected dynamic range reads SDR). main_window sets it from the engine's
+    # dl.eotf=4, which is measured on the frames themselves. See DR_FROM_EOTF.
+    DR_LABELS = {0: "SDR", 1: "HDR PQ", 2: "HDR HLG", 3: "Dolby Vision", -1: ""}
+
+    # The capture filter's eotf enum (DeckLinkSourceControl.h: 0=gamma 2=PQ 3=HLG
+    # 4=DV(PQ-coded)) mapped onto this module's dynamic_range vocabulary. Anything else
+    # is SDR, which is also what the card would have said.
+    DR_FROM_EOTF = {2: 1, 3: 2, 4: 3}
 
     def __init__(self, url: str, locked: int, dr: int) -> None:
         self.url    = url

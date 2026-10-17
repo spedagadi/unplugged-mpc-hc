@@ -1,6 +1,10 @@
 """
 Full-window background layer that shows the welcome/idle wallpaper.
-Scales the image with cover-crop semantics (like CSS background-size: cover).
+Scales the image to CONTAIN it (CSS background-size: contain): the whole frame is
+always visible, and an aspect mismatch letterboxes against the near-black canvas
+rather than cropping the art. Cover semantics were documented here before, which is
+not what paintEvent does -- and for the grade-room wallpaper, cropping to fill would
+cut the scopes at the edges, which are the part that reads as this product.
 Fades in/out via a QPropertyAnimation on the windowOpacity.
 """
 

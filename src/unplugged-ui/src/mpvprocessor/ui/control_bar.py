@@ -222,6 +222,18 @@ QPushButton:hover {{ background: rgba(50,50,50,220); color: #ccc; }}"""
         self._refresh_mode_buttons()
         # Re-evaluate Stop button visibility for new mode
         self._btn_stop.setVisible(False)   # will show again if running via set_running
+        # Restart is a capture tool: it re-acquires the DeckLink input. In media player
+        # mode the only thing it could mean is "stop the graph and re-open the file", and
+        # doing that in-process is the race that hung the app — the engine's executor is
+        # still unwinding when the re-open arrives 200 ms later. The seek bar is the tool
+        # that mode has. Disabled rather than hidden so the bar does not reflow.
+        is_vp = mode == "video_processor"
+        self._btn_restart.setEnabled(is_vp)
+        self._btn_restart.setToolTip(
+            "Restart — reconnects signal and resyncs A/V.\n"
+            "Use this to fix sync drift in Video Processor mode."
+            if is_vp else
+            "Restart re-acquires a live input; in Media Player mode use the seek bar.")
 
     def set_edit_mode(self, active: bool) -> None:
         self._edit_mode = active

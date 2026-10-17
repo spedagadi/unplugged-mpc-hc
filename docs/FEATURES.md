@@ -2,8 +2,7 @@
 
 Unplugged is a video processor and player for the HTPC: it takes live HDMI in
 through a Blackmagic DeckLink card, or plays local files, and tone-maps HDR to
-your display with a grade you control. Everything below is what the shipped
-1.0 does, written for the person holding the remote.
+your display with a grade you control.
 
 ---
 
@@ -12,9 +11,11 @@ your display with a grade you control. Everything below is what the shipped
 **Requirements**
 
 - Windows 10 or 11, 64-bit.
-- Microsoft Visual C++ 2015–2022 x64 runtime. The installer uses it if you
-  drop `vc_redist.x64.exe` next to the setup before compiling; otherwise your
-  machine must already have it (most do).
+- Microsoft Visual C++ 2015–2022 x64 runtime: the installer carries it and
+  installs it silently, unless the four runtime DLLs the product actually links
+  against are already present at that version — either way the install log states
+  which happened. The app itself starts without the runtime; this is what the
+  machine-learning grade needs to load its inference engine.
 - A Blackmagic DeckLink card for live capture. File playback needs no card.
 
 **Installing**
@@ -47,9 +48,17 @@ after every install, and on demand from the settings rail.
 - **Media Player** — a library of local files with the same renderer and the
   same grade behind it.
 
-Switch at any time from the transport bar or the settings rail. If something
-is playing, Unplugged asks first and stops it before switching. Switching back
-never loses your settings.
+Switch at any time from the transport bar, the settings rail, or by clicking an
+input on the Source tab. Anything that replaces what is on screen — a mode
+change, or a different input, even within the same mode — **restarts the app**
+and lands in the state you asked for. A few seconds, and your settings, port
+names and chosen input are all written to disk before it happens. If something
+is playing you are asked once first.
+
+This is deliberate: stopping one graph and starting another inside the same
+process is where instability lived, and a fresh process has no previous graph to
+inherit. Nothing is configured twice — the restart comes up on the input you
+clicked.
 
 **Controls**
 
@@ -82,8 +91,9 @@ never loses your settings.
 
 ## File playback
 
-- Containers and codecs through the bundled LAV fork: MKV, MP4, BDMV-rip
-  HEVC/AVC, TrueHD/Atmos, DTS-HD, AC-3 and the rest.
+- File-based containers through the bundled LAV fork: MKV, MP4 and the like,
+  with HEVC/AVC video and TrueHD/Atmos, DTS-HD, AC-3 audio. Disc images (ISO)
+  and BDMV folder/playlist playback are not supported — rip to a file first.
 - **Subtitles**, embedded and rendered in-picture:
   - text tracks (SRT/ASS/SSA) and bitmap tracks (PGS, VobSub);
   - the full track list in the Playback tab, with language and format, plus an
@@ -105,15 +115,15 @@ never loses your settings.
 The grade is the product. Everything here lives in the settings rail under
 **HDR** and **ZION**.
 
-**Tone curve.** Two choices by default, because in practice it is a two-way
-decision and Unplugged picks the right one per source automatically:
+**Tone curve.** Two choices on the row:
 
-- **Unplugged** — the house curve, used for Dolby Vision of any provenance;
-- **GT7 Adapt** — for HDR10, adapting to the master's measured peak.
+- **Unplugged** — the house curve, and the default for every HDR source:
+  HDR10 and Dolby Vision over HDMI alike;
+- **GT7 Adapt** — the manual choice when you want an HDR10 master's own
+  MaxCLL to size the highlight mapping instead of the house shape.
 
-Eight more curves (ACES, Reinhard, Mobius, BT.2390, Reference, GT7, the
-scene-adaptive spline…) exist and work; `ui.showAllTonemappers=true` in the
-INI restores the full list for A/B work.
+The default is applied per source automatically; the row is there for when you
+disagree with it.
 
 **Taste dials** (small, stepped, safe at zero):
 
@@ -161,14 +171,17 @@ use, and the engine log records which source supplied it.
 - Your settings live in `%USERPROFILE%\.unplugged\` and **survive uninstall
   and reinstall** — a re-install never costs you a tuned grade. The setup
   wizard returning after an install is the only thing that resets.
-- A few expert rows (soft-knee trio, Prefer DV, tray icon) are hidden by
-  default; `ui.showGradeInternals=true` in the INI reveals them. Hidden rows
-  still honour a value set by hand.
+- A few expert rows are hidden by default and can be revealed by a hand-edited
+  INI flag; hidden rows still honour a value set by hand. They are machinery
+  rather than taste, which is why they are not on the rail.
 
 ---
 
 ## Known limitations, stated plainly
 
+- Dolby Vision is a capture-path case: profile 7/8 over HDMI is recognised and
+  handled. DV in files (profile 5) is not supported in Media Player mode.
+- Disc images (ISO) and BDMV folder/playlist playback are not supported.
 - Bitstream audio puts volume and mute in the receiver's hands; the app's
   controls dim rather than lie.
 - Subtitle styling (font, size, position) applies to text tracks; bitmap

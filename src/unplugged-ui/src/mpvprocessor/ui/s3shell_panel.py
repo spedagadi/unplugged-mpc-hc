@@ -336,6 +336,7 @@ VALUE_MAP = {
 CURVE_ACES, CURVE_REINHARD, CURVE_HABLE, CURVE_MOBIUS = 1, 2, 3, 4
 CURVE_BT2390, CURVE_ST2094, CURVE_REF, CURVE_GT7, CURVE_SPLINE = 5, 6, 7, 8, 9
 CURVE_GT7_ADAPT = 10
+CURVE_UNPLUGGED = 7   # the Hable-based house curve, displayed to the user as "Unplugged"
 
 # ---- the Tone curve row's two faces -----------------------------------------
 # By default the rail offers exactly the two curves that are supported and
@@ -547,8 +548,8 @@ def build_rows():
     add("Highlight shoulder", SLIDER, Z, "zion.highlightRolloffCtrl", "TONE CURVE",
         min_=-0.2, max_=0.2, val=0, gate=1)
     add("Mode",  CYCLE,  Z, "zion.chromaMode", "CHROMA", ["Default", "Manual", "Off"], 0)
-    add("Ch-N", SLIDER, Z, "zion.chN", "CHROMA", min_=1.0, max_=1.3, val=1.08, default=1.08, gate=2)
-    add("Ch-F", SLIDER, Z, "zion.chF", "CHROMA", min_=1.0, max_=1.3, val=1.15, default=1.15, gate=2)
+    add("Normal", SLIDER, Z, "zion.chN", "CHROMA", min_=1.0, max_=1.3, val=1.08, default=1.08, gate=2)
+    add("Fire", SLIDER, Z, "zion.chF", "CHROMA", min_=1.0, max_=1.3, val=1.15, default=1.15, gate=2)
     add("Knee", SLIDER, Z, "zion.knee", "CHROMA", min_=0.1, max_=0.9, val=0.45, default=0.45, gate=2, uncheck=False)
     add("Skin", SLIDER, Z, "zion.skin", "CHROMA", min_=0.5, max_=1.0, val=0.95, default=0.95, gate=2, uncheck=False)
     add("Enable", TOGGLE, Z, "zion.contrast", "MICRO CONTRAST", on=True)
@@ -1097,11 +1098,11 @@ class S3ShellPanel(QWidget):
         whatever the INI holds — engine value (current format) or option index (legacy)
         — into an option of THAT table.
 
-        A value the active table does not offer falls back to GT7 Adapt rather than to
+        A value the active table does not offer falls back to Unplugged rather than to
         the nearest neighbour: silently substituting one curve for another is exactly
-        the class of surprise this rail has spent a year eliminating, and GT7 Adapt is
-        the safe HDR default while Reference is the DV one (the auto-default below
-        picks between them per signal).
+        the class of surprise this rail has spent a year eliminating, and Unplugged is
+        the house default for every HDR source as of 2026-10-16 (GT7 Adapt remains the
+        manual choice for per-master adaptation).
         """
         row = self._row(CURVE_KEY)
         if row is None:
@@ -1125,7 +1126,7 @@ class S3ShellPanel(QWidget):
                 elif v in CURVE_ALL:
                     engine = v                              # already an engine value
         if engine is None or engine not in table:
-            engine = CURVE_GT7_ADAPT if CURVE_GT7_ADAPT in table else table[0]
+            engine = CURVE_UNPLUGGED if CURVE_UNPLUGGED in table else table[0]
 
         VALUE_MAP[CURVE_KEY] = list(table)
         row.options = list(labels)

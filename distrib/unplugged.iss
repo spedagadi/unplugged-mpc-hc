@@ -187,10 +187,18 @@ Source: "{#LavSrc}\LAVAudio.ax";    DestDir: "{app}\filters"; Flags: 64bit ignor
 Source: "{#DlSrc}\DeckLinkSource.ax"; DestDir: "{app}\filters"; Flags: 64bit ignoreversion restartreplace
 #endif
 
-; ---- VC++ runtime, only if you drop it in distrib\redist\ --------------------
-; Our binaries are MSVC /MD; a clean Windows box may lack the 2015-2022 x64
-; runtime. Included when present, silently skipped when not, so the installer
-; builds either way.
+; ---- VC++ 2015-2022 x64 runtime ---------------------------------------------
+; Bundled for one measured reason: filters\onnxruntime.dll, Microsoft's prebuilt
+; inference engine behind the ML grade, imports VCRUNTIME140.dll,
+; VCRUNTIME140_1.dll, MSVCP140.dll and MSVCP140_1.dll, and none of them sit beside
+; it. Our own binaries were checked too and link the CRT statically, so they are
+; not why this is here. See vc_runtime.iss for the decision and its history.
+; Staged to {tmp} and executed, never installed as files: the runtime belongs in
+; the system, and dropping DLLs next to the app is the failure mode this project
+; already met once (a stale native beside the payload silently wins).
+; build_unplugged_setup.ps1 refuses to build without it, so no distributable is
+; ever compiled without the runtime in it; the #if only keeps a hand-run ISCC
+; usable while experimenting.
 #if FileExists("redist\vc_redist.x64.exe")
 Source: "redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 #endif
@@ -221,7 +229,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 #if FileExists("redist\vc_redist.x64.exe")
-Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated skipifsilent
+// No skipifsilent: a silent deploy to a clean HTPC is exactly the machine that
+// has no runtime, and it cannot answer a dialog either. Check: NeedVCRedist so a
+// box that already carries an equal-or-newer version is not asked to sit through
+// a 25 MB extraction and a redundant MSI for nothing.
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: NeedVCRedist
 #endif
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Unplugged"; Flags: nowait postinstall skipifsilent shellexec
 
@@ -342,6 +354,10 @@ end;
 // to finish. Idempotent: a filter the regserver flag already registered is
 // simply registered again. Failures after the retries are logged, not silent.
 // ---------------------------------------------------------------------------
+// The bundled runtime's "is it needed?" decision lives in its own file, shared
+// with distrib\vc_check_test.iss so the logic under test is the logic shipped.
+#include "vc_runtime.iss"
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   names: array of String;

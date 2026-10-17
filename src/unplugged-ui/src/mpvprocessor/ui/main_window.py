@@ -53,11 +53,17 @@ from ..config.model import AppConfig, MpvProfile
 from ..config.serializer import build_mpv_args, build_media_player_args
 from ..profiles.manager import ProfileManager
 from ..core.live_settings import apply_live_change, sync_all_live, ApplyMode, SETTING_GROUPS
-from ..core.decklink_monitor import DeckLinkMonitor, poll_all_ports
+from ..core.decklink_monitor import DeckLinkMonitor, poll_all_ports, PortStatus
 from .input_config_panel import InputConfigDialog
 
 
-_WALLPAPER_NAME = "alita-battle-angel-movie-uhdpaper.com-4K-5.jpg"
+# The idle/library wallpaper: the tone-mapping shoulder drawn as a spark trail —
+# brand orange at the foot of the curve, through white, cooling to blue at the top of
+# the roll-off. It is the logo mark's own idea (the cable IS the curve) at screen size,
+# on true black, with the lower right deliberately empty because that is where the rail
+# and the status column sit. 3840x2160, exactly 16:9, so the contain-fit paint leaves
+# no letterboxing on the panel it was measured for.
+_WALLPAPER_NAME = "unplugged_wallpaper.png"
 
 
 def _find_default_wallpaper() -> Path:
@@ -164,6 +170,10 @@ class MainWindow(QMainWindow):
         # cancelling it leaves a session whose engine is already stopped -- unable to
         # play anything else, which is the exact state exit-on-finish exists to avoid.
         self._exit_without_confirm = False
+        # True from the moment this session has put a graph on the engine -- a file
+        # opened or a capture acquired. Mode switches are cheap before that and
+        # dangerous after it, so this is what decides in-place versus restart.
+        self._engine_live = False
         # App-level input filter — see eventFilter for why the window's own
         # mouseMoveEvent cannot carry this.
         QApplication.instance().installEventFilter(self)
@@ -632,6 +642,7 @@ class MainWindow(QMainWindow):
         self._status_bar.update_profile(self._profile.name)
         self._status_bar.set_app_mode(self._app_config.app_mode)
         self._control_bar.set_app_mode(self._app_config.app_mode)
+        self._playback_bar.set_app_mode(self._app_config.app_mode)
         self._right_panel.set_app_mode(self._app_config.app_mode)
         self._status_panel.set_app_mode(self._app_config.app_mode)
 
@@ -779,10 +790,11 @@ class MainWindow(QMainWindow):
         default is right for both DV flavours — Hable where the signal is source-
         referred, identity where it is already display-referred.
 
-        HDR10, with or without static metadata -> GT7 ADAPT. With metadata its adapted
-        gain is sized by MaxCLL (Everest 991/220, Furiosa 909/140); without — the case
-        where the card reads nothing — the peak it maps FROM falls to the guarded
-        measured scene peak, which is the only peak available there.
+        HDR10 used to default to GT7 ADAPT (with metadata its adapted gain is sized by
+        MaxCLL — Everest 991/220, Furiosa 909/140 — and without, the peak it maps FROM
+        falls to the guarded measured scene peak). It remains available and unchanged
+        for anyone who wants per-master adaptation; it is simply a choice now, not a
+        default.
 
         Taste (exposure trim, shadow detail, punch) is available on both defaults and
         is how the user offsets either; all three are exact no-ops at 0.
@@ -791,7 +803,11 @@ class MainWindow(QMainWindow):
         """
         if not is_hdr:
             return
-        want = 7 if is_dv else 10   # Reference : GT7 Adapt
+        # Unplugged (the Hable-based house curve) for DV and HDR10 alike: product
+        # decision 2026-10-16. GT7 Adapt stays on the rail as the manual choice for
+        # HDR10 masters whose MaxCLL you want sizing the mapping; it is no longer
+        # imposed at load.
+        want = 7
         row = next((r for r in self._s3_settings.rows
                     if r.key == "hdr.toneMapCurve"), None)
         if row is None:
@@ -898,6 +914,8 @@ class MainWindow(QMainWindow):
         # edge; resets on unlock so the next source re-applies its default.
         dl = j.get("dl") or {}
         locked = bool(dl.get("stream")) and bool((j.get("signal") or {}).get("locked"))
+
+        self._note_engine_input_state(dl, locked)
         if locked and not getattr(self, "_auto_curve_locked", False):
             self._auto_curve_locked = True
             eotf = int(dl.get("eotf") or 0)
@@ -1086,6 +1104,7 @@ class MainWindow(QMainWindow):
         # Apply the chosen mode
         self._status_bar.set_app_mode(mode)
         self._control_bar.set_app_mode(mode)
+        self._playback_bar.set_app_mode(mode)
         self._right_panel.set_app_mode(mode)
         self._status_panel.set_app_mode(mode)
         is_vp = mode == "video_processor"
@@ -1123,6 +1142,7 @@ class MainWindow(QMainWindow):
         # stage logs on entry; the gap between panel.log's final line and the next
         # stage names the hang.
         _audit.info("play path: enter _init_engine_with_options")
+        self._engine_live = True
         self._viewport.show()
         self._viewport.raise_()
         self._viewport.winId()
@@ -1226,8 +1246,30 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_stop_user(self) -> None:
-        """Stop playback and return to the media library (media player mode)."""
-        _audit.info("user: stop playback")
+        """Stop means stop AND restart, and the button says so before it happens.
+
+        This path was the one hole left in the restart policy: it called engine.stop()
+        and raised the media library over the same process, so the file chosen next was
+        opened on an engine whose executor was still unwinding the graph that had just
+        been stopped. That is the instability reported from the user's side -- Stop threw
+        up the library, and the next file misbehaved. The library is where the user is
+        going either way; the difference is whether it arrives on a clean process.
+
+        If the restart genuinely cannot be arranged, the old in-place stop still runs:
+        leaving a paused frame on screen with no way forward is worse than the risk.
+        """
+        if not ConfirmDialog.ask(
+                "Stop playback?",
+                "Playback will stop and Unplugged restarts.\n"
+                "The library comes up ready for the next file.",
+                confirm_label="Stop and restart",
+                parent=self):
+            _audit.info("user: declined to stop — playback continues")
+            return
+        _audit.info("user: stop playback -> restarting to the library")
+        if self._restart_for_mode(self._app_config.app_mode):
+            return
+        _audit.warning("stop: restart unavailable — stopping in place")
         self._engine.stop()
         self._set_mode(AppMode.IDLE)
         self._media_library.show()
@@ -1236,16 +1278,22 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_restart_user(self) -> None:
-        """Explicit user restart (button / F5) — always does full re-acquisition in VP mode."""
+        """Explicit user restart (button / F5) — a capture re-acquisition, VP mode only.
+
+        In media player mode the button is disabled (ControlBar.set_app_mode) and this
+        handler returns. It used to stop the engine and re-play the same file 200 ms
+        later in this process, which is the race that hung the app: engine.stop() hands
+        work to the executor thread and the timer fires while that thread is still
+        tearing the graph down. The seek bar is what that mode offers, and it does not
+        tear anything down.
+        """
+        if self._app_config.app_mode != "video_processor":
+            _audit.info("restart: ignored in media player mode — the seek bar is the tool")
+            return
         _audit.info("user: restart requested")
         self._restart_needed = False
         self._control_bar.set_restart_pending(False)
-        if self._app_config.app_mode == "video_processor":
-            self._vp_restart_capture()
-            return
-        url = self._current_file or self._profile.input.device
-        self._engine.stop()
-        QTimer.singleShot(200, lambda: self._engine.play(url))
+        self._vp_restart_capture()
 
     @pyqtSlot()
     def _on_restart(self) -> None:
@@ -1508,6 +1556,26 @@ class MainWindow(QMainWindow):
 
     # ── SOURCE page (settings rail) ──────────────────────────────────────────
 
+    def _note_engine_input_state(self, dl: dict, locked: bool) -> None:
+        """Remember what the ENGINE sees on the frames, for the SOURCE page's badge.
+
+        The card's bmdDeckLinkStatusDetectedVideoInputDynamicRange -- what
+        poll_all_ports() returns -- is a second, independent reading of the same signal,
+        and for Dolby Vision it is simply wrong: the player drops the HDR10 InfoFrame for
+        Dolby's VSIF, no static HDR flag survives, and the port reports SDR while the
+        picture is DV. The filter's dl.eotf is measured on the delivered frames
+        (2=PQ, 3=HLG, 4=DV), which is why the LIVE panel was right and the SOURCE badge
+        was not. Two instruments pointing at one signal: the badge now reads the one that
+        touches the pixels.
+        """
+        live = (bool(locked), PortStatus.DR_FROM_EOTF.get(int(dl.get("eotf") or 0), 0))
+        if live == getattr(self, "_live_input", None):
+            return
+        self._live_input = live
+        # Force the next port tick to repaint even if every number the CARD reports
+        # stayed put -- which is exactly the SDR->DV case this exists for.
+        self._ports_sig = None
+
     @pyqtSlot()
     def _refresh_ports(self) -> None:
         """Enumerate DeckLink ports and hand them to the rail's SOURCE page.
@@ -1530,9 +1598,20 @@ class MainWindow(QMainWindow):
             _log.exception("source: poll_all_ports failed")
             return
         active = self._app_config.active_input_url or ""
+        # The port we are capturing has a better instrument pointed at it: replace the
+        # card's reading with the engine's for that one row. Other ports keep the card's
+        # answer, because the engine is not looking at them -- and a badge that is honest
+        # about the input in use is worth more than one that is uniformly wrong.
+        live = getattr(self, "_live_input", None)
+        if live and active:
+            for p in ports:
+                if getattr(p, "url", "") == active:
+                    p.locked = live[0] or p.locked
+                    p.dynamic_range = live[1]
+                    p.unknown = False
         sig = (tuple((getattr(p, "url", ""), getattr(p, "locked", False),
                       getattr(p, "dynamic_range", 0), getattr(p, "unknown", False))
-                     for p in ports), active)
+                     for p in ports), active, live)
         if sig == getattr(self, "_ports_sig", None):
             return
         self._ports_sig = sig
@@ -1612,60 +1691,60 @@ class MainWindow(QMainWindow):
                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
         )
 
-    def _stop_playback_for_source(self, what: str) -> bool:
-        """Warn, then actually stop, before anything on the SOURCE page replaces what is on
-        screen. Returns False if the user declined (and then nothing has changed).
+    def _confirm_switch(self, mode: str, why: str = "") -> bool:
+        """The one question asked before anything replaces what is on screen.
 
-        The bug this closes: choosing Media Player in a re-run of first-time setup while a
-        file was playing left the film running behind the library, because the mode had not
-        changed and every stop lived in the mode-change path. Stopping at the ENTRY point
-        means the handlers downstream can assume nothing is playing, instead of each one
-        remembering to check.
+        This used to be `_stop_playback_for_source`: confirm, quiesce the engine, and let
+        the caller carry on in the same process. That is retired. Stopping a graph and
+        then opening another file on the corpse is where the instability showed up -- the
+        engine tears a graph down on its own executor thread, and the next Open() races
+        whatever is still unwinding. So the question is no longer "may we stop
+        playback?", it is "may we restart?", and the answer commits to a fresh process.
+        A restart cannot inherit a half-dead graph, because there is nothing to inherit.
+
+        Returns False when the user declines, and then nothing at all has changed.
         """
-        if not self._engine.is_playing():
+        if not (self._engine_live and self._engine.is_playing() and not self._vp_acquiring):
             return True
-        ok = ConfirmDialog.ask(
-            "Stop playback?",
-            f"{what}\n\nPlayback will be stopped if you proceed.",
-            confirm_label="Stop and continue",
-            parent=self,
-        )
-        if not ok:
-            _audit.info("user: declined to stop playback — nothing changed")
+        if mode == self._app_config.app_mode:
+            title = "Change input?"
+            body = ((why or "") + "\n\n" if why else "") + \
+                "Unplugged restarts to make the change.\nThe current source will stop."
+        else:
+            from_label = "live capture" if self._app_config.app_mode == "video_processor" else "playback"
+            to_label = "Video Processor" if mode == "video_processor" else "Media Player"
+            title = "Switch Mode?"
+            body = (f"Unplugged restarts to switch to {to_label}.\n"
+                    f"The current {from_label} will stop.")
+        if not ConfirmDialog.ask(title, body, confirm_label="Restart and continue", parent=self):
+            _audit.info("user: declined the restart — nothing changed")
             return False
-        # Pause and hand the card back — NOT shutdown(), which is the exit routine and
-        # would schedule os._exit(0) fifteen seconds after the user changed a setting.
-        _audit.info(f"user: stopping playback to proceed — {what}")
-        self._engine_quiesce()
-        self._vp_acquiring = False
-        self._vp_retry_timer.stop()
-        self._vp_check_timer.stop()
-        self._acquire_overlay.dismiss()
-        self._set_mode(AppMode.IDLE)
-        self._background.show_instant()
         return True
 
     @pyqtSlot(str)
     def _on_source_port_selected(self, url: str) -> None:
         """A port row on the SOURCE page was clicked.
 
-        In media-player mode this is also a mode change, and it goes through the same
-        _on_app_mode_changed the mode buttons use — that path confirms with the user and
-        shuts the engine down, which is what makes the capture restart safe. A cancelled
-        confirm must not leave a file paused mid-play, so the switch is dropped when the
-        mode is still media_player afterwards.
+        Already in video-processor mode this is a capture restart on another input, which
+        is the case the engine was built for and which stays in-process. From media
+        player it is also a mode change, so it goes to _switch_mode with the port
+        attached: _stop_playback_for_source has already asked the one question this flow
+        needs, and a restart that lost which row the user clicked would come up on the
+        wrong input and look like a different bug.
         """
         if not url:
             return
         name = self._app_config.label_for(url) or url.split("://", 1)[-1]
-        if not self._stop_playback_for_source(f"Switching the input to “{name}”."):
+        if not self._confirm_switch("video_processor", f"Switching the input to “{name}”."):
             return
-        if self._app_config.app_mode != "video_processor":
-            self._on_app_mode_changed("video_processor")
-            if self._app_config.app_mode != "video_processor":
-                _audit.info("user: source pick cancelled at the mode confirm — staying in media player")
-                return
-        self._on_input_changed(url)
+        # EVERY port pick lands on a fresh process, including one that does not change the
+        # mode. Stopping one capture and starting another on the same engine is the same
+        # teardown race that made a stopped session unreliable for whatever came next.
+        #
+        # The port travels WITH the mode: the child starts capture from active_input_url,
+        # so a restart that persisted only the mode would come up on whatever input was
+        # last in use -- not the row the user just clicked.
+        self._switch_mode("video_processor", url)
 
     @pyqtSlot(str)
     def _on_action_requested(self, key: str) -> None:
@@ -1991,36 +2070,113 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_app_mode_changed(self, mode: str) -> None:
+        """The mode buttons, F2/F3 and a Source-tab port pick from media mode all land
+        here. One confirmation, and only when there is something to lose.
+        """
         if mode == self._app_config.app_mode:
             return
         _audit.info(f"user: app mode change requested  {self._app_config.app_mode} -> {mode}")
 
-        # Only confirm if engine is genuinely playing stable content
-        # (not during VP acquisition which has its own escape hatch)
-        if self._engine.is_playing() and not self._vp_acquiring:
-            from_label = "live capture" if self._app_config.app_mode == "video_processor" else "playback"
-            to_label   = "Video Processor" if mode == "video_processor" else "Media Player"
-            confirmed = ConfirmDialog.ask(
-                "Switch Mode?",
-                f"This will stop the current {from_label}.\nSwitch to {to_label}?",
-                confirm_label="Switch",
-                parent=self,
-            )
-            if not confirmed:
-                self._control_bar.set_app_mode(self._app_config.app_mode)
-                self._right_panel.set_app_mode(self._app_config.app_mode)
-                return
+        if not self._confirm_switch(mode):
+            # The buttons already moved to the mode the user tapped; put them back, or the
+            # rail claims a mode the app is not in.
+            self._control_bar.set_app_mode(self._app_config.app_mode)
+            self._right_panel.set_app_mode(self._app_config.app_mode)
+            return
+        self._switch_mode(mode)
+
+    def _switch_mode(self, mode: str, url: str = "") -> None:
+        """Switch mode by restarting if this session has ever run a graph.
+
+        The two modes are not two views of one engine: media player builds a file graph
+        through LAV and the subtitle stack, video processor hands the same engine a
+        DeckLink device and lets its self-healing monitor own the graph. Carrying one
+        into the other means tearing the other's graph down under a live executor, and
+        that is where the crashes live. A fresh process starts in the mode it was asked
+        for and never performs the transition at all -- which is also the only version
+        of this path that has always worked, because it is the startup path.
+
+        Before anything has ever played there is no graph to carry, so the switch is
+        in-place: that is what makes the first-run wizard finish without a second splash.
+        """
+        if self._engine_live:
+            self._restart_for_mode(mode, url)
+            return
+        if url:
+            # Nothing is running, so no restart is needed -- but the port still has to
+            # be remembered, or the choice lives only in this process.
+            self._persist_mode_choice(mode, url)
+        self._apply_mode_inplace(mode)
+
+    def _restart_for_mode(self, mode: str, url: str = "") -> bool:
+        """Persist the choice, spawn a replacement, close this one. False if the restart
+        could not be arranged, in which case the switch is applied in place instead --
+        the user asked for a mode, and silently refusing to give them one is worse than
+        the riskier route to it.
+        """
+        if not self._persist_mode_choice(mode, url):
+            _audit.warning("mode: cannot persist the choice — falling back to an in-place switch")
+            self._apply_mode_inplace(mode)
+            return False
+
+        # Stop the timers that would otherwise fire mid-teardown and reopen what the
+        # child is about to acquire, and hand the card back before we go.
+        self._vp_acquiring = False
+        self._vp_retry_timer.stop()
+        self._vp_check_timer.stop()
+        self._acquire_overlay.dismiss()
+        # The chrome is a WINDOW-MODAL dialog (settings_window.py) and a mode switch is
+        # reachable from inside it, so closing the main window under a live modal is the
+        # same shape that made the first-run wizard paint and then refuse input. Take it
+        # out of the way first: the user has already left that screen either way.
+        chrome = getattr(self, "_chrome", None)
+        if chrome is not None:
+            chrome.hide()
+        if self._engine.is_playing():
             self._engine_quiesce()
 
-        # Cancel any in-progress VP acquisition cleanly
-        if self._vp_acquiring:
-            self._vp_acquiring = False
-            self._vp_retry_timer.stop(); self._vp_check_timer.stop()
-            self._acquire_overlay.dismiss()
+        _audit.info(f"mode: restarting into {mode}" + (f"  input={url}" if url else ""))
+        try:
+            self._spawn_relaunch()
+        except OSError as e:
+            _audit.error(f"mode: relaunch failed ({e}) — switching in place instead")
+            self._apply_mode_inplace(mode)
+            return False
+        self._exit_without_confirm = True     # one confirmation, not two
+        self.close()
+        return True
 
+    def _persist_mode_choice(self, mode: str, url: str = "") -> bool:
+        """Write the decision where the child process will read it.
+
+        The child reads app_config.json as its first act; a mode that lives only in this
+        process's memory dies with it, and the restart presents as the app simply
+        closing. Same reason _relaunch_for_setup saves before spawning.
+        """
+        cfg = self._app_config
+        cfg.app_mode = mode
+        if url:
+            cfg.active_input_url = url
+            self._profile.input.device = url
+        path = getattr(cfg, "_config_path", None)
+        if not path:
+            return False
+        try:
+            cfg.save(Path(path))
+        except OSError as e:
+            _audit.error(f"mode: could not write {path}: {e}")
+            return False
+        return True
+
+    def _apply_mode_inplace(self, mode: str) -> None:
+        """The old in-place switch: chrome, selectors and capture, same process."""
+        self._vp_acquiring = False
+        self._vp_retry_timer.stop(); self._vp_check_timer.stop()
+        self._acquire_overlay.dismiss()
         self._app_config.app_mode = mode
         self._status_bar.set_app_mode(mode)
         self._control_bar.set_app_mode(mode)
+        self._playback_bar.set_app_mode(mode)
         self._right_panel.set_app_mode(mode)
         self._status_panel.set_app_mode(mode)
         is_vp = mode == "video_processor"
@@ -2046,39 +2202,14 @@ class MainWindow(QMainWindow):
             self._start_vp_capture()
 
     def _force_mode_change(self, mode: str) -> None:
-        """Switch mode without confirmation — used when context is unambiguous."""
+        """Switch mode without confirmation — used when the context is unambiguous
+        (the overlay's own button, and the first-run wizard, which has just asked)."""
         if mode == self._app_config.app_mode:
             return
-        if self._engine.is_playing():
-            self._engine_quiesce()
-        # Reuse the common body
-        self._vp_acquiring = False
-        self._vp_retry_timer.stop(); self._vp_check_timer.stop()
-        self._acquire_overlay.dismiss()
-        self._app_config.app_mode = mode
-        self._status_bar.set_app_mode(mode)
-        self._control_bar.set_app_mode(mode)
-        self._right_panel.set_app_mode(mode)
-        self._status_panel.set_app_mode(mode)
-        is_vp = mode == "video_processor"
-        self._input_selector.setVisible(is_vp)
-        if is_vp:
-            self._input_selector.start_polling()
-        else:
-            self._input_selector.stop_polling()
-        self._relayout()
-        if mode == "media_player":
-            self._set_mode(AppMode.IDLE)
-            self._background.show_instant()
-            self._media_library.show()
-            self._media_library.raise_()
-            self._status_bar.raise_()
-            self._control_bar.raise_()
-        else:
-            self._set_mode(AppMode.IDLE)
-            self._media_library.hide()
-            self._background.show_instant()
-            self._start_vp_capture()
+        if self._engine_live:
+            self._restart_for_mode(mode)
+            return
+        self._apply_mode_inplace(mode)
 
     # ------------------------------------------------------------------
     # Video Processor — capture acquisition with retry
@@ -2086,6 +2217,7 @@ class MainWindow(QMainWindow):
 
     def _start_vp_capture(self) -> None:
         """Reinitialise engine and begin capture acquisition."""
+        self._engine_live = True
         from ..core.mpv_engine import _setup_libmpv_path
         _setup_libmpv_path(self._app_config.mpv_executable)
 

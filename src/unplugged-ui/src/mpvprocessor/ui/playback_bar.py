@@ -183,6 +183,19 @@ class PlaybackBar(QWidget):
     def update_mute(self, muted) -> None:
         self._mute_btn.setText("🔇" if muted else "🔊")
 
+    def set_app_mode(self, mode: str) -> None:
+        """Live capture has no position to seek.
+
+        In video processor mode the timeline IS the HDMI feed: a seek command would go to
+        a graph that has nowhere to go, and a bar that answers by jumping back a second
+        later is worse than a bar that is plainly off. Disabled rather than hidden, so the
+        transport keeps its shape when the mode changes underneath it.
+        """
+        seekable = mode != "video_processor"
+        self._seek.setEnabled(seekable)
+        self._seek.setToolTip(
+            "" if seekable else "Seeking is for files — live capture has no position to seek")
+
     def set_volume_active(self, enabled: bool, hint: str = "") -> None:
         """Dim (or light) the volume slider and mute button for the current audio mode.
 

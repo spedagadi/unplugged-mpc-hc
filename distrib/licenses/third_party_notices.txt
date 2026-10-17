@@ -50,5 +50,17 @@ is met in this directory or in the installer's licence pages.
       GPL v2+ with a bootloader exception; the exception permits bundling in
       frozen applications such as this one.
 
+  Microsoft Visual C++ 2015-2022 x64 Redistributable (bundled with the
+  installer and run by it during setup)
+      Copyright (c) Microsoft Corporation. Shipped unmodified and
+      Microsoft-signed, as downloaded from
+      https://aka.ms/vs/17/release/vc_redist.x64.exe -- version 14.44.35211,
+      SHA-256 CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B.
+      Redistribution of the runtime in this form is permitted by Microsoft's
+      own license terms for the redistributable, which are the terms the package
+      itself presents and which this product does not alter or supersede. The
+      runtime installs into the system, not beside the application; no Microsoft
+      DLL is shipped as a loose file in this product's payload.
+
 Full texts are available at the URLs cited above. Where this product modifies a
 component, the modifications carry the component's own licence.
