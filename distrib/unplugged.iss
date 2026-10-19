@@ -51,7 +51,7 @@
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
 // The renderer's staging folder, named for this product since the filter became
@@ -361,6 +361,8 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   names: array of String;
+  registeredAudioRenderer: String;
+  rendererPath: String;
   i, attempt: Integer;
   rc: LongInt;
   ok: Boolean;
@@ -374,6 +376,26 @@ begin
   // under Software\Unplugged cannot touch the renderer's Software\Unplugged\Renderer
   // subkey, which is where its settings live.
   RegDeleteValue(HKEY_CURRENT_USER, 'Software\Unplugged', 'SeenSetup');
+  // The audio-verification installer registered this private CLSID machine-wide.
+  // Remove only that install's registration; never unregister a renderer owned by
+  // another product or installed at a different path.
+  rendererPath := ExpandConstant('{app}\filters\MpcAudioRenderer.ax');
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE,
+      'SOFTWARE\Classes\CLSID\{7E3A9C24-6B18-4F5D-9A2E-8C4B7D6F1A35}\InprocServer32',
+      '', registeredAudioRenderer) and
+      (CompareText(registeredAudioRenderer, rendererPath) = 0) then
+  begin
+    if not Exec(ExpandConstant('{sys}\regsvr32.exe'),
+        '/u /s "' + registeredAudioRenderer + '"',
+        '', SW_HIDE, ewWaitUntilTerminated, rc) or (rc <> 0) then
+    begin
+      Log('could not remove the previous bundled MpcAudioRenderer registration; rc=' +
+          IntToStr(rc));
+      MsgBox('Unplugged could not remove its previous MpcAudioRenderer registration. ' +
+          'Audio may remain silent. Run regsvr32 /u as administrator on:' + #13#10 +
+          registeredAudioRenderer, mbError, MB_OK);
+    end;
+  end;
   SetArrayLength(names, 5);
   names[0] := 'unplugged_vr.ax';
   names[1] := 'LAVSplitter.ax';

@@ -24,6 +24,7 @@
 #include <evr.h>
 #include <control.h>   // IQualProp (renderer perf counters)
 #include <mfidl.h>
+#include <audioclient.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <FilterInterfaces.h>
@@ -62,7 +63,14 @@ const CLSID CLSID_LAVSplitter = {0x171252A0, 0x8820, 0x4AFE, {0x9D, 0xF8, 0x5C, 
 const CLSID CLSID_LAVSplitterSource = {0xB98D13E7, 0x55DB, 0x4385, {0xA3, 0x3D, 0x09, 0xFD, 0x1B, 0xA2, 0x63, 0x38}};
 const CLSID CLSID_LAVVideo = {0xEE30215D, 0x164F, 0x4A92, {0xA4, 0xEB, 0x9D, 0x4C, 0x13, 0x39, 0x0F, 0x9F}};
 const CLSID CLSID_LAVAudio = {0xE8E73B6B, 0x4CB3, 0x44A4, {0xBE, 0x99, 0x4F, 0x7B, 0xCB, 0x96, 0xE4, 0x91}};
-const CLSID CLSID_MpcAudioRenderer = {0x601d2a2b, 0x9cde, 0x40bd, {0x86, 0x50, 0x04, 0x85, 0xe3, 0x52, 0x27, 0x27}};
+// OUR private CLSID for the shipped MpcAudioRenderer; must match the uuid attribute in
+// src/thirdparty/MpcAudioRenderer/MpcAudioRenderer.h. Deliberately not MPC-BE's
+// 601D2A2B-9CDE-40bd-8650-0485E3522727: on a machine with MPC-BE or K-Lite installed that
+// CLSID resolves to THEIR audio renderer, and our installer re-registering over it would
+// downgrade a working audio path. Asking for our own means the engine always gets the
+// renderer it shipped with; the DirectSound fallback in ConnectAudio then fires only when
+// ours is genuinely absent.
+const CLSID CLSID_MpcAudioRenderer = {0x7e3a9c24, 0x6b18, 0x4f5d, {0x9a, 0x2e, 0x8c, 0x4b, 0x7d, 0x6f, 0x1a, 0x35}};
 const CLSID CLSID_DeckLinkSource = {0x8c2f2a32, 0x27b1, 0x4e61, {0xA1, 0xBE, 0x78, 0x84, 0xF2, 0x41, 0x0E, 0x7A}};  // src/thirdparty/DeckLinkSource
 // DeckLink SDK GUIDs the engine needs for device enumeration. The vendored
 // header DECLARES the canonical EXTERN_C names (defined in the filter's own
@@ -109,6 +117,53 @@ CComPtr<IPin> FindUnconnectedPin(const CComPtr<IBaseFilter>& filter, PIN_DIRECTI
     return nullptr;
 }
 
+HRESULT QueryAudioMixLayout(const std::wstring& endpointId, WORD& channels, DWORD& channelMask)
+{
+    channels = 0;
+    channelMask = 0;
+
+    CComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = enumerator.CoCreateInstance(__uuidof(MMDeviceEnumerator));
+    if (FAILED(hr)) return hr;
+
+    CComPtr<IMMDevice> endpoint;
+    if (endpointId.empty()) {
+        hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &endpoint);
+    } else {
+        hr = enumerator->GetDevice(endpointId.c_str(), &endpoint);
+        if (FAILED(hr)) {
+            hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &endpoint);
+        }
+    }
+    if (FAILED(hr) || !endpoint) return FAILED(hr) ? hr : E_UNEXPECTED;
+
+    CComPtr<IAudioClient> client;
+    hr = endpoint->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+        reinterpret_cast<void**>(&client));
+    if (FAILED(hr)) return hr;
+
+    WAVEFORMATEX* mixFormat = nullptr;
+    hr = client->GetMixFormat(&mixFormat);
+    if (FAILED(hr)) return hr;
+
+    channels = mixFormat->nChannels;
+    if (mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE
+            && mixFormat->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) {
+        channelMask = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(mixFormat)->dwChannelMask;
+    } else if (channels == 1) {
+        channelMask = SPEAKER_FRONT_CENTER;
+    } else if (channels == 2) {
+        channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    }
+    CoTaskMemFree(mixFormat);
+
+    if (!channelMask) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    WORD maskChannels = 0;
+    for (DWORD bits = channelMask; bits; bits &= bits - 1) ++maskChannels;
+    if (maskChannels != channels) return HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
+    return S_OK;
+}
+
 std::string Utf8(std::wstring_view v)
 {
     if (v.empty()) return {};
@@ -148,15 +203,16 @@ MpcPlayer::TrackKind ClassifyStreamName(const std::wstring& name)
 }
 
 // IAMStreamSelect::Info hands back the stream's AM_MEDIA_TYPE, whose majortype is the
-// reliable discriminator (LAV sets MEDIATYPE_Audio / MEDIATYPE_Video). The stream NAME is
-// a human title ("English (E-AC-3)") that rarely carries the "A:"/"S:" pin prefixes
-// ClassifyStreamName looks for — so prefer the media type and fall back to the name only
-// when there is none. (Fixes audio tracks being mis-sorted as Video.)
+// reliable discriminator. Subtitle names are often just language/title strings, not the
+// "S:"/"Sub" prefixes ClassifyStreamName looks for, so classify subtitle media types before
+// falling back to the name.
 MpcPlayer::TrackKind ClassifyStream(const AM_MEDIA_TYPE* pmt, const std::wstring& name)
 {
     if (pmt) {
         if (pmt->majortype == MEDIATYPE_Audio) return MpcPlayer::TrackKind::Audio;
         if (pmt->majortype == MEDIATYPE_Video) return MpcPlayer::TrackKind::Video;
+        if (pmt->majortype == MEDIATYPE_Text
+            || pmt->majortype == MEDIATYPE_Subtitle) return MpcPlayer::TrackKind::Subtitle;
     }
     return ClassifyStreamName(name);
 }
@@ -817,6 +873,35 @@ HRESULT MpcPlayer::ApplyBitstreamConfig()
     las->SetBitstreamConfig(Bitstream_DTS,    on && bitstream_.dts    ? TRUE : FALSE);
     las->SetBitstreamConfig(Bitstream_DTSHD,  on && bitstream_.dtsHd  ? TRUE : FALSE);
     las->SetDTSHDFraming(on && bitstream_.dtsHdFraming ? TRUE : FALSE);
+    if (on) {
+        las->SetMixingEnabled(FALSE);
+    } else {
+        WORD channels = 0;
+        DWORD channelMask = 0;
+        const std::wstring endpointId = audioRendererIsMpcAudio_ ? audioDeviceId_ : L"";
+        HRESULT mixHr = QueryAudioMixLayout(endpointId, channels, channelMask);
+        if (SUCCEEDED(mixHr)) {
+            mixHr = las->SetMixingLayout(channelMask);
+            if (SUCCEEDED(mixHr)) {
+                mixHr = las->SetMixingEnabled(TRUE);
+            }
+        }
+        if (FAILED(mixHr)) {
+            las->SetMixingEnabled(FALSE);
+            Log("[AUDIO] PCM endpoint layout unavailable hr=0x%08X; leaving LAV mixing disabled",
+                (unsigned)mixHr);
+        } else {
+            Log("[AUDIO] PCM endpoint mix layout channels=%u mask=0x%08X",
+                channels, (unsigned)channelMask);
+        }
+    }
+    BOOL drcEnabled = FALSE;
+    int drcLevel = 0;
+    las->GetDRC(&drcEnabled, &drcLevel);
+    Log("[AUDIO] LAV runtime mode=%s DRC=%d/%d mixing=%d layout=0x%08X flags=0x%08X",
+        on ? "bitstream" : "PCM", drcEnabled ? 1 : 0, drcLevel,
+        las->GetMixingEnabled() ? 1 : 0, (unsigned)las->GetMixingLayout(),
+        (unsigned)las->GetMixingFlags());
     // Keep the audio renderer in sync (mode change while playing).
     ApplyRendererConfig();
     return S_OK;
@@ -980,7 +1065,10 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
 
     CComPtr<IBaseFilter> audioDecoder;
     HRESULT hrA = audioDecoder.CoCreateInstance(CLSID_LAVAudio);
-    std::cout << "[AUDIO] CoCreate LAVAudio hr=0x" << std::hex << (unsigned long)hrA << std::dec << "\n";
+    // Log, not std::cout: a GUI process has no console, so every cout line in here was
+    // invisible in exactly the situations people report "no audio". The renderer choice
+    // and each connect hr are the whole diagnosis for a silent playback.
+    Log("[AUDIO] CoCreate LAVAudio hr=0x%08X", (unsigned)hrA);
     if (FAILED(hrA)) return S_FALSE;
 
     HRESULT hrB = graph_->AddFilter(audioDecoder, L"LAV Audio");
@@ -993,9 +1081,8 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
         audioRendererIsMpcAudio_ = false;
         hrC = audioRenderer.CoCreateInstance(CLSID_DSoundRender);
     }
-    std::cout << "[AUDIO] AddFilter LAVAudio hr=0x" << std::hex << (unsigned long)hrB
-              << " CoCreate(renderer=" << (audioRendererIsMpcAudio_ ? "MpcAudioRenderer" : "DSound")
-              << ") hr=0x" << (unsigned long)hrC << std::dec << "\n";
+    Log("[AUDIO] AddFilter LAVAudio hr=0x%08X CoCreate(renderer=%s) hr=0x%08X",
+        (unsigned)hrB, audioRendererIsMpcAudio_ ? "MpcAudioRenderer" : "DSound", (unsigned)hrC);
     if (FAILED(hrB) || FAILED(hrC)) {
         if (SUCCEEDED(hrB)) graph_->RemoveFilter(audioDecoder);
         return S_FALSE;
@@ -1017,8 +1104,29 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
     CComPtr<IPin> decOut = FindUnconnectedPin(audioDecoder, PINDIR_OUTPUT);
     CComPtr<IPin> rndIn = FindUnconnectedPin(audioRenderer, PINDIR_INPUT);
     HRESULT hrF = (decOut && rndIn) ? graph_->Connect(decOut, rndIn) : E_POINTER;
-    std::cout << "[AUDIO] connect pin hrE=0x" << std::hex << (unsigned long)hrE
-              << " dec->render hrF=0x" << (unsigned long)hrF << std::dec << "\n";
+    Log("[AUDIO] connect splitter->decoder hrE=0x%08X decoder->renderer hrF=0x%08X",
+        (unsigned)hrE, (unsigned)hrF);
+    if (SUCCEEDED(hrF) && decOut) {
+        AM_MEDIA_TYPE mt = {};
+        const HRESULT mtHr = decOut->ConnectionMediaType(&mt);
+        if (SUCCEEDED(mtHr) && mt.majortype == MEDIATYPE_Audio
+                && mt.pbFormat && mt.cbFormat >= sizeof(WAVEFORMATEX)) {
+            const WAVEFORMATEX* wf = reinterpret_cast<const WAVEFORMATEX*>(mt.pbFormat);
+            DWORD channelMask = 0;
+            if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE
+                    && mt.cbFormat >= sizeof(WAVEFORMATEXTENSIBLE)) {
+                channelMask = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wf)->dwChannelMask;
+            }
+            Log("[AUDIO] negotiated output format tag=0x%04X channels=%u rate=%lu bits=%u mask=0x%08X",
+                wf->wFormatTag, wf->nChannels, wf->nSamplesPerSec, wf->wBitsPerSample,
+                (unsigned)channelMask);
+        } else {
+            Log("[AUDIO] negotiated output media type unavailable hr=0x%08X",
+                (unsigned)mtHr);
+        }
+        if (mt.pbFormat) CoTaskMemFree(mt.pbFormat);
+        if (mt.pUnk) mt.pUnk->Release();
+    }
 
     if (FAILED(hrE) || FAILED(hrF)) {
         graph_->RemoveFilter(audioRenderer);
@@ -1042,14 +1150,26 @@ HRESULT MpcPlayer::ApplyRendererConfig()
     const bool bitstream = audioMode_ == AudioMode::Bitstream;
     mar->SetWasapiMode(bitstream ? MODE_WASAPI_EXCLUSIVE_BITSTREAM : MODE_WASAPI_SHARED);
     mar->SetBitExactOutput(bitstream ? TRUE : FALSE);
-    if (!audioDeviceId_.empty()) {
-        mar->SetDeviceId(CString(audioDeviceId_.c_str()), CString(audioDeviceName_.c_str()));
-    }
-    const HRESULT hr = mar->Apply();
-    std::cout << "[AUDIO] renderer cfg mode=" << (bitstream ? "bitstream" : "shared")
-              << " device='" << Utf8(audioDeviceName_) << "' apply=0x"
-              << std::hex << (unsigned long)hr << std::dec << "\n";
-    return hr;
+
+    // Log the RAW configured value first: every silence diagnosis so far has been
+    // guesswork about what the UI or an INI pushed, and this one line ends that.
+    // %u, not %zu: this engine's Log() formats through a wide printf wrapper that
+    // silently DROPS any line containing %zu -- which is how two earlier diagnosis
+    // lines vanished and made a non-empty device id look like an empty one.
+    // .c_str() on every Utf8(): Log is printf-style varargs, and a std::string passed
+    // by value into "..." pushes the object's bytes, not the text -- which printed as
+    // garbage and briefly looked like a broken device-name read.
+    Log("[AUDIO] cfg enter: configured id='%s' len=%u name='%s'",
+        Utf8(audioDeviceId_).c_str(), (unsigned)audioDeviceId_.size(), Utf8(audioDeviceName_).c_str());
+    const HRESULT deviceHr = audioDeviceId_.empty()
+        ? S_OK
+        : mar->SetDeviceId(CString(audioDeviceId_.c_str()), CString(audioDeviceName_.c_str()));
+    const HRESULT applyHr = mar->Apply();
+    Log("[AUDIO] renderer cfg mode=%s device='%s' set-device=0x%08X apply=0x%08X",
+        bitstream ? "bitstream" : "shared",
+        Utf8(audioDeviceName_).c_str(),
+        (unsigned)deviceHr, (unsigned)applyHr);
+    return FAILED(deviceHr) ? deviceHr : applyHr;
 }
 
 HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
@@ -3785,10 +3905,9 @@ void MpcPlayer::ReplaceSubtitle(const ISubStream* pOld, ISubStream* pNew)
 // Mirrors CMainFrame::InsertTextPassThruFilter (MainFrm.cpp:18902-18935), adapted to a
 // graph whose pins are connected BY HAND. MPC-HC splices a pass-thru filter into every
 // subtitle pin the graph manager already connected, one filter per pin; nothing connects a
-// subtitle pin here, so we connect the pin belonging to the track that is selected
-// (targetRel is the subtitle-relative index - the same space IAMStreamSelect counts in, so
-// the rail's option, the splitter's stream and this pin must all agree; the pin name is
-// logged so a disagreement is visible in one line instead of being inferred).
+// subtitle pin here, so connect the first available subtitle pin for later track
+// selection. The pin is spliced at startup, but subtitles remain Off until the user
+// explicitly selects a track. targetRel is subtitle-relative, matching IAMStreamSelect.
 //
 // The earlier version wired "the first subtitle pin found" and stopped there, which made
 // every track except index 0 a no-op: ApplySubtitleProvider looked up subs_[track], and
@@ -3889,12 +4008,12 @@ HRESULT MpcPlayer::SpliceSubtitleFilters(int targetRel)
             e.srcPin = pin;
             e.sinkPin = sinkIn;
             subs_.push_back(e);
-            curSub_ = targetRel;
         } else {
             Log("[SUBS] spliced filter exposes no ISubStream -- provider unavailable");
         }
     }
-    Log("[SUBS] subtitle pins found=%d target=%d spliced=%d", found, targetRel, (int)subs_.size());
+    Log("[SUBS] subtitle pins found=%d target=%d spliced=%d; initial selection=Off",
+        found, targetRel, (int)subs_.size());
     ApplySubtitleProvider();
     return subs_.empty() ? S_FALSE : S_OK;
 }

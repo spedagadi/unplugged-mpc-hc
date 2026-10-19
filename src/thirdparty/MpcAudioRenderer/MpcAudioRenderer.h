@@ -46,7 +46,13 @@
 // uncomment the #define below
 // #define AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED	AUDCLNT_ERR(0x019)
 
-class __declspec(uuid("601D2A2B-9CDE-40bd-8650-0485E3522727"))
+// PRIVATE CLSID, deliberately not MPC-BE's {601D2A2B-9CDE-40bd-8650-0485E3522727}.
+// Same reasoning as unplugged_vr.ax: sharing a CLSID with a third-party build means
+// whichever package registers last owns it -- K-Lite and MPC-BE both install a
+// MpcAudioRenderer, and an installer that re-registers over a working third-party copy
+// can downgrade someone's audio. A private CLSID lets both coexist; the engine asks for
+// ours by name (CLSID_MpcAudioRenderer in MpcPlayer.cpp must match this value).
+class __declspec(uuid("7E3A9C24-6B18-4F5D-9A2E-8C4B7D6F1A35"))
 	CMpcAudioRenderer final
 	: public CBaseRenderer
 	, public IBasicAudio

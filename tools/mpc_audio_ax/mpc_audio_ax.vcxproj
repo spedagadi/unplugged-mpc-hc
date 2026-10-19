@@ -29,13 +29,21 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ForcedIncludeFiles>ax_pch.h</ForcedIncludeFiles>
-      <AdditionalIncludeDirectories>$(ProjectDir);..\..\src;..\..\include;..\..\src\thirdparty\BaseClasses;..\..\src\thirdparty;..\..\src\thirdparty\MpcAudioRenderer;..\..\src\thirdparty\mpcbe_common;..\..\src\DSUtil;..\..\src\filters</AdditionalIncludeDirectories>
+      <!-- LAV's own ffmpeg checkout supplies BOTH the headers and the import libs
+           (avfilter-lav.lib etc.), so the two cannot drift apart. The vendored
+           src\thirdparty\ffmpeg headers are a different vintage and would compile
+           against structs the shipped avfilter DLL does not have. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);..\..\src;..\..\include;..\..\src\thirdparty\BaseClasses;..\..\src\thirdparty;..\..\src\thirdparty\MpcAudioRenderer;..\..\src\thirdparty\mpcbe_common;..\..\src\thirdparty\AudioTools;..\..\..\LAVFilters\ffmpeg;..\..\..\LAVFilters;..\..\src\thirdparty\bs2b\libbs2b\src;..\..\src\DSUtil;..\..\src\filters</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_USRDLL;NOMINMAX;MPC_AX_NO_PROPERTY_PAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>BaseClasses.lib;DSUtil.lib;AudioTools.lib;bs2b.lib;soxr.lib;ffmpeg.lib;strmiids.lib;ole32.lib;oleaut32.lib;winmm.lib;vfw32.lib;avrt.lib;ws2_32.lib;advapi32.lib;comctl32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\..\bin\lib\Release_x64</AdditionalLibraryDirectories>
+      <!-- AudioTools is COMPILED below rather than linked as AudioTools.lib, and the
+           ffmpeg aggregate lib is replaced by LAV's per-library import libs: neither
+           AudioTools.lib nor ffmpeg.lib is produced by anything in this repo's build
+           chain, which is why this project could never link on a clean checkout. -->
+      <AdditionalDependencies>BaseClasses.lib;DSUtil.lib;avfilter-lav.lib;swresample-lav.lib;avutil-lav.lib;strmiids.lib;ole32.lib;oleaut32.lib;winmm.lib;vfw32.lib;avrt.lib;ws2_32.lib;advapi32.lib;comctl32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\bin\lib\Release_x64;..\..\src\thirdparty\BaseClasses\bin\lib\Release_x64;..\..\..\LAVFilters\bin_x64\lib</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>..\..\src\thirdparty\MpcAudioRenderer\MpcAudioRenderer.def</ModuleDefinitionFile>
     </Link>
   </ItemDefinitionGroup>
@@ -46,6 +54,25 @@
     <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\AudioDevice.cpp" />
     <ClCompile Include="..\..\src\thirdparty\MpcAudioRenderer\AudioSyncClock.cpp" />
     <ClCompile Include="..\..\src\thirdparty\BaseClasses\dllentry.cpp" />
+    <!-- AudioTools sources, in place of the AudioTools.lib this project used to demand.
+         BassRedirect.cpp is excluded on purpose: it needs the BASS SDK, which nothing
+         else in this tree builds and the renderer does not call. -->
+    <ClCompile Include="..\..\src\thirdparty\AudioTools\Mixer.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\AudioTools\AudioFilter.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\AudioTools\AudioHelper.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\AudioTools\SampleFormat.cpp" />
+    <ClCompile Include="..\..\src\thirdparty\AudioTools\DitherInt16.cpp" />
+    <!-- libbs2b, compiled in place of bs2b.lib: the crossfeed entry points the renderer
+         calls live in bs2bconvert.c and the bs2b_base C++ wrapper in bs2bclass.cpp. -->
+    <!-- Plain C: the project's forced MFC precompile header must not reach these, or
+         afx.h fails the build with "MFC requires C++ compilation". -->
+    <ClCompile Include="..\..\src\thirdparty\bs2b\libbs2b\src\bs2b.c">
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
+    </ClCompile>
+    <!-- bs2bconvert.c is libbs2b's standalone command-line tool (main() + libsndfile
+         file I/O); it is not part of the library and must not be in a filter. -->
+    <ClCompile Include="..\..\src\thirdparty\bs2b\libbs2b\src\bs2bclass.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
