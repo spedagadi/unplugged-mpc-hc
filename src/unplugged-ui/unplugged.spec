@@ -15,6 +15,11 @@ path, and MPCVR resolves its ML models from the directory its own `.ax` sits
 in, so the Inno Setup installer places them under {app}.
 """
 from pathlib import Path
+import runpy
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+    VarFileInfo, VarStruct, VSVersionInfo,
+)
 
 block_cipher = None
 
@@ -22,6 +27,24 @@ _HERE = Path(SPECPATH).resolve()          # src/unplugged-ui
 _SRC = _HERE / 'src'
 _ASSETS = _HERE / 'assets'
 _REPO = _HERE.parents[1]                  # the mpc-hc repo root
+_VERSION = runpy.run_path(str(_SRC / 'mpvprocessor' / '__init__.py'))['__version__']
+_VERSION_PARTS = tuple(int(part) for part in _VERSION.split('.')) + (0,)
+_VERSION_INFO = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=_VERSION_PARTS, prodvers=_VERSION_PARTS,
+        mask=0x3f, flags=0, OS=0x40004, fileType=1, subtype=0, date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo([StringTable('040904B0', [
+            StringStruct('FileDescription', 'Unplugged'),
+            StringStruct('FileVersion', _VERSION),
+            StringStruct('OriginalFilename', 'Unplugged.exe'),
+            StringStruct('ProductName', 'Unplugged'),
+            StringStruct('ProductVersion', _VERSION),
+        ])]),
+        VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+    ],
+)
 
 # Native DLLs that must ride inside _internal/ beside the exe.
 binaries = []
@@ -145,6 +168,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='Unplugged',
+    version=_VERSION_INFO,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

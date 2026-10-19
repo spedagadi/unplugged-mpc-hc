@@ -32,6 +32,17 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$issVersion = Select-String -Path (Join-Path $here 'unplugged.iss') -Pattern '^#define MyAppVersion "([^"]+)"'
+$uiVersion = Select-String -Path (Join-Path $here '..\src\unplugged-ui\src\mpvprocessor\__init__.py') -Pattern '^__version__ = "([^"]+)"'
+if (-not $issVersion -or -not $uiVersion -or
+    $issVersion.Matches[0].Groups[1].Value -ne $uiVersion.Matches[0].Groups[1].Value) {
+    throw 'Installer and UI source versions must match before packaging.'
+}
+$appExe = Join-Path $here '..\src\unplugged-ui\dist\Unplugged\Unplugged.exe'
+if (-not (Test-Path $appExe) -or
+    ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe)).ProductVersion -ne $uiVersion.Matches[0].Groups[1].Value) {
+    throw 'Packaged Unplugged.exe version does not match the UI source. Rebuild unplugged.spec before packaging.'
+}
 if ($SkipFilters) {
     Write-Host "NOTE: -SkipFilters -- LAV and DeckLinkSource.ax are OMITTED; only the GPL gate is waived." -ForegroundColor Yellow
     Write-Host "      The Blackmagic gates still apply: the app bundles SDK-derived code" -ForegroundColor Yellow

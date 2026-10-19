@@ -1,6 +1,24 @@
 # MpcAudioRenderer silence — diagnosis and verification
 
-Status: **Installer regression identified; rollback installer prepared, listening
+Status: **DirectSound fallback and PCM downmix audibly confirmed by the user;
+1.1.0 installer rebuilt with matching UI and executable versions.** The PCM fix
+uses the Windows output endpoint's channel layout for LAV mixing; bitstream mode
+leaves mixing disabled. The engine DLL SHA-256 is
+`F3EA1B429727F918D0854DAB6F123C5AA0E71110EAB46388C370008A74CE64AE`.
+The new installer still requires installed-app acceptance testing. AVR bitstream
+and the private WASAPI renderer remain unvalidated.
+
+Packaging: the UI version is defined in
+`src/unplugged-ui/src/mpvprocessor/__init__.py`; `unplugged.spec` uses that value
+for the executable's Windows file/product versions. Keep the package version in
+`src/unplugged-ui/pyproject.toml` and `MyAppVersion` in `distrib/unplugged.iss`
+aligned. Run PyInstaller before `distrib/build_unplugged_setup.ps1`; the installer
+build rejects a packaged executable whose product version differs from the UI
+or installer source.
+
+The following diagnosis records the earlier investigation state.
+
+Earlier status: **Installer regression identified; rollback installer prepared, listening
 test still required.** Before the audio verification installer, the dev build repeatedly
 logged `CoCreate(renderer=DSound)`. After the installer registered
 MpcAudioRenderer's private CLSID, the same app instead logged

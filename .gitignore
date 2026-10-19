@@ -17,6 +17,8 @@ _*.bat
 /.vs
 /bin
 /bin17
+/obj/
+/output/
 /build.user.bat
 /contrib/[Aa][Ss]tyle.exe
 /contrib/cov-int
@@ -35,6 +37,17 @@ _*.bat
 /src/MPCTestAPI/bin
 /src/MPCTestAPI/bin17
 /src/MPCTestAPI/.vs
+/src/SubPic/bin/
+/src/thirdparty/BaseClasses/bin/
+/src/thirdparty/MpcAudioRenderer/bin/
+/src/thirdparty/freetype2/bin/
+/src/thirdparty/fribidi/bin/
+/src/thirdparty/harfbuzz/bin/
+/src/thirdparty/libass/bin/
+/src/thirdparty/libunibreak/bin/
+/src/thirdparty/zlib/bin/
+/src/unplugged-ui/build/
+/src/unplugged-ui/dist/
 /src/thirdparty/DoctorDump/obj
 /src/thirdparty/LAVFilters/obj
 /src/thirdparty/libxml2/generated/libxml/xmlversion.h
