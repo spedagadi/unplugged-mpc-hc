@@ -24,7 +24,15 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .confirm_dialog import _BTN_CANCEL, _BTN_CONFIRM, _CARD_STYLE
+from .confirm_dialog import _BTN_CANCEL as _CD_CANCEL, _BTN_CONFIRM as _CD_CONFIRM, _CARD_STYLE
+
+# These dialogs carry three buttons where ConfirmDialog has two: its 36 px side
+# padding and 100 px minimum squeezed "Report a problem" into a clipped label.
+_BTN_CANCEL = _CD_CANCEL.replace("padding: 9px 36px;", "padding: 9px 22px;").replace(
+    "min-width: 100px;", "min-width: 64px;")
+_BTN_CONFIRM = _CD_CONFIRM.replace("padding: 9px 36px;", "padding: 9px 22px;").replace(
+    "min-width: 100px;", "min-width: 64px;")
+_DIALOG_WIDTH = 660
 
 _log = logging.getLogger("unplugged.engine_error")
 
@@ -130,7 +138,7 @@ class OpenErrorDialog(QDialog):
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet("QDialog { background: transparent; }")
-        self.setFixedWidth(560)
+        self.setFixedWidth(_DIALOG_WIDTH)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -251,7 +259,7 @@ class DiagnosticsDialog(QDialog):
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet("QDialog { background: transparent; }")
-        self.setFixedWidth(560)
+        self.setFixedWidth(_DIALOG_WIDTH)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -275,8 +283,25 @@ class DiagnosticsDialog(QDialog):
             "Attach it to your email.")
         self._msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._msg.setWordWrap(True)
+        self._msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._msg.setStyleSheet("color: #999999; font-size: 13px; background: transparent;")
         layout.addWidget(self._msg)
+
+        email_row = QHBoxLayout()
+        email_row.setSpacing(10)
+        email_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._email_lbl = QLabel(SUPPORT_EMAIL)
+        self._email_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._email_lbl.setCursor(Qt.CursorShape.IBeamCursor)
+        self._email_lbl.setStyleSheet(
+            "color: #ffffff; font-size: 14px; font-weight: 600; background: transparent;")
+        email_row.addWidget(self._email_lbl)
+        self._copy_btn = QPushButton("Copy address")
+        self._copy_btn.setStyleSheet(_BTN_CANCEL)
+        self._copy_btn.setAutoDefault(False)
+        self._copy_btn.clicked.connect(self._copy_email)
+        email_row.addWidget(self._copy_btn)
+        layout.addLayout(email_row)
 
         self._path_lbl = QLabel("")
         self._path_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -346,6 +371,17 @@ class DiagnosticsDialog(QDialog):
         self._main_btn.setText("Email support")
         self._main_btn.setEnabled(True)
         self.adjustSize()
+
+    def _copy_email(self) -> None:
+        QApplication.clipboard().setText(SUPPORT_EMAIL)
+        self._copy_btn.setText("Copied")
+        QTimer.singleShot(2000, self._reset_copy_btn)
+
+    def _reset_copy_btn(self) -> None:
+        try:
+            self._copy_btn.setText("Copy address")
+        except RuntimeError:   # dialog already destroyed
+            pass
 
     def _show_file(self) -> None:
         if self._zip is None:

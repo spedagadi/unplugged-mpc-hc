@@ -510,6 +510,14 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
         // leaves no trace at all between "building the new graph" and state=error.
         Log("[GRAPH] Open: BuildGraph FAILED hr=0x%08X (no BuildGraph enter line means the "
             "filter graph manager itself could not be created)", (unsigned)hr);
+        // Tear the partial graph down NOW, on the thread that built it. Left alive, it
+        // was released by Shutdown on s3_shutdown's worker thread, and the renderer's
+        // destructor SendMessage()s WM_CLOSE to its window — owned by THIS thread (the
+        // UI thread), which by then is blocked waiting for that worker: closing the app
+        // after a failed open stalled 10 s or hung (measured 2026-10-21). Same ordered
+        // teardown every Open runs on the previous graph; null-safe on partial graphs.
+        Log("[GRAPH] Open: releasing the partial graph left by the failed build");
+        TeardownDecklinkGraph();
         snapshot_.state = State::Error;
         {
             std::lock_guard<std::mutex> lk(m_warnMtx);
@@ -1508,13 +1516,17 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // same session 27 s later. Nothing on the capture path needs a subtitle sink, so
     // nothing on the capture path should be able to die releasing one.
     //
-    // Attach() is also no longer reached with a live pointer: it overwrites without
-    // releasing, so a second BuildGraph over a graph that had not been torn down would
-    // orphan the previous sink in the dying graph while subSink_ pointed at the new one.
-    // The gate removes the only case where that could happen on a running system.
+    // The gate also keeps a second BuildGraph over a graph that had not been torn down
+    // from swapping subSink_ to a new sink while the old one sits in the dying graph.
+    //
+    // Assignment, NOT Attach(): CNullTextRenderer is a CUnknown, born with m_cRef == 0.
+    // Attach() takes no reference, so subSink_ owned a reference that was never counted:
+    // the graph's AddFilter took the count to 1, releasing the graph freed the filter,
+    // and subSink_.Release() then freed it a second time (0xc0000374 on close after a
+    // file that failed to open). A spliced subtitle pin holds extra references and hid it.
     if (!bDeckLink) {
         HRESULT hrSink = S_OK;
-        subSink_.Attach(DEBUG_NEW CNullTextRenderer(nullptr, &hrSink));
+        subSink_ = DEBUG_NEW CNullTextRenderer(nullptr, &hrSink);
         if (subSink_ && SUCCEEDED(hrSink)) {
             graph_->AddFilter(subSink_, L"NullTextRenderer");
         } else {

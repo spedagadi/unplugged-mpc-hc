@@ -526,8 +526,24 @@ __declspec(dllexport) void s3_shutdown(void)
         if (done) SetEvent(done);
     });
     t.detach();
-    if (done) WaitForSingleObject(done, 10000);
-    if (done) CloseHandle(done);
+    if (done) {
+        // Keep delivering messages SENT to this thread while we wait. A filter's
+        // destructor on the worker may SendMessage() a window this thread owns (MPCVR
+        // sends WM_CLOSE to its video window); a plain wait deadlocks that until the
+        // timeout. QS_SENDMESSAGE + PM_QS_SENDMESSAGE dispatches only inbound sent
+        // messages — posted input/paint/timer messages stay queued, so no UI re-entry.
+        const ULONGLONG deadline = GetTickCount64() + 10000;
+        for (;;) {
+            const ULONGLONG now = GetTickCount64();
+            if (now >= deadline) break;
+            const DWORD r = MsgWaitForMultipleObjects(1, &done, FALSE,
+                                                      (DWORD)(deadline - now), QS_SENDMESSAGE);
+            if (r != WAIT_OBJECT_0 + 1) break;   // signalled, timed out, or failed
+            MSG msg;
+            PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+        }
+        CloseHandle(done);
+    }
 }
 
 __declspec(dllexport) int s3_version(char* buf, int cap)

@@ -211,7 +211,9 @@ before shipping or enabling the WASAPI renderer.
     codec-pack / DirectShow resolution), the UI logs (today + 2 days), `engine.log`,
     `last-error.txt`, `app_config.json`, `segfault.log`, and the two newest crash
     dumps. The email it opens goes to `fossunplugged@gmail.com` (`SUPPORT_EMAIL`
-    in `ui\engine_error.py`) with the version and zip path filled in.
+    in `ui\engine_error.py`) with the version and zip path filled in. The dialog
+    shows the address as selectable text with a **Copy address** button, for PCs
+    without an email program.
   - The engine log now persists at `%USERPROFILE%\.unplugged\logs\engine.log`
     (one `.prev` rotation at 8 MB, a `==== s3engine session … pid=… ====` line per
     run). It used to be CWD-relative, which is Program Files in the field, so it
@@ -222,6 +224,24 @@ before shipping or enabling the WASAPI renderer.
     "reinstall" banner and log `health: installation DAMAGED`.
   - The installer sets WER LocalDumps for `Unplugged.exe` (minidumps, 5 kept, in
     `%LOCALAPPDATA%\Unplugged\CrashDumps`), removed on uninstall.
+
+  Shutdown fixes found while testing a failed open (1.1.1):
+  - **Heap corruption (0xc0000374) on exit after a failed open.** The subtitle
+    sink was created with `subSink_.Attach(new CNullTextRenderer)`. CUnknown
+    starts at refcount 0, so Attach took no reference. The graph's release freed
+    the sink, and `subSink_.Release()` in Shutdown freed it a second time. This
+    was already present in 1.1.0; a successful subtitle splice held extra
+    references and hid it. Fixed by assigning (`subSink_ = new …`), which
+    AddRefs.
+  - **10–40 s hang on exit after a failed open.** The partial graph was released
+    on the Shutdown worker thread. MPCVR's destructor `SendMessage(WM_CLOSE)`s its
+    window, which belongs to the UI thread that built the graph, and that thread
+    was blocked waiting for the worker. Fixed two ways: `MpcPlayer::Open` now
+    tears down the partial graph on the building thread when BuildGraph fails,
+    and `s3_shutdown` waits with `MsgWaitForMultipleObjects(QS_SENDMESSAGE)`
+    (same 10 s limit), so sent messages are still serviced. Verified: 5/5
+    corrupt-file closes exit 0 in about 1 s with no dumps; normal play-then-close
+    is unchanged.
 - The engine's `ConnectAudio` returns `S_FALSE` (treated as success) when audio
   cannot be connected, so a broken audio path never fails the open — by design,
   video-first.
