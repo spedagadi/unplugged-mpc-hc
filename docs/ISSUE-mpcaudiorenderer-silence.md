@@ -210,8 +210,8 @@ before shipping or enabling the WASAPI renderer.
     level, versions and SHA-256 of the bundled binaries, installation health,
     codec-pack / DirectShow resolution), the UI logs (today + 2 days), `engine.log`,
     `last-error.txt`, `app_config.json`, `segfault.log`, and the two newest crash
-    dumps. The email it opens has the version and zip path filled in; set
-    `SUPPORT_EMAIL` in `ui\engine_error.py` once there is a support address.
+    dumps. The email it opens goes to `fossunplugged@gmail.com` (`SUPPORT_EMAIL`
+    in `ui\engine_error.py`) with the version and zip path filled in.
   - The engine log now persists at `%USERPROFILE%\.unplugged\logs\engine.log`
     (one `.prev` rotation at 8 MB, a `==== s3engine session … pid=… ====` line per
     run). It used to be CWD-relative, which is Program Files in the field, so it

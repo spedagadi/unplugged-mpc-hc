@@ -30,9 +30,8 @@ _log = logging.getLogger("unplugged.engine_error")
 
 _REINSTALL = "Reinstall Unplugged (run the installer again) and try once more."
 
-# Where "Report a problem" addresses its email. Empty: the mail client opens with
-# the To field blank and the user fills it in.
-SUPPORT_EMAIL = ""
+# Where "Report a problem" addresses its email.
+SUPPORT_EMAIL = "fossunplugged@gmail.com"
 
 # HRESULT -> plain-language explanation. Keys are unsigned 32-bit.
 _HR_TEXT = {
@@ -338,8 +337,8 @@ class DiagnosticsDialog(QDialog):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        self._msg.setText("Diagnostics saved. Email it to support with a short description "
-                          "of what happened and when.")
+        self._msg.setText(f"Diagnostics saved. Email it to {SUPPORT_EMAIL} with a short "
+                          "description of what happened and when.")
         self._path_lbl.setText(str(self._zip))
         self._path_lbl.show()
         self._show_btn.show()
@@ -373,8 +372,8 @@ class DiagnosticsDialog(QDialog):
                 "What were you doing when it happened:\n")
         url = (f"mailto:{SUPPORT_EMAIL}?subject={quote(subject)}&body={quote(body)}")
         if not QDesktopServices.openUrl(QUrl(url)):
-            self._msg.setText("No email program is set up on this PC. Please email the file "
-                              "above to support yourself.")
+            self._msg.setText(f"No email program is set up on this PC. Please email the file "
+                              f"above to {SUPPORT_EMAIL}.")
 
 
 def _center(dlg: QWidget, parent) -> None:
