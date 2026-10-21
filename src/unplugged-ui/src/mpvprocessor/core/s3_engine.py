@@ -84,6 +84,18 @@ def _find_s3engine_dll() -> str:
     return "s3engine.dll"   # let ctypes fall back to PATH
 
 
+def _describe_file(path: str) -> str:
+    """Path, size and build time of a loaded binary, so a log identifies the exact build."""
+    try:
+        import datetime
+        import os
+        st = os.stat(path)
+        ts = datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")
+        return f"{path} ({st.st_size} bytes, built {ts})"
+    except OSError:
+        return path
+
+
 def _to_device(url: str) -> str:
     """decklink://<device name>?...  ->  <device name>"""
     prefix = "decklink://"
@@ -99,6 +111,12 @@ class S3Engine(QObject):
     zion_stats_updated  = pyqtSignal(dict)
     s3_status           = pyqtSignal(dict)   # full engine JSON each poll
                                           # (status_panel.on_s3_status mapper)
+    # A media FILE could not be opened (url, HRESULT as unsigned 32-bit). Emitted once
+    # per failure, never for DeckLink capture, which retries on its own.
+    open_failed         = pyqtSignal(str, int)
+    # Degraded-playback codes for the current graph ("renderer_fallback",
+    # "audio_none", "registry:<filter>"); emitted when the set changes.
+    warnings_changed    = pyqtSignal(list)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -109,6 +127,11 @@ class S3Engine(QObject):
         self._j: dict = {}
         self._observed: set[str] = set()
         self._attach_failed_logged = False
+        self.dll_info = ""
+        self.dll_path: Optional[str] = None
+        self._file_url: Optional[str] = None   # the media file last opened, if any
+        self._failure_reported = False
+        self._last_warn: tuple = ()
 
         self._timer = QTimer(self)
         self._timer.setInterval(300)
@@ -126,6 +149,9 @@ class S3Engine(QObject):
         try:
             path = _find_s3engine_dll()
             self._lib = ctypes.CDLL(path)
+            self.dll_info = _describe_file(path)
+            self.dll_path = path
+            log.info("s3engine.dll loaded: %s", self.dll_info)
             for name, rest in (("s3_attach", [ctypes.c_int64]),
                                ("s3_start_device", [ctypes.c_char_p]),
                                ("s3_stats", [ctypes.c_char_p, ctypes.c_int]),
@@ -134,6 +160,11 @@ class S3Engine(QObject):
                 fn = getattr(self._lib, name)
                 fn.restype = ctypes.c_int
                 fn.argtypes = rest
+            # Optional (1.1.1+): an older DLL without it still loads.
+            recent = getattr(self._lib, "s3_recent_log", None)
+            if recent is not None:
+                recent.restype = ctypes.c_int
+                recent.argtypes = [ctypes.c_char_p, ctypes.c_int]
             return True
         except Exception as e:   # noqa: BLE001
             log.error("s3engine.dll load failed: %s", e)
@@ -158,7 +189,20 @@ class S3Engine(QObject):
         # treated as a DeckLink device — no lock ever arrived, so the graph never
         # launched and the UI sat at "opening" forever.
         if not url.startswith("decklink://"):
-            self._lib.s3_cmd(json.dumps({"a": "open", "url": url}).encode("utf-8"))
+            self._file_url = url
+            self._failure_reported = False
+            # Synchronous: Open + Play, returns the HRESULT of the open.
+            # ensure_ascii=False: the engine's flat JSON reader does not decode \uXXXX,
+            # so an escaped "é" would reach Open() as the literal text "u00e9".
+            rc = self._lib.s3_cmd(json.dumps({"a": "open", "url": url},
+                                             ensure_ascii=False).encode("utf-8"))
+            if rc < 0:
+                log.error("s3 open failed hr=0x%08X url=%s", rc & 0xFFFFFFFF, url)
+                self._failure_reported = True
+                hr = rc & 0xFFFFFFFF
+                # Deferred: the caller is still in the play path; the slot shows a
+                # modal dialog and must not re-enter it.
+                QTimer.singleShot(0, lambda: self.open_failed.emit(url, hr))
             # THE data feed. The capture path starts this timer below; the file
             # path NEVER DID — so after {"a":"open"} no s3_stats was polled, no
             # property_changed fired, and the bar/panel had nothing to bind
@@ -172,6 +216,7 @@ class S3Engine(QObject):
             # device is already capturing and otherwise stops the old capture itself, so
             # the guard this used to have ("only the first time") was what made switching
             # to a different HDMI port a silent no-op: the new URL was never sent.
+            self._file_url = None
             device_b = device.encode("utf-8")
             rc = self._lib.s3_start_device(device_b)
             log.info("s3_start_device('%s') rc=0x%08X", device, rc)
@@ -400,6 +445,43 @@ class S3Engine(QObject):
             self._state = state
             self.state_changed.emit(state)
 
+    def _check_file_failure(self, st: EngineState) -> None:
+        """Report a media file that stops in ERROR (e.g. a failed re-open on a
+        track switch) exactly once; play() reports the synchronous open itself."""
+        if self._file_url is None:
+            return
+        if st in (EngineState.PLAYING, EngineState.PAUSED):
+            self._failure_reported = False
+        elif st == EngineState.ERROR and not self._failure_reported:
+            self._failure_reported = True
+            try:
+                hr = int(self._j.get("openHr", 0)) & 0xFFFFFFFF
+            except (TypeError, ValueError):
+                hr = 0
+            log.error("s3 playback entered ERROR hr=0x%08X url=%s", hr, self._file_url)
+            self.open_failed.emit(self._file_url, hr)
+
+    def recent_log(self) -> str:
+        """The engine's last log lines (empty with a DLL that predates the export)."""
+        fn = getattr(self._lib, "s3_recent_log", None) if self._lib else None
+        if fn is None:
+            return ""
+        try:
+            buf = ctypes.create_string_buffer(64 * 1024)
+            n = fn(buf, len(buf))
+            if n <= 0:
+                return ""
+            # Engine lines mix UTF-8 (source literals) and ANSI code page text.
+            out = []
+            for raw in buf.raw[:n].split(b"\n"):
+                try:
+                    out.append(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    out.append(raw.decode("mbcs", errors="replace"))
+            return "\n".join(out)
+        except Exception:   # noqa: BLE001 - diagnostics must never break the UI
+            return ""
+
     def _flat_get(self, name: str, default=None):
         j = self._j
         if name == "time-pos":
@@ -498,6 +580,11 @@ class S3Engine(QObject):
               "idle":    EngineState.IDLE,
               "error":   EngineState.ERROR}.get(state_, EngineState.IDLE)
         self._set_state(st)
+        self._check_file_failure(st)
+        warn = tuple(w for w in (self._j.get("warn") or []) if isinstance(w, str))
+        if warn != self._last_warn:
+            self._last_warn = warn
+            self.warnings_changed.emit(list(warn))
 
         # property events for observed (and key) props
         for prop in ("time-pos", "duration", "pause", "volume", "mute",

@@ -308,7 +308,28 @@ STDMETHODIMP CMPCVRAllocatorPresenter::CreateRenderer(IUnknown** ppRenderer)
         return E_UNEXPECTED;
     }
 
-    HRESULT hr = InstantiateInternalMPCVR(m_pMPCVR, GetOwner());
+    HRESULT hr = E_FAIL;
+
+    // The Unplugged app ships its renderer in <exe dir>\filters. Load that exact file
+    // first so the picture never depends on what HKCR\CLSID currently says; the registry
+    // lookups below remain the fallback (and the only path for builds without it).
+    {
+        const CString bundled = PathUtils::CombinePaths(PathUtils::GetProgramPath(), L"filters\\unplugged_vr.ax");
+        if (::GetFileAttributesW(bundled) != INVALID_FILE_ATTRIBUTES) {
+            CComPtr<IClassFactory> pCF;
+            hr = LoadExternalObject(bundled, CLSID_UnpluggedVR, IID_PPV_ARGS(&pCF));
+            if (SUCCEEDED(hr)) {
+                hr = pCF->CreateInstance(GetOwner(), IID_PPV_ARGS(&m_pMPCVR.p));
+            }
+            if (FAILED(hr)) {
+                m_pMPCVR.Release();
+            }
+        }
+    }
+
+    if (FAILED(hr)) {
+        hr = InstantiateInternalMPCVR(m_pMPCVR, GetOwner());
+    }
 
     if (FAILED(hr) && IsCLSIDRegistered(CLSID_UnpluggedVR)) {
         hr = m_pMPCVR.CoCreateInstance(CLSID_UnpluggedVR, GetOwner());

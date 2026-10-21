@@ -10,6 +10,8 @@
 //    int  s3_cmd(const char* json_utf8)                    // {"a":"play"} {"a":"pause"} {"a":"stop"} {"a":"seek","pos":N}
 //    void s3_shutdown(void)                                // ordered teardown (DESIGN.md)
 //    int  s3_version(char* buf, int cap)
+//    int  s3_recent_log(char* buf, int cap)                // last engine log lines, newest last,
+//                                                          // '\n'-separated; oldest dropped to fit
 //
 // Threading: any thread may call; the engine's own locks + the ops-queue
 // executor own the graph. CoInitialize is attempted lazily and tolerates an
@@ -21,7 +23,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "MpcPlayer.h"
@@ -64,7 +68,7 @@ static void EngineLog(const char* line);   // defined below; the crash hooks nee
 // so the stack died with the process. These hooks catch the three ways a Release
 // MSVC binary ends up in abort() — the CRT invalid-parameter handler, an
 // unhandled C++ exception (set_terminate), and a raw unhandled SEH — and in each
-// case log WHY it happened and print a symbolised stack to s3engine.log BEFORE
+// case log WHY it happened and print a symbolised stack to the engine log BEFORE
 // terminating. The renderer's PDB sits beside its .ax, so its frames resolve;
 // the engine's own frames resolve from any PDB dbghelp can find.
 #include <windows.h>
@@ -161,19 +165,53 @@ static void S3InstallCrashHooks()
 // once per process, before the first line, and only when the log has grown past
 // a size where it is more noise than signal (the per-poll trace makes it grow
 // ~1 MB/hour, so this bounds it without touching a short session).
+//
+// WHERE: %USERPROFILE%\.unplugged\logs\engine.log, beside the UI's unplugged.log.
+// The installed app's working directory is Program Files, which a user process
+// cannot write, so the old CWD-relative s3engine.log silently never existed in
+// the field. Only if that per-user folder cannot be created does it fall back to
+// s3engine.log in the working directory (the old behaviour).
+struct EngineLogPaths { std::wstring cur, prev; };
+static const EngineLogPaths& LogPaths() {
+    static const EngineLogPaths p = [] {
+        EngineLogPaths r{ L"s3engine.log", L"s3engine.prev.log" };
+        wchar_t prof[MAX_PATH] = {};
+        const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", prof, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return r;
+        std::wstring dir = std::wstring(prof) + L"\\.unplugged";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        dir += L"\\logs";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const DWORD a = GetFileAttributesW(dir.c_str());
+        if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return r;
+        r.cur  = dir + L"\\engine.log";
+        r.prev = dir + L"\\engine.prev.log";
+        return r;
+    }();
+    return p;
+}
+
 static void RotateLogOnce() {
     static bool done = [] {
+        const EngineLogPaths& p = LogPaths();
         WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (!GetFileAttributesExW(L"s3engine.log", GetFileExInfoStandard, &fad)) return true;
+        if (!GetFileAttributesExW(p.cur.c_str(), GetFileExInfoStandard, &fad)) return true;
         const unsigned long long sz =
             ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
         if (sz < 8ull * 1024ull * 1024ull) return true;
-        DeleteFileW(L"s3engine.prev.log");
-        MoveFileW(L"s3engine.log", L"s3engine.prev.log");
+        DeleteFileW(p.prev.c_str());
+        MoveFileW(p.cur.c_str(), p.prev.c_str());
         return true;
     }();
     (void)done;
 }
+
+// The last lines the engine logged, kept in memory as well, so the error report
+// the user copies carries them even if the log file could not be written.
+// The UI pulls these through s3_recent_log().
+static std::mutex s_recentMtx;
+static std::deque<std::string> s_recent;
+static constexpr size_t kRecentLines = 800;
 
 static void EngineLog(const char* line) {
     static std::mutex s_logMtx;
@@ -191,9 +229,22 @@ static void EngineLog(const char* line) {
 
     {
         std::lock_guard<std::mutex> lk(s_logMtx);
-        if (FILE* f = _wfopen(L"s3engine.log", L"a")) {
+        static bool s_first = true;
+        if (FILE* f = _wfopen(LogPaths().cur.c_str(), L"a")) {
+            if (s_first) {
+                // Runs are appended to one file; mark where this one starts.
+                fprintf(f, "\n==== s3engine session %04u-%02u-%02u %02u:%02u:%02u pid=%lu ====\n",
+                        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+                        GetCurrentProcessId());
+                s_first = false;
+            }
             fputs(stamped, f); fputc('\n', f); fclose(f);
         }
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_recentMtx);
+        s_recent.emplace_back(stamped);
+        while (s_recent.size() > kRecentLines) s_recent.pop_front();
     }
     OutputDebugStringA(stamped);
     OutputDebugStringA("\n");
@@ -294,6 +345,31 @@ __declspec(dllexport) int s3_stats(char* buf, int cap)
         return (int)(cap - 1);
     }
     memcpy(buf, j.data(), n);
+    buf[n] = 0;
+    return (int)n;
+}
+
+__declspec(dllexport) int s3_recent_log(char* buf, int cap)
+{
+    if (!buf || cap <= 0) return -1;
+    std::deque<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lk(s_recentMtx);
+        lines = s_recent;
+    }
+    // Keep the newest lines that fit: walk back from the end, then emit in order.
+    size_t budget = (size_t)cap - 1;
+    size_t first = lines.size();
+    while (first > 0 && lines[first - 1].size() + 1 <= budget) {
+        budget -= lines[first - 1].size() + 1;
+        --first;
+    }
+    size_t n = 0;
+    for (size_t i = first; i < lines.size(); ++i) {
+        memcpy(buf + n, lines[i].data(), lines[i].size());
+        n += lines[i].size();
+        buf[n++] = '\n';
+    }
     buf[n] = 0;
     return (int)n;
 }

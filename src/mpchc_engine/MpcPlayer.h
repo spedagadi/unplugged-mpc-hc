@@ -630,6 +630,10 @@ private:
     // thread hangs (see the definition).
     void DetachRendererWindow();
     std::atomic<bool> m_detachPending{false};
+    // Bundled .ax in <exe dir>\filters first, registry (CoCreateInstance) as fallback.
+    HRESULT CreateBundledFilter(REFCLSID clsid, const wchar_t* file, const char* name, CComPtr<IBaseFilter>& out);
+    // ConnectDirect only: no intermediate (third-party) filter may enter the chain.
+    HRESULT ConnectPinsDirect(IPin* out, IPin* in, const char* what);
     HRESULT ConnectVideoPin(IBaseFilter* source, IPin* decIn); // try-connect over output pins
     void    CaptureSourceMediaType(IPin* srcPin); // record demuxer media type → LIVE panel
     void    ApplyDecklinkColorToRenderer(); // push ICS override pre-connect
@@ -706,6 +710,14 @@ private:
     // that re-read the registry, so the UI must re-push its settings — exposed
     // as "gen" in GetUiStatusJson for exactly that.
     uint32_t graphGen_ = 0;
+    // Degraded-playback codes from the current graph build ("renderer_fallback",
+    // "audio_none", "registry:<filter>") and the HRESULT of the last failed Open or
+    // graph abort (EC_ERRORABORT). Exposed as "warn"/"openHr" in GetUiStatusJson so
+    // the UI can tell the user.
+    mutable std::mutex m_warnMtx;
+    std::vector<std::string> buildWarnings_;
+    HRESULT lastOpenHr_ = S_OK;
+    void AddBuildWarning(const std::string& code);
     std::wstring decklinkDevice_;
     DecklinkSettings decklinkSettings_;
     VideoStreamInfo videoStreamInfo_;        // captured at graph connect (DEMUXER → REC)

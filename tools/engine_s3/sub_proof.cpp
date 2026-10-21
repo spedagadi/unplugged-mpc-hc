@@ -12,7 +12,8 @@
 //   6. s3_shutdown                              (same teardown, final time)
 // Surviving 4-6 is the point of the second half: the crash was in teardown, not in open.
 //
-// Pass criteria, checked by the caller against s3engine.log for THIS run:
+// Pass criteria, checked by the caller against the engine log
+// (%USERPROFILE%\.unplugged\logs\engine.log) for THIS run:
 //   "[SUBS] subtitle pins found=N spliced=1" with N >= 1
 //   "[SUBS] subpic provider attached"
 //   "[TEARDOWN] 4/4 stop graph + release — done" (and each 4a..4d bracket closed)

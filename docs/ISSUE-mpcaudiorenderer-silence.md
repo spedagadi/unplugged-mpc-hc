@@ -163,11 +163,65 @@ before shipping or enabling the WASAPI renderer.
 
 ## 7. Separate, do not confuse with this issue
 
-- **Video blank with `hr=0x80040217` (`VFW_E_CANNOT_CONNECT`)** on the customer box
-  was K-Lite Codec Pack re-registering the shared LAV CLSIDs
-  (`171252A0…/EE30215D…/E8E73B6B…`) to its own copies after our install. Re-running
-  our installer (or `regsvr32` of our filters, last) fixes it. Reproduced here by
-  installing K-Lite. Unrelated to audio.
+- **Media Player mode fails with `BuildGraph FAILED hr=0x80040217`
+  (`VFW_E_CANNOT_CONNECT`)** on machines with a codec pack. Unrelated to audio.
+  *Corrected 2026-10-21*: the earlier explanation here (K-Lite re-registering the
+  shared LAV CLSIDs) was incomplete; re-running our installer does NOT fix it.
+  Reproduced with the real installed 1.1.0 app and K-Lite Full 20.1.0 (default
+  install), in both install orders:
+  - K-Lite writes `HKLM\SOFTWARE\Classes\Media Type\Extensions\.mkv` (and `.mp4
+    .m2ts .ts .webm .mov`) `Source Filter = {B98D13E7-…}` (LAV Splitter Source).
+    `IGraphBuilder::AddSourceFilter` honours that, so the engine's "source" was
+    already a demuxer, and connecting its video pin to LAV Splitter's byte-stream
+    input failed 70–170 ms after `renderer added`. Which LAVSplitter.ax the CLSID
+    resolves to is irrelevant; our installer re-registering the CLSIDs leaves the
+    Extensions mapping in place, so the failure survives a reinstall.
+  - Uninstalling K-Lite removes the mapping but also deletes the LAV CLSID keys
+    even when they point at our files: `hr=0x80040154` until Unplugged is
+    reinstalled.
+  - A fresh Windows has no such mapping, which is why clean machines play.
+
+  Fix (1.1.1, `MpcPlayer.cpp`): local files are opened with File Source (Async)
+  directly (what AddSourceFilter returns on a clean machine, so the clean graph is
+  unchanged); LAV Splitter/Video/Audio, DeckLinkSource and the renderer are created
+  from the `.ax` files in `<app>\filters\` (registry only as fallback, logged as
+  `[FILTER] ... via registry`); every link uses `ConnectDirect`, so no third-party
+  filter can be inserted into the chain. The engine logs `[FILTER]` lines naming
+  the module each filter was created from. Field check:
+  `unplugged-source-map-check.ps1` lists any Extensions/check-bytes mappings.
+
+  Failures are no longer silent (1.1.1). In Media Player mode a file that cannot
+  be opened (or a graph that aborts) shows a "Can't play this file" dialog with a
+  plain-language reason, the HRESULT and a **Copy details** button. The same
+  report, including the engine's last log lines (kept in memory by s3engine.dll,
+  `s3_recent_log`), is written to `%USERPROFILE%\.unplugged\logs\last-error.txt`
+  — that is the file to ask a user for. Playback that works but is degraded
+  shows a banner instead: `audio_none` (audio could not start), `renderer_fallback`
+  (Windows renderer, no tone mapping), `registry:<filter>` (a filter came from
+  another install, not `<app>\filters`). The engine logs these as
+  `[WARN] degraded playback: <code>` and exposes them as `"warn"`/`"openHr"` in
+  the status JSON. Video Processor (DeckLink) mode shows no dialog: it recovers
+  by itself.
+
+  Field diagnostics (1.1.1):
+  - **Report a problem** (top bar, next to the version) and the error dialog's
+    button of the same name write `Unplugged-diagnostics-<time>.zip` to the
+    Desktop: `environment.txt` (GPU/driver, displays with HDR state and SDR white
+    level, versions and SHA-256 of the bundled binaries, installation health,
+    codec-pack / DirectShow resolution), the UI logs (today + 2 days), `engine.log`,
+    `last-error.txt`, `app_config.json`, `segfault.log`, and the two newest crash
+    dumps. The email it opens has the version and zip path filled in; set
+    `SUPPORT_EMAIL` in `ui\engine_error.py` once there is a support address.
+  - The engine log now persists at `%USERPROFILE%\.unplugged\logs\engine.log`
+    (one `.prev` rotation at 8 MB, a `==== s3engine session … pid=… ====` line per
+    run). It used to be CWD-relative, which is Program Files in the field, so it
+    never existed on a user's PC.
+  - The UI session header logs `Version` and a one-line `Codecs` summary; the full
+    environment report follows it (written from a background thread).
+  - Startup health check: missing or damaged files in `<app>\filters` show a
+    "reinstall" banner and log `health: installation DAMAGED`.
+  - The installer sets WER LocalDumps for `Unplugged.exe` (minidumps, 5 kept, in
+    `%LOCALAPPDATA%\Unplugged\CrashDumps`), removed on uninstall.
 - The engine's `ConnectAudio` returns `S_FALSE` (treated as success) when audio
   cannot be connected, so a broken audio path never fails the open — by design,
   video-first.

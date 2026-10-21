@@ -76,6 +76,7 @@ def _sep() -> QLabel:
 class StatusBar(QWidget):
     minimize_clicked = pyqtSignal()
     close_clicked    = pyqtSignal()
+    report_clicked   = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -88,6 +89,22 @@ class StatusBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 0, 8, 0)
         layout.setSpacing(8)
+
+        # App version, top-left: what a user reads out when reporting a problem.
+        try:
+            from .. import __version__ as _ver
+        except Exception:   # noqa: BLE001
+            _ver = ""
+        self._version_lbl = _lbl(f"Unplugged {_ver}".strip(), TEXT_LO, 12)
+        self._version_lbl.setToolTip("Installed Unplugged version")
+        layout.addWidget(self._version_lbl)
+
+        self._report_btn = QPushButton("Report a problem")
+        self._report_btn.setStyleSheet(_WC.replace("font-size: 13px", "font-size: 12px"))
+        self._report_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._report_btn.setToolTip("Save a diagnostics file to send to support")
+        self._report_btn.clicked.connect(self.report_clicked)
+        layout.addWidget(self._report_btn)
 
         layout.addStretch()
 

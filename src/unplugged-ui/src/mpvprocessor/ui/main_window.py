@@ -29,6 +29,8 @@ _audit = logging.getLogger("unplugged.audit")
 from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, pyqtSlot
 from PyQt6.QtWidgets import QWidget, QFileDialog, QMainWindow, QMessageBox, QApplication, QLabel
 from .confirm_dialog import ConfirmDialog
+from .engine_error import (DiagnosticsDialog, OpenErrorDialog, WarningToast, build_report,
+                           describe_warning, save_report)
 from ..core.calibrate import (CalibrationSession, CALIBRATE_VIDEO, CALIBRATE_CSV,
                               load_expected_table, _default_expected)
 
@@ -38,6 +40,7 @@ from .settings_window import SettingsWindow, BOTTOM_SAFE_PX
 from .status_bar import StatusBar
 from .control_bar import ControlBar
 from .media_library_panel import MediaLibraryPanel
+from ..media.scanner import VIDEO_EXTENSIONS
 from .playback_bar import PlaybackBar
 from .status_panel import StatusPanel
 from .playback_controls import PlaybackControlsPanel
@@ -266,6 +269,7 @@ class MainWindow(QMainWindow):
         if not getattr(self, '_idle_screen_applied', False):
             self._idle_screen_applied = True
             self._apply_idle_screen()
+            QTimer.singleShot(2000, self._startup_health_check)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -532,6 +536,7 @@ class MainWindow(QMainWindow):
         # Status bar
         self._status_bar.minimize_clicked.connect(self.showMinimized)
         self._status_bar.close_clicked.connect(self.close)
+        self._status_bar.report_clicked.connect(self._show_diagnostics)
 
         # Control bar
         self._control_bar.restart_clicked.connect(self._on_restart_user)
@@ -545,6 +550,8 @@ class MainWindow(QMainWindow):
         # Engine state
         self._engine.state_changed.connect(self._on_engine_state)
         self._engine.log_message.connect(self._on_engine_log)
+        self._engine.open_failed.connect(self._on_engine_open_failed)
+        self._engine.warnings_changed.connect(self._on_engine_warnings)
 
         # Engine property changes → status panel + playback bar
         self._engine.property_changed.connect(self._status_panel.on_property)
@@ -1320,8 +1327,14 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_play_file(self, path: str) -> None:
         _audit.info(f"user: play file  {path}")
+        if Path(path).suffix.lower() not in VIDEO_EXTENSIONS:
+            # The library only lists these; this guards any other route to a file.
+            _audit.warning(f"media: refused unsupported file type {path}")
+            self._media_library.show_message("Only MKV and MP4 files can be played.")
+            return
         self._media_was_playing = False   # re-armed by the next PLAYING state
         self._current_file = path
+        self._warned_codes = set()
         self._dv_switched_for = ""
         self._status_panel.set_dv_active(False)
         # Ensure audio is enabled (may be disabled from a previous VP capture session)
@@ -1555,6 +1568,65 @@ class MainWindow(QMainWindow):
     def _on_engine_log(self, level: str, component: str, message: str) -> None:
         if level in ("error", "fatal"):
             _log.error(f"[mpv/{component}] {message}")
+
+    @pyqtSlot(str, int)
+    def _on_engine_open_failed(self, url: str, hr: int) -> None:
+        """A media file could not be played: tell the user, keep a report.
+
+        Media Player mode only. Video Processor capture recovers by itself (the
+        ERROR branch of _on_engine_state replays), so a dialog there would block
+        an unattended display for a condition that heals.
+        """
+        warnings = list(getattr(self._engine, "_last_warn", ()) or ())
+        report = build_report(url, hr, warnings, self._engine.recent_log(),
+                              getattr(self._engine, "dll_info", ""))
+        saved = save_report(report)
+        _audit.error(f"media: open FAILED hr=0x{hr & 0xFFFFFFFF:08X} url={url} report={saved}")
+        if self._app_config.app_mode != "media_player":
+            return
+        self._acquire_overlay.dismiss()
+        OpenErrorDialog(url, hr, report, saved, self,
+                        report_problem=self._show_diagnostics).exec()
+
+    def _show_diagnostics(self) -> None:
+        _audit.info("diagnostics: Report a problem opened")
+        DiagnosticsDialog(self._engine, self).exec()
+
+    def _startup_health_check(self) -> None:
+        """Tell the user now if the install is damaged, instead of at first play."""
+        from ..core import diagnostics
+        try:
+            problems = diagnostics.health_check()
+        except Exception as e:   # noqa: BLE001 - a probe must never break startup
+            _log.warning("health check failed to run: %s", e)
+            return
+        if not problems:
+            _audit.info("health: installation OK")
+            return
+        _audit.error(f"health: installation DAMAGED: {problems}")
+        if getattr(self, "_warning_toast", None) is None:
+            self._warning_toast = WarningToast(self)
+        shown = ", ".join(problems[:4]) + (" …" if len(problems) > 4 else "")
+        self._warning_toast.show_message(
+            "Unplugged's installation is damaged (" + shown + "). Playback may fail. "
+            "Please run the Unplugged installer again to repair it.", 30000)
+
+    @pyqtSlot(list)
+    def _on_engine_warnings(self, codes: list) -> None:
+        if not codes:
+            return
+        _audit.warning(f"media: degraded playback {codes} file={self._current_file}")
+        if self._app_config.app_mode != "media_player":
+            return
+        warned = getattr(self, "_warned_codes", set())
+        fresh = [c for c in codes if c not in warned]
+        if not fresh:
+            return
+        warned.update(fresh)
+        self._warned_codes = warned
+        if getattr(self, "_warning_toast", None) is None:
+            self._warning_toast = WarningToast(self)
+        self._warning_toast.show_message("\n".join(describe_warning(c) for c in fresh))
 
     # ── SOURCE page (settings rail) ──────────────────────────────────────────
 

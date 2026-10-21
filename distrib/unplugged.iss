@@ -51,7 +51,7 @@
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
 // The renderer's staging folder, named for this product since the filter became
@@ -222,6 +222,16 @@ Source: "decklink_sdk_license.txt";  DestDir: "{app}\licenses"; Flags: ignorever
 ; modified LAV binaries, and a build that ships none of them owes nothing.
 Source: "licenses\lav_gpl_source_offer.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 #endif
+
+[Registry]
+; Windows Error Reporting keeps a minidump when Unplugged.exe crashes, so a field
+; crash comes back as evidence instead of "it just closed". Per-user folder
+; (WER expands %LOCALAPPDATA% for the crashing user); five dumps, oldest dropped.
+; The app's "Collect diagnostics" zip lists these. The key is removed on uninstall.
+Root: HKLM64; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; Flags: uninsdeletekey
+Root: HKLM64; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: expandsz; ValueName: "DumpFolder"; ValueData: "%LOCALAPPDATA%\Unplugged\CrashDumps"
+Root: HKLM64; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpType"; ValueData: "1"
+Root: HKLM64; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpCount"; ValueData: "5"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

@@ -299,7 +299,7 @@ class MediaLibraryPanel(QWidget):
         self._selected = None
         self._play_btn.setEnabled(False)
         self._info_lbl.setText(
-            f"{count} titles found" if count else "No video files found in this folder."
+            f"{count} titles found" if count else "No MKV or MP4 files found in this folder."
         )
 
     def _on_selection_changed(self) -> None:

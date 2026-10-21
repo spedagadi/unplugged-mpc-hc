@@ -117,6 +117,104 @@ CComPtr<IPin> FindUnconnectedPin(const CComPtr<IBaseFilter>& filter, PIN_DIRECTI
     return nullptr;
 }
 
+// The installed app ships its filters in <exe dir>\filters. Creating them from those
+// exact files makes the graph independent of HKCR\CLSID: codec packs (K-Lite) re-point
+// the shared LAV CLSIDs at their own copies, and uninstalling such a pack deletes the
+// keys outright (0x80040154 until Unplugged is reinstalled).
+std::wstring BundledFilterPath(const wchar_t* file)
+{
+    wchar_t exe[MAX_PATH * 2];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, _countof(exe));
+    if (n == 0 || n >= _countof(exe)) return {};
+    std::wstring dir(exe, n);
+    const size_t slash = dir.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return {};
+    dir.resize(slash + 1);
+    return dir + L"filters\\" + file;
+}
+
+bool HasBundledFilterDir()
+{
+    const std::wstring dir = BundledFilterPath(L"");
+    if (dir.empty()) return false;
+    const DWORD a = GetFileAttributesW(dir.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// True when any output pin of the splitter offers an audio media type: a file with
+// no audio stream must not be reported as "audio unavailable".
+bool HasAudioOutput(IBaseFilter* splitter)
+{
+    CComPtr<IEnumPins> pins;
+    if (!splitter || FAILED(splitter->EnumPins(&pins)) || !pins) return false;
+    CComPtr<IPin> pin;
+    while (pins->Next(1, &pin, nullptr) == S_OK) {
+        PIN_DIRECTION d = PINDIR_INPUT;
+        if (SUCCEEDED(pin->QueryDirection(&d)) && d == PINDIR_OUTPUT) {
+            CComPtr<IEnumMediaTypes> types;
+            if (SUCCEEDED(pin->EnumMediaTypes(&types)) && types) {
+                AM_MEDIA_TYPE* mt = nullptr;
+                while (types->Next(1, &mt, nullptr) == S_OK) {
+                    const bool audio = (mt->majortype == MEDIATYPE_Audio);
+                    DeleteMediaType(mt);
+                    if (audio) return true;
+                }
+            }
+        }
+        pin.Release();
+    }
+    return false;
+}
+
+// Loads the module the way COM's in-proc activation does (LOAD_WITH_ALTERED_SEARCH_PATH,
+// so each .ax resolves its ffmpeg DLLs and manifest beside itself) and keeps it loaded
+// for the life of the process: filters created from it may outlive any graph.
+HRESULT CreateFromModule(const std::wstring& path, REFCLSID clsid, IBaseFilter** ppOut)
+{
+    static std::mutex mtx;
+    static std::vector<std::pair<std::wstring, HMODULE>> modules;
+    HMODULE mod = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        for (const auto& m : modules) {
+            if (_wcsicmp(m.first.c_str(), path.c_str()) == 0) { mod = m.second; break; }
+        }
+        if (!mod) {
+            mod = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (!mod) {
+                const DWORD err = GetLastError();
+                return err ? HRESULT_FROM_WIN32(err) : E_FAIL;
+            }
+            modules.emplace_back(path, mod);
+        }
+    }
+    using PfnGetClassObject = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
+    const auto getClassObject = reinterpret_cast<PfnGetClassObject>(GetProcAddress(mod, "DllGetClassObject"));
+    if (!getClassObject) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+    CComPtr<IClassFactory> factory;
+    HRESULT hr = getClassObject(clsid, IID_IClassFactory, reinterpret_cast<void**>(&factory));
+    if (FAILED(hr)) return hr;
+    if (!factory) return E_UNEXPECTED;
+    return factory->CreateInstance(nullptr, IID_IBaseFilter, reinterpret_cast<void**>(ppOut));
+}
+
+// The file a COM object's code lives in, read from its vtable: the witness for which
+// copy of a filter actually ended up in the graph.
+std::wstring ModuleOfObject(IUnknown* obj)
+{
+    if (!obj) return {};
+    HMODULE mod = nullptr;
+    const void* vtbl = *reinterpret_cast<void* const*>(obj);
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(vtbl), &mod) || !mod) {
+        return {};
+    }
+    wchar_t buf[MAX_PATH * 2];
+    const DWORD n = GetModuleFileNameW(mod, buf, _countof(buf));
+    if (n == 0 || n >= _countof(buf)) return {};
+    return std::wstring(buf, n);
+}
+
 HRESULT QueryAudioMixLayout(const std::wstring& endpointId, WORD& channels, DWORD& channelMask)
 {
     channels = 0;
@@ -413,8 +511,16 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
         Log("[GRAPH] Open: BuildGraph FAILED hr=0x%08X (no BuildGraph enter line means the "
             "filter graph manager itself could not be created)", (unsigned)hr);
         snapshot_.state = State::Error;
+        {
+            std::lock_guard<std::mutex> lk(m_warnMtx);
+            lastOpenHr_ = hr;
+        }
         Notify("error");
         return hr;
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_warnMtx);
+        lastOpenHr_ = S_OK;
     }
 
     snapshot_.state = State::Paused;
@@ -984,6 +1090,10 @@ HRESULT MpcPlayer::PumpEvents()
                 "error, window kept", (unsigned)(HRESULT)p1,
                 snapshot_.position / 10000000.0, snapshot_.duration / 10000000.0);
             snapshot_.state = State::Error;
+            {
+                std::lock_guard<std::mutex> lk(m_warnMtx);
+                lastOpenHr_ = (HRESULT)p1;   // surfaced as "openHr" so the UI can name it
+            }
             Notify("error");
             return S_OK;
         }
@@ -1064,7 +1174,7 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
     if (!splitter) return E_POINTER;
 
     CComPtr<IBaseFilter> audioDecoder;
-    HRESULT hrA = audioDecoder.CoCreateInstance(CLSID_LAVAudio);
+    HRESULT hrA = CreateBundledFilter(CLSID_LAVAudio, L"LAVAudio.ax", "LAV Audio", audioDecoder);
     // Log, not std::cout: a GUI process has no console, so every cout line in here was
     // invisible in exactly the situations people report "no audio". The renderer choice
     // and each connect hr are the whole diagnosis for a silent playback.
@@ -1099,11 +1209,11 @@ HRESULT MpcPlayer::ConnectAudio(IBaseFilter* splitter)
 
     CComPtr<IPin> splitOut = FindUnconnectedPin(splitter, PINDIR_OUTPUT);
     CComPtr<IPin> decIn = FindUnconnectedPin(audioDecoder, PINDIR_INPUT);
-    HRESULT hrE = (splitOut && decIn) ? graph_->Connect(splitOut, decIn) : E_POINTER;
+    HRESULT hrE = (splitOut && decIn) ? ConnectPinsDirect(splitOut, decIn, "splitter -> LAV Audio") : E_POINTER;
 
     CComPtr<IPin> decOut = FindUnconnectedPin(audioDecoder, PINDIR_OUTPUT);
     CComPtr<IPin> rndIn = FindUnconnectedPin(audioRenderer, PINDIR_INPUT);
-    HRESULT hrF = (decOut && rndIn) ? graph_->Connect(decOut, rndIn) : E_POINTER;
+    HRESULT hrF = (decOut && rndIn) ? ConnectPinsDirect(decOut, rndIn, "LAV Audio -> audio renderer") : E_POINTER;
     Log("[AUDIO] connect splitter->decoder hrE=0x%08X decoder->renderer hrF=0x%08X",
         (unsigned)hrE, (unsigned)hrF);
     if (SUCCEEDED(hrF) && decOut) {
@@ -1206,6 +1316,10 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     // settings the UI pushed into the previous instance no longer apply. The
     // counter lets the UI notice and re-push (see "gen" in GetUiStatusJson).
     ++graphGen_;
+    {
+        std::lock_guard<std::mutex> lk(m_warnMtx);
+        buildWarnings_.clear();
+    }
     m_subEnumDone = false;   // new splitter instance => the list has to be re-enumerated
     Log("[GRAPH] BuildGraph enter — generation now %u", (unsigned)graphGen_);
 
@@ -1249,7 +1363,7 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         // Direct ingest (phase 3): our DeckLinkSource filter CoCreates when it
         // is registered — v210 output pin → MPCVR directly, no ffmpeg/LAV in the
         // path. Falls back to the LAV URL chain when the filter is absent.
-        hr = sourceFilter.CoCreateInstance(CLSID_DeckLinkSource);
+        hr = CreateBundledFilter(CLSID_DeckLinkSource, L"DeckLinkSource.ax", "DeckLink Source", sourceFilter);
         if (SUCCEEDED(hr)) {
             bDeckLinkDirect = true;
             Log("[DECKLINK][engine] direct DeckLinkSource filter");
@@ -1292,7 +1406,7 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         } else {
             Log("[DECKLINK][engine] direct DeckLinkSource unavailable (hr=0x%08X) — LAV fallback", (unsigned)hr);
             Log("[DECKLINK][engine] CoCreateInstance(CLSID_LAVSplitterSource)...");
-            hr = sourceFilter.CoCreateInstance(CLSID_LAVSplitterSource);
+            hr = CreateBundledFilter(CLSID_LAVSplitterSource, L"LAVSplitter.ax", "LAV Splitter Source", sourceFilter);
             if (FAILED(hr)) {
                 Log("[DECKLINK][engine] CoCreate LAVSplitterSource FAILED hr=0x%08X", (unsigned)hr);
                 return hr;
@@ -1314,9 +1428,31 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
             splitter = sourceFilter;   // acts as the demuxer/splitter in one
         }
     } else {
-        hr = graph_->AddSourceFilter(std::wstring(source).c_str(), L"source", &sourceFilter);
-        if (FAILED(hr)) return hr;
-        hr = splitter.CoCreateInstance(CLSID_LAVSplitter);
+        // Pin the byte reader for local/UNC files instead of letting AddSourceFilter pick
+        // one. AddSourceFilter honours HKCR\Media Type\Extensions and check-bytes, and codec
+        // packs (K-Lite, MPC-HC) map .mkv/.mp4 there to LAV Splitter Source -- whose CLSID
+        // resolves to OUR LAVSplitter.ax. The "source" then is already a demuxer, its first
+        // output is the video pin, and connecting that to LAV Splitter's byte-stream input
+        // fails with 0x80040217 (VFW_E_CANNOT_CONNECT): Media Player mode dead on any
+        // machine with a codec pack. File Source (Async) is exactly what AddSourceFilter
+        // returns on a clean machine, so the graph is unchanged there.
+        const std::wstring path(source);
+        if (path.find(L"://") == std::wstring::npos) {
+            hr = sourceFilter.CoCreateInstance(CLSID_AsyncReader);
+            if (FAILED(hr)) { Log("[GRAPH] CoCreate File Source (Async) FAILED hr=0x%08X", (unsigned)hr); return hr; }
+            hr = graph_->AddFilter(sourceFilter, L"source");
+            if (FAILED(hr)) { Log("[GRAPH] AddFilter(File Source) FAILED hr=0x%08X", (unsigned)hr); return hr; }
+            CComQIPtr<IFileSourceFilter> pFS = sourceFilter;
+            if (!pFS) return E_NOINTERFACE;
+            hr = pFS->Load(path.c_str(), nullptr);
+            Log("[GRAPH] File Source (Async) Load hr=0x%08X", (unsigned)hr);
+            if (FAILED(hr)) return hr;
+        } else {
+            hr = graph_->AddSourceFilter(path.c_str(), L"source", &sourceFilter);
+            Log("[GRAPH] AddSourceFilter(url) hr=0x%08X", (unsigned)hr);
+            if (FAILED(hr)) return hr;
+        }
+        hr = CreateBundledFilter(CLSID_LAVSplitter, L"LAVSplitter.ax", "LAV Splitter", splitter);
         if (FAILED(hr)) return hr;
         hr = graph_->AddFilter(splitter, L"LAV Splitter");
         if (FAILED(hr)) return hr;
@@ -1324,7 +1460,7 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
 
     CComPtr<IBaseFilter> decoder;
     if (!bDeckLinkDirect) {
-        hr = decoder.CoCreateInstance(CLSID_LAVVideo);
+        hr = CreateBundledFilter(CLSID_LAVVideo, L"LAVVideo.ax", "LAV Video", decoder);
         if (FAILED(hr)) return hr;
         hr = graph_->AddFilter(decoder, L"LAV Video");
         if (FAILED(hr)) return hr;
@@ -1332,6 +1468,25 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
 
     hr = AddRenderer(renderer_);
     if (FAILED(hr) || !renderer_) return FAILED(hr) ? hr : E_FAIL;
+    {
+        const std::wstring rmod = ModuleOfObject(renderer_);
+        Log("[FILTER] video renderer module='%S'", rmod.c_str());
+        // The presenter tries <exe dir>\filters\unplugged_vr.ax first; anything else
+        // (another copy via HKCR) on an installed layout is reported, unless the
+        // renderer was already reported as a full fallback to a system renderer.
+        const std::wstring bundledVr = BundledFilterPath(L"unplugged_vr.ax");
+        const size_t slash = rmod.find_last_of(L"\\/");
+        const std::wstring rfile = (slash == std::wstring::npos) ? rmod : rmod.substr(slash + 1);
+        bool fellBack = false;
+        {
+            std::lock_guard<std::mutex> lk(m_warnMtx);
+            for (const auto& w : buildWarnings_) fellBack |= (w == "renderer_fallback");
+        }
+        if (!fellBack && HasBundledFilterDir() && _wcsicmp(rfile.c_str(), L"unplugged_vr.ax") == 0
+                && _wcsicmp(rmod.c_str(), bundledVr.c_str()) != 0) {
+            AddBuildWarning("registry:Video Renderer");
+        }
+    }
     Log("[GRAPH] adding the renderer filter to the graph — enter");
     hr = graph_->AddFilter(renderer_, L"Video Renderer");
     Log("[GRAPH] renderer added hr=0x%08X", (unsigned)hr);
@@ -1396,7 +1551,7 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         CComPtr<IPin> srcOut = FindPin(sourceFilter, PINDIR_OUTPUT);
         if (!rndIn || !srcOut) return E_POINTER;
         Log("[DECKLINK][engine] direct connect v210 -> MPCVR input...");
-        hr = graph_->Connect(srcOut, rndIn);
+        hr = ConnectPinsDirect(srcOut, rndIn, "DeckLink Source -> renderer");
         Log("[DECKLINK][engine] direct renderer connect hr=0x%08X", (unsigned)hr);
         if (FAILED(hr)) return hr;
         CaptureSourceMediaType(srcOut);   // DEMUXER → REC (LIVE panel)
@@ -1417,13 +1572,15 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         CComPtr<IPin> srcOut = FindPin(sourceFilter, PINDIR_OUTPUT);
         CComPtr<IPin> splIn = FindPin(splitter, PINDIR_INPUT);
         if (!srcOut || !splIn) return E_POINTER;
-        hr = graph_->Connect(srcOut, splIn);
+        hr = ConnectPinsDirect(srcOut, splIn, "source -> LAV Splitter");
+        Log("[GRAPH] connect source -> LAV Splitter hr=0x%08X", (unsigned)hr);
         if (FAILED(hr)) return hr;
 
         CComPtr<IPin> splOut = FindPin(splitter, PINDIR_OUTPUT);
         CComPtr<IPin> decIn = FindPin(decoder, PINDIR_INPUT);
         if (!splOut || !decIn) return E_POINTER;
-        hr = graph_->Connect(splOut, decIn);
+        hr = ConnectPinsDirect(splOut, decIn, "LAV Splitter -> LAV Video");
+        Log("[GRAPH] connect LAV Splitter -> LAV Video hr=0x%08X", (unsigned)hr);
         if (FAILED(hr)) return hr;
     }
 
@@ -1431,7 +1588,8 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
         CComPtr<IPin> decOut = FindPin(decoder, PINDIR_OUTPUT);
         CComPtr<IPin> rndIn = FindPin(renderer_, PINDIR_INPUT);
         if (!decOut || !rndIn) return E_POINTER;
-        hr = graph_->Connect(decOut, rndIn);
+        hr = ConnectPinsDirect(decOut, rndIn, "LAV Video -> renderer");
+        if (!bDeckLink) Log("[GRAPH] connect LAV Video -> renderer hr=0x%08X", (unsigned)hr);
         if (FAILED(hr)) return hr;
         if (!bDeckLink) {
             // Record the decoder->renderer media type (LIVE panel DEMUXER->REC and
@@ -1481,7 +1639,9 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
             Log("[GRAPH] pending audio track %d applied at connect hr=0x%08X",
                 pendingAudioTrack_, (unsigned)hrTrack);
         }
-        ConnectAudio(splitter);
+        if (ConnectAudio(splitter) != S_OK && HasAudioOutput(splitter)) {
+            AddBuildWarning("audio_none");
+        }
         // After the audio connect, before Run: CTextPassThruFilter's insertion stops
         // the graph in MPC-HC because it may happen mid-playback; here the graph has
         // not started, so the splice is free. Doing it later would need the stop/restart
@@ -1525,6 +1685,52 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     return S_OK;
 }
 
+HRESULT MpcPlayer::CreateBundledFilter(REFCLSID clsid, const wchar_t* file, const char* name,
+                                       CComPtr<IBaseFilter>& out)
+{
+    out.Release();
+    const std::wstring path = BundledFilterPath(file);
+    if (!path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        const HRESULT hr = CreateFromModule(path, clsid, &out);
+        if (SUCCEEDED(hr) && out) {
+            Log("[FILTER] %s created from bundled '%S'", name, path.c_str());
+            return S_OK;
+        }
+        Log("[FILTER] %s bundled '%S' FAILED hr=0x%08X -- trying the registry", name, path.c_str(), (unsigned)hr);
+        out.Release();
+    }
+    const HRESULT hr = out.CoCreateInstance(clsid);
+    Log("[FILTER] %s via registry hr=0x%08X module='%S'", name, (unsigned)hr,
+        SUCCEEDED(hr) ? ModuleOfObject(out).c_str() : L"");
+    // Only an installed layout (<exe dir>\filters exists) is expected to use its own
+    // copies; a dev host without that folder always goes through the registry.
+    if (SUCCEEDED(hr) && HasBundledFilterDir()) {
+        AddBuildWarning(std::string("registry:") + name);
+    }
+    return hr;
+}
+
+void MpcPlayer::AddBuildWarning(const std::string& code)
+{
+    Log("[WARN] degraded playback: %s", code.c_str());
+    std::lock_guard<std::mutex> lk(m_warnMtx);
+    for (const auto& w : buildWarnings_) {
+        if (w == code) return;
+    }
+    buildWarnings_.push_back(code);
+}
+
+HRESULT MpcPlayer::ConnectPinsDirect(IPin* out, IPin* in, const char* what)
+{
+    if (!out || !in) return E_POINTER;
+    const HRESULT hr = graph_->ConnectDirect(out, in, nullptr);
+    if (FAILED(hr)) {
+        Log("[GRAPH] direct connect %s FAILED hr=0x%08X (intermediate filters are not allowed)",
+            what, (unsigned)hr);
+    }
+    return hr;
+}
+
 // DeckLinkSource.ax telemetry (SetLogSink) → engine Log → shell diag log.
 void __cdecl MpcPlayer::DeckLinkSourceLogBridge(void* ctx, const char* line)
 {
@@ -1545,7 +1751,7 @@ HRESULT MpcPlayer::ConnectVideoPin(IBaseFilter* source, IPin* decIn)
     while (pins->Next(1, &pin, &got) == S_OK) {
         PIN_DIRECTION d = PINDIR_INPUT;
         if (SUCCEEDED(pin->QueryDirection(&d)) && d == PINDIR_OUTPUT) {
-            if (SUCCEEDED(graph_->Connect(pin, decIn))) {
+            if (SUCCEEDED(graph_->ConnectDirect(pin, decIn, nullptr))) {
                 // Record what the demuxer actually handed out — the media type
                 // negotiated on this output pin (LIVE panel / DEMUXER -> REC).
                 CaptureSourceMediaType(pin);
@@ -1789,6 +1995,7 @@ HRESULT MpcPlayer::AddRenderer(CComPtr<IBaseFilter>& out)
             "system renderer. TONE MAPPING, ZION GRADE AND ALL TASTE DIALS ARE INACTIVE. "
             "Register it: run Install_Unplugged_64.cmd as administrator, or "
             "regsvr32 \"<path>\\unplugged_vr.ax\"", (unsigned)hr);
+        AddBuildWarning("renderer_fallback");
         [[fallthrough]];
     case Renderer::VMR9:
         hr = out.CoCreateInstance(CLSID_VideoMixingRenderer9);
@@ -3232,11 +3439,26 @@ std::string MpcPlayer::GetUiStatusJson() const
     // the live-cache lock because the capture path rebuilds it on the executor.
     std::string audio, subs;
     { std::lock_guard<std::mutex> lk(m_liveMtx); audio = m_audioJson; subs = m_subJson; }
+    std::string diag = ",\"warn\":[";
+    {
+        // Codes are engine-generated ASCII (no quotes or backslashes), so no escaping.
+        std::lock_guard<std::mutex> lk(m_warnMtx);
+        for (size_t i = 0; i < buildWarnings_.size(); ++i) {
+            if (i) diag += ',';
+            diag += '"';
+            diag += buildWarnings_[i];
+            diag += '"';
+        }
+        char hrBuf[32];
+        snprintf(hrBuf, sizeof(hrBuf), "],\"openHr\":%u", (unsigned)lastOpenHr_);
+        diag += hrBuf;
+    }
     std::string result = std::string(b1) + std::string(b2);
     if (!result.empty() && result.back() == '}') {
         result.pop_back();
         result += audio;
         result += subs;
+        result += diag;
         result += '}';
     }
     return result;

@@ -215,11 +215,41 @@ def main() -> None:
     log = logging.getLogger("unplugged")
     log.info("=" * 72)
     log.info(f"  unplugged  —  session started  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    try:
+        from . import __version__ as _app_version
+    except Exception:   # noqa: BLE001
+        _app_version = "?"
+    log.info(f"  Version  : {_app_version}")
     log.info(f"  Python   : {sys.version}")
     log.info(f"  Platform : {platform.platform()}")
     log.info(f"  CWD      : {os.getcwd()}")
     log.info(f"  Exe      : {sys.executable}")
+    try:
+        from .core import diagnostics as _diag
+        log.info(f"  Codecs   : {_diag.codec_pack_summary()}")
+    except Exception as e:   # noqa: BLE001 - diagnostics must never stop startup
+        _diag = None
+        log.warning(f"  Codecs   : probe failed: {e}")
     log.info("=" * 72)
+    if _diag is not None:
+        # Full environment (GPU, displays/HDR, binary versions and hashes, codec packs)
+        # off the startup path: hashing the bundled filters takes a moment.
+        import threading
+        try:
+            from .core.s3_engine import _find_s3engine_dll
+            _engine_dll = _find_s3engine_dll()
+        except Exception:   # noqa: BLE001
+            _engine_dll = None
+
+        def _log_environment() -> None:
+            try:
+                report = _diag.environment_report(_engine_dll)
+                logging.getLogger("unplugged.environment").info(
+                    "environment:\n" + report.rstrip())
+            except Exception as e:   # noqa: BLE001
+                log.warning(f"environment report failed: {e}")
+
+        threading.Thread(target=_log_environment, name="env-report", daemon=True).start()
     _setup_mpv_path()
     _install_exception_hook()
     app = QApplication(sys.argv)
