@@ -460,8 +460,18 @@ class AppConfig:
     ipc_pipe: str = r"\\.\pipe\mpvsocket"
     # "video_processor" | "media_player"
     app_mode: str = "video_processor"
-    # Last used media folder for media player mode
+    # Last used media folder for media player mode. Since the poster library the
+    # folder list lives in the library database; this is kept as the first folder
+    # and migrated into the library once.
     media_folder: str = ""
+    # Library tab last shown: "movies" | "tv" | "folders"
+    library_tab: str = "movies"
+    # Posters from OMDb for titles with no local artwork. omdb_api_key overrides
+    # the key shipped with the app. library_save_posters writes each downloaded
+    # poster beside the media (<film>-poster.jpg, <show>\poster.jpg).
+    library_online_art: bool = True
+    omdb_api_key: str = ""
+    library_save_posters: bool = True
     # Last played file (remembered for resume)
     last_played: str = ""
     # Calibration output directory (media library "Calibrate colour" button)

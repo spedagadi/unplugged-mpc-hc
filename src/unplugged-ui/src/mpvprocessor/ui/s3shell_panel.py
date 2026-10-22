@@ -129,6 +129,8 @@ def _init_fonts() -> None:
                  for g, px in GLYPH_OPTICAL.items()}
 
 # ── groups (kSysGroups, verbatim) ────────────────────────────────────────────
+# The fourth element (category names) is no longer painted: the line under the tab is
+# built from the sections actually shown (see paintEvent). Kept for the tuple shape.
 GROUPS = [
     # PLAYBACK leads: it is the media-playback surface (audio/subtitle tracks,
     # HD-audio output mode, audio delay). Track enumeration is still engine work
@@ -177,6 +179,20 @@ _LUT_MODES = ["Off", "Gamma only", "Greyscale", "Full 3D"]
 # these ON force-clears the other, and both are then re-pushed.
 _PASSTHROUGH = ("hdr.hdrPass", "zion.debugCopyShaders")
 
+# Super Resolution is a panel toggle but the INI and the engine keep MPCVR's
+# iVPSuperRes number (IVideoRenderer.h SUPERRES_*), so configs written by the old
+# five-way row, and by s3_shell.cpp, still mean the same thing. Any non-zero value
+# loads as On; On is written and sent as SUPERRES_1440p.
+_SUPERRES_KEY = "out.superRes"
+_SUPERRES_ON = 4
+# What the renderer needs before it will engage the upscaler
+# (DX11VideoProcessor.cpp InitializeD3D11VP): video-processor scaling on, and an
+# 8-bit internal texture, which Auto gives 8-bit sources. A forced 10-bit or 16-bit
+# texture format switches the upscaler off for every source.
+_SHADER_VP_KEY = "out.shaderVP"
+_TEXFMT_KEY = "out.texFormat"
+_TEXFMT_AUTO, _TEXFMT_8BIT = 0, 1   # option indices of the Texture format row
+
 # Optical size: the filled ▶ occupies nearly its whole em box, while the outline
 # glyphs beside it (⬡  ✦ ▣ ≡) sit well inside theirs. Drawn at the same point
 # size it reads far larger, so these are set smaller to match.
@@ -193,6 +209,17 @@ INT_SLIDERS = {"hdr.sdrNits", "hdr.maxNits", "hdr.osdBright", "hdr.titlePeak", "
 # unreadable. Same rule as s3_shell.cpp's FmtNum(): whole numbers print bare,
 # everything else is capped at 2 decimals.
 _SLIDER_DECIMALS = 2
+
+
+def _section_title(s: str) -> str:
+    """"TONE MAPPING" -> "Tone Mapping", "POST-FX" -> "Post-FX"; mixed case is kept."""
+    if not s.isupper():
+        return s
+    words = []
+    for w in s.split():
+        head, sep, tail = w.partition("-")
+        words.append(head.capitalize() + sep + tail)
+    return " ".join(words)
 
 
 def _fmt_num(v: float) -> str:
@@ -367,7 +394,9 @@ CURVE_ALL_INI_KEY = "ui.showAllTonemappers"
 
 # The same escape hatch, for rows marked dev=True: hand-edited, never written by the
 # app, never a row of its own. Absent means the internals stay hidden.
-#   ui.showGradeInternals=true   -> reveals the soft-knee trio (and any future dev row)
+#   ui.showGradeInternals=true   -> reveals the soft-knee trio, the OUTPUT tab's renderer
+#                                   plumbing (D3D11, VP formats, deinterlacing, swap
+#                                   effect, …) and any future dev row
 # Hiding is a visibility filter only: the rows still read the INI and still push, so a
 # value set by hand is honoured exactly as if the dial were on screen.
 DEV_INI_KEY = "ui.showGradeInternals"
@@ -936,35 +965,55 @@ def build_rows():
     # ON — including bUseD3D11, which gates the whole DX11 path, and the four
     # VPFmts. Seeding an INI from those wrong defaults would have reconfigured
     # the renderer (D3D11 off, VP formats off, dither off) on first run.
-    add("Use Direct3D 11", TOGGLE, O, "out.useD3D11", "VIDEO PROCESSING", on=True)
+    #
+    # The OUTPUT tab shows only what a user tunes: scaling, Super Resolution, statistics,
+    # the calibration LUT and frame capture. The renderer plumbing below is dev=True —
+    # hidden, but still read from the INI and still pushed, so hiding it changes nothing
+    # the renderer does. ui.showGradeInternals=true brings it back.
+    add("Use Direct3D 11", TOGGLE, O, "out.useD3D11", "VIDEO PROCESSING", on=True, dev=True)
     add("Texture format", CYCLE, O, "out.texFormat", "VIDEO PROCESSING",
-        ["Auto", "8-bit", "10-bit", "16-bit float"], 0, uncheck=False)
-    add("VP NV12", TOGGLE, O, "out.vpNV12", "VIDEO PROCESSING", on=True)
-    add("VP P01x", TOGGLE, O, "out.vpP01x", "VIDEO PROCESSING", on=True)
-    add("VP YUY2", TOGGLE, O, "out.vpYUY2", "VIDEO PROCESSING", on=True)
-    add("VP Other", TOGGLE, O, "out.vpOther", "VIDEO PROCESSING", on=True)
+        ["Auto", "8-bit", "10-bit", "16-bit float"], 0, uncheck=False, dev=True)
+    add("VP NV12", TOGGLE, O, "out.vpNV12", "VIDEO PROCESSING", on=True, dev=True)
+    add("VP P01x", TOGGLE, O, "out.vpP01x", "VIDEO PROCESSING", on=True, dev=True)
+    add("VP YUY2", TOGGLE, O, "out.vpYUY2", "VIDEO PROCESSING", on=True, dev=True)
+    add("VP Other", TOGGLE, O, "out.vpOther", "VIDEO PROCESSING", on=True, dev=True)
     add("Deinterlacing", CYCLE, O, "out.deinterlace", "VIDEO PROCESSING",
-        ["Disable", "Enable", "Hack future frames"], 1, uncheck=False)
-    add("Double frame rate", TOGGLE, O, "out.deintDouble", "VIDEO PROCESSING", on=True)
-    add("Blend deint 4:2:0", TOGGLE, O, "out.deintBlend", "VIDEO PROCESSING")
-    add("Shader VP resize", TOGGLE, O, "out.shaderVP", "VIDEO PROCESSING", on=True)
-    add("Super Resolution", CYCLE, O, "out.superRes", "VIDEO PROCESSING",
-        ["Disable", "SD", "720p", "1080p", "1440p"], 0, uncheck=False)
-    add("RTX Video HDR", TOGGLE, O, "out.rtxVideoHdr", "VIDEO PROCESSING")
+        ["Disable", "Enable", "Hack future frames"], 1, uncheck=False, dev=True)
+    add("Double frame rate", TOGGLE, O, "out.deintDouble", "VIDEO PROCESSING", on=True, dev=True)
+    add("Blend deint 4:2:0", TOGGLE, O, "out.deintBlend", "VIDEO PROCESSING", dev=True)
+    add("Shader VP resize", TOGGLE, O, "out.shaderVP", "VIDEO PROCESSING", on=True, dev=True)
+    # One switch instead of MPCVR's SD/720p/1080p/1440p list. Those options are the
+    # LARGEST source the upscaler engages for, not the output size (the output is
+    # always the video window, i.e. the display), so a 1080p film on a 4K screen
+    # needed "1080p" or above and SD/720p silently did nothing. On = 1440p, the
+    # widest the renderer offers; a 4K source on a 4K display has nothing to upscale.
+    # Turning it on also sets what the renderer requires (see _set).
+    add("Super Resolution", TOGGLE, O, "out.superRes", "VIDEO PROCESSING", on=False)
+    add("RTX Video HDR", TOGGLE, O, "out.rtxVideoHdr", "VIDEO PROCESSING", dev=True)
     add("Chroma upsampling", CYCLE, O, "out.chromaScaling", "VIDEO PROCESSING",
         ["Nearest", "Bilinear", "CatmullRom", "KrigBilateral"], 1, uncheck=False)
     add("Upscaling", CYCLE, O, "out.upscaling", "VIDEO PROCESSING",
         ["Nearest", "Mitchell", "CatmullRom", "Lanczos2", "Lanczos3", "Jinc2"], 2, uncheck=False)
     add("Downscaling", CYCLE, O, "out.downscaling", "VIDEO PROCESSING",
         ["Box", "Bilinear", "Hamming", "Bicubic", "BicubicSharp", "Lanczos"], 2, uncheck=False)
-    add("Interpolate at 50%", TOGGLE, O, "out.interpolate50", "VIDEO PROCESSING", on=True)
-    add("Use dithering", TOGGLE, O, "out.useDither", "VIDEO PROCESSING", on=True)
-    add("Swap effect", CYCLE, O, "out.swapEffect", "OUTPUT", ["Discard", "Flip"], 1, uncheck=False)
-    add("Exclusive fullscreen", TOGGLE, O, "out.exclusiveFS", "OUTPUT")
-    add("Wait for VBlank", TOGGLE, O, "out.vBlank", "OUTPUT")
-    add("Adjust present time", TOGGLE, O, "out.adjustPresent", "OUTPUT", on=True)
-    add("Reinit on display change", TOGGLE, O, "out.reinitDisplay", "OUTPUT")
+    add("Interpolate at 50%", TOGGLE, O, "out.interpolate50", "VIDEO PROCESSING", on=True, dev=True)
+    add("Use dithering", TOGGLE, O, "out.useDither", "VIDEO PROCESSING", on=True, dev=True)
+    add("Swap effect", CYCLE, O, "out.swapEffect", "OUTPUT", ["Discard", "Flip"], 1,
+        uncheck=False, dev=True)
+    add("Exclusive fullscreen", TOGGLE, O, "out.exclusiveFS", "OUTPUT", dev=True)
+    add("Wait for VBlank", TOGGLE, O, "out.vBlank", "OUTPUT", dev=True)
+    add("Adjust present time", TOGGLE, O, "out.adjustPresent", "OUTPUT", on=True, dev=True)
+    add("Reinit on display change", TOGGLE, O, "out.reinitDisplay", "OUTPUT", dev=True)
     add("Show statistics", TOGGLE, O, "out.showStats", "OUTPUT")
+
+    # ── OUTPUT — renderer frame capture ──────────────────────────────────────
+    # Saves what the RENDERER actually drew (IBasicVideo::GetCurrentImage) to a
+    # user-chosen PNG — not a window/desktop capture, so no overlay or
+    # compositing ever enters the file. Key has no engine mapping: it is a
+    # command, not a setting (KEY_MAP skips it on apply/ini). Kept next to Show
+    # statistics so the OUTPUT section is one block, not split around the LUT.
+    add("Save frame as PNG", ACTION, O, "__capFrame", "OUTPUT")
+    r[-1].text = "Save…"      # the ACTION branch draws this CTA, not the label
 
     # ── OUTPUT — display calibration ─────────────────────────────────────────
     # The projector was calibrated with DisplayCAL; the .cube it produced
@@ -978,14 +1027,6 @@ def build_rows():
     # Full 3D   = everything, including the gamut mapping that fades deep colour.
     add("LUT mode", CYCLE, O, _LUT_MODE_KEY, "DISPLAY CALIBRATION",
         _LUT_MODES, 3, uncheck=False)
-
-    # ── OUTPUT — renderer frame capture ──────────────────────────────────────
-    # Saves what the RENDERER actually drew (IBasicVideo::GetCurrentImage) to a
-    # user-chosen PNG — not a window/desktop capture, so no overlay or
-    # compositing ever enters the file. Key has no engine mapping: it is a
-    # command, not a setting (KEY_MAP skips it on apply/ini).
-    add("Save frame as PNG", ACTION, O, "__capFrame", "OUTPUT")
-    r[-1].text = "Save…"      # the ACTION branch draws this CTA, not the label
 
     # Hidden and off: the tray icon belongs to the renderer (out.tray) and nobody asked
     # for it on an HTPC that lives on a TV. The row is dev-hidden rather than deleted so
@@ -1020,6 +1061,10 @@ class S3ShellPanel(QWidget):
     input_selected = pyqtSignal(str)          # the decklink:// URL
     # An "src." action row was clicked (rescan / rename / first-time setup).
     action_requested = pyqtSignal(str)        # the row key
+    # The painted content changed height (a section opened/closed, or the tab changed).
+    # (shift, to_top): shift = how far the clicked header moved, so the chrome can keep
+    # it under the pointer; to_top = a new tab, start at its top.
+    content_changed = pyqtSignal(int, bool)
 
     def __init__(self, rows=None, ini=None, engine=None, parent=None):
         super().__init__(parent)
@@ -1042,7 +1087,12 @@ class S3ShellPanel(QWidget):
         # Read before any layout pass: _rebuild() filters dev rows on it, and a row that
         # is hidden must never be painted on the first frame and removed on the second.
         self.show_internals = self._ini_flag(DEV_INI_KEY)
-        self.collapsed = set()
+        # Accordion state: tab index -> the one open section title. Empty = every
+        # section starts collapsed. _measuring expands everything while __init__
+        # sizes the panel, so the fixed height fits any section being opened.
+        self.open_section = {}
+        self._measuring = False
+        self._single_section = False
         self.mouse = QPoint(-1, -1)  # for hover
         self._layout = []            # [(is_header, text/idx, y, h)]
         self._values = {}            # key -> value (from INI)
@@ -1060,10 +1110,12 @@ class S3ShellPanel(QWidget):
         self.setMouseTracking(True)          # section hover highlight + sliders
         saved = self.group
         max_h = 0
+        self._measuring = True
         for gi in range(len(GROUPS)):
             self.group = gi
             self._rebuild()
             max_h = max(max_h, self._content_h)
+        self._measuring = False
         self.group = saved
         self._rebuild()
         self.setFixedHeight(max_h + PAD)
@@ -1079,7 +1131,10 @@ class S3ShellPanel(QWidget):
             r.text = v.strip()
             return
         try:
-            if r.type == TOGGLE:
+            if r.key == _SUPERRES_KEY:
+                s = v.strip().lower()
+                r.on = s in ("true", "on") or (s.lstrip("-").isdigit() and int(s) != 0)
+            elif r.type == TOGGLE:
                 r.on = v.strip() in ("1", "true", "True", "on")
             elif r.type == CYCLE:
                 if r.key == CURVE_KEY:
@@ -1147,6 +1202,8 @@ class S3ShellPanel(QWidget):
         field stores `51`, not `51.0`, and a float stores `0.4`, not
         `0.39999999999999997`. The file is meant to be read and hand-edited.
         """
+        if r.key == _SUPERRES_KEY:
+            return _SUPERRES_ON if r.on else 0
         if r.type == TOGGLE:
             return r.on
         if r.type == FILE:
@@ -1221,13 +1278,55 @@ class S3ShellPanel(QWidget):
                     self._apply_engine(other)
             return
 
+        if r.key == _SUPERRES_KEY and r.on:
+            self._enable_superres(r)
+            return
+
         self._apply_engine(r)
+
+    def _enable_superres(self, r) -> None:
+        """Turn Super Resolution on together with what the renderer needs for it.
+
+        Both prerequisites live on hidden rows, so a user could never see why the
+        switch did nothing. Only settings that block the upscaler are changed: an
+        8-bit texture format already allows it and is left alone. Turning the
+        switch off restores nothing, because both values are the defaults.
+        All three go in one apply so the renderer re-initialises once."""
+        changed = {}
+        vp = self._row(_SHADER_VP_KEY)
+        if vp is not None and not vp.on:
+            vp.on = True
+            changed[vp.key] = vp
+        tex = self._row(_TEXFMT_KEY)
+        if tex is not None and tex.opt not in (_TEXFMT_AUTO, _TEXFMT_8BIT):
+            tex.opt = _TEXFMT_AUTO
+            changed[tex.key] = tex
+        changed[r.key] = r
+        if self.ini:
+            for row in changed.values():
+                if row is not r:
+                    self.ini.set(row.key, self._ini_value(row))
+        log("super resolution on; also set: "
+            + (", ".join(k for k in changed if k != r.key) or "nothing"))
+        if self.engine is None:
+            return
+        groups = {}
+        for row in changed.values():
+            grp, name = KEY_MAP[row.key]
+            groups.setdefault(grp, {})[name] = self._engine_value(row)
+        log(f"ui-corr: apply {groups}")
+        try:
+            self.engine.apply_settings(groups)
+        except Exception:
+            log_exc("apply_engine super resolution")
 
     # ------------------------------------------------------------- engine bridge
     def _engine_value(self, r):
         """The value to send for row r. The INI stores the panel-native value
         (index into r.options); enums where that index is not MPCVR's value are
         translated here (VALUE_MAP, IVideoRenderer.h)."""
+        if r.key == _SUPERRES_KEY:
+            return _SUPERRES_ON if r.on else 0
         if r.type == TOGGLE:
             return r.on
         if r.type == CYCLE:
@@ -1413,6 +1512,7 @@ class S3ShellPanel(QWidget):
         if self.group in blocked:
             self.group = SRC
             self._rebuild()
+            self.content_changed.emit(0, True)
         self.update()
 
     def set_source_state(self, ports, active_url, labels=None):
@@ -1531,30 +1631,45 @@ class S3ShellPanel(QWidget):
         y = LIST_TOP + 60
         prev = None
         skip = False
-        for r in rows:
-            # Curve-conditional rows: a dial that only matters for some curves
-            # (highlight-neutral = Hable-only, soft-knee = Hable+GT7, …) hides
-            # itself otherwise. Checked BEFORE the section header so a section
-            # whose rows are all hidden emits no header.
-            if r.curves is not None and active not in r.curves:
-                continue
-            # Machinery, not taste: hidden unless ui.showGradeInternals is set by hand.
-            # Visibility only — the row still holds its INI value and still pushes.
-            if r.dev and not self.show_internals:
-                continue
+        visible = [r for r in rows
+                   if not (r.curves is not None and active not in r.curves)
+                   and not (r.dev and not self.show_internals)]
+        sections = {r.section for r in visible if r.section is not None}
+        # A tab with a single section (SOURCE's input list, SYSTEM) is always open:
+        # collapsing it would only add a click, and on SOURCE it would hide the
+        # DeckLink ports.
+        self._single_section = len(sections) == 1
+        for r in visible:
+            # Curve-conditional rows (soft-knee = Hable+GT7, …) and dev rows were
+            # dropped above, BEFORE the section header, so a section whose rows are
+            # all hidden emits no header. dev rows are visibility only: they still
+            # hold their INI value and still push.
             # A section header is emitted only for rows that HAVE a section
             # (shell: `r->section && wcscmp(...)` — "Enable ML grade" has none).
             if r.section is not None and r.section != prev:
                 self._layout.append((True, r.section, -1, y, SECT_H))
                 y += SECT_H
                 prev = r.section
-                skip = r.section in self.collapsed
+                skip = self._is_collapsed(r.section)
             if skip:
                 continue
             self._layout.append((False, r.label, self.rows.index(r), y, ROW_H))
             y += ROW_H
         self._content_h = y
         # (height is fixed once in __init__ — never resize here)
+
+    def _is_collapsed(self, section) -> bool:
+        """Accordion: at most one section per tab is open, and none is at first.
+        Sections are keyed by title, so a title used twice in a tab (HDR's TONE
+        MAPPING, split around CURVE SETTINGS) opens and closes as one."""
+        if self._measuring or self._single_section:
+            return False
+        return self.open_section.get(self.group) != section
+
+    def content_height(self) -> int:
+        """Height actually painted for the current tab; the panel's own height is
+        fixed at the tallest tab fully expanded, so the chrome scrolls by this."""
+        return self._content_h + PAD
 
     def sizeHint(self):
         return self.minimumSizeHint()
@@ -1584,11 +1699,24 @@ class S3ShellPanel(QWidget):
         # (no rail divider — the panel reads as one surface)
 
         # content
+        # The line under the tab lists the sections actually on screen. It used to be a
+        # fixed list copied from the shell (GROUPS[g][3]) that named sections Unplugged
+        # does not have ("Peak Detection", "Contrast Recovery"), so users went looking
+        # for them. Built from _layout it can only name what is there, and it follows
+        # the tone curve, which shows and hides CURVE SETTINGS.
         x0 = RAIL_W
         p.setFont(F_CAT); p.setPen(MID)
-        p.drawText(QRect(x0 + PAD, LIST_TOP + 8, RIGHT_W - PAD, CAT_H),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   "  ·  ".join(GROUPS[self.group][3]))
+        names = []
+        for is_header, text, _idx, _y, _h in self._layout:
+            if is_header:
+                name = _section_title(text)
+                if name not in names:
+                    names.append(name)
+        cat_rect = QRect(x0 + PAD, LIST_TOP + 8, RIGHT_W - RAIL_W - 2 * PAD, CAT_H)
+        p.drawText(cat_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   QFontMetrics(p.font()).elidedText("  ·  ".join(names),
+                                                     Qt.TextElideMode.ElideRight,
+                                                     cat_rect.width()))
 
         # (no rule above the first row)
 
@@ -1602,7 +1730,7 @@ class S3ShellPanel(QWidget):
         # Content area starts at x0 = RAIL_W; chevron + title + separator line
         # (mirrors the shell's PaintRight loop exactly).
         x0 = RAIL_W
-        collapsed = title in self.collapsed
+        collapsed = self._is_collapsed(title)
         hot = (x0 + PAD <= self.mouse.x() and y <= self.mouse.y() < y + SECT_H)
         # Subgroup header — the same treatment as the status panel's _SEC_STYLE
         # (accent orange, bold, tracked). Chevron tracks the title so the header
@@ -1796,13 +1924,27 @@ class S3ShellPanel(QWidget):
                 log(f"switch rail group -> {i}")
                 self.group = i
                 self._rebuild(); self.update()
+                self.content_changed.emit(0, True)
             return
         is_header, idx, text = self._hit(y)
         log(f"hit header={is_header} idx={idx}")
         if is_header:
-            (self.collapsed.remove(text) if text in self.collapsed
-             else self.collapsed.add(text))
+            if self._single_section:
+                return
+            # Which occurrence of this title was clicked (HDR has TONE MAPPING twice),
+            # so its new position can be found after the accordion reflows.
+            heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
+            nth = next((k for k, hy in enumerate(heads) if hy <= y < hy + SECT_H), 0)
+            before = heads[nth] if nth < len(heads) else 0
+            opening = self.open_section.get(self.group) != text
+            self.open_section[self.group] = text if opening else None
+            log(f"section {text!r} -> {'open' if opening else 'closed'}")
             self._rebuild(); self.update()
+            heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
+            after = heads[nth] if nth < len(heads) else before
+            # Closing the section above moves this header up; the chrome scrolls by
+            # the same amount so the header stays under the pointer.
+            self.content_changed.emit(after - before, False)
             return
         if idx < 0:
             return

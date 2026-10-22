@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
         _audit.info("app: window close event — shutting down")
         self._hotkey.stop()
         self._dl_monitor.stop()
+        self._media_library.shutdown()
         # Close the window NOW so the X responds instantly. The engine teardown
         # below is bounded (~1–10 s in s3_shutdown); running it with the window
         # already hidden turns the old "X frozen for seconds then task-kill" into
@@ -435,9 +436,15 @@ class MainWindow(QMainWindow):
         self._background.setGeometry(0, 0, w, h)
         self._viewport.setGeometry(0, 0, w, h)      # fixed: video never moves
 
-        ml_w = min(900, max(600, int(w * 0.62)))
-        ml_h = min(640, max(440, int(h * 0.72)))
-        self._media_library.setGeometry((w - ml_w)//2, (h - ml_h)//2, ml_w, ml_h)
+        # The poster grid wants the room: as wide as a TV row allows and the full
+        # height between the top status strip and the bottom control bar.
+        ml_w = min(1800, max(600, int(w * 0.86)))
+        ml_top = sb_h + 16
+        ml_bottom = h - cb_h - cb_m - BOTTOM_SAFE_PX - 16
+        ml_h = max(440, ml_bottom - ml_top)
+        if ml_top + ml_h > h:
+            ml_top = max(0, (h - ml_h) // 2)
+        self._media_library.setGeometry((w - ml_w)//2, ml_top, ml_w, ml_h)
 
         if not getattr(self, "_chrome_adopted", False):
             self._status_bar.setGeometry(0, 0, w, sb_h)

@@ -66,3 +66,6 @@ ipch
 # refuses to build without it and prints the official URL, so an absent file is a
 # loud error rather than a runtime-less payload.
 /distrib/redist/
+
+# OMDb API key shipped with the app - never committed
+src/unplugged-ui/src/mpvprocessor/media/_omdb_key.py

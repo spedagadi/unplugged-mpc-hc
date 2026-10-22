@@ -130,7 +130,8 @@ a = Analysis(
     runtime_hooks=['pyi_rth_dlls.py'],
     # 'mpv' is excluded on purpose: the bundle has no libmpv and no ffmpeg, and
     # nothing on the S3 path calls MpvEngine.initialise. See the module docstring.
-    excludes=['mpv', 'tkinter', 'unittest', 'email', 'http', 'xml', 'pydoc'],
+    # 'email' and 'http' stay IN: urllib.request (media library posters, OMDb) needs both.
+    excludes=['mpv', 'tkinter', 'unittest', 'xml', 'pydoc'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

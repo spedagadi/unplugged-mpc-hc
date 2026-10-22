@@ -51,7 +51,7 @@
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
 // The renderer's staging folder, named for this product since the filter became

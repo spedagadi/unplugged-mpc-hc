@@ -77,6 +77,9 @@ class SettingsWindow(QDialog):
             # rail and the bars. The panel keeps its fixed height, so the chrome
             # clips it and this window scrolls it (see wheelEvent).
             self._settings = settings_panel
+            sig = getattr(settings_panel, "content_changed", None)
+            if sig is not None:
+                sig.connect(self._on_settings_content_changed)
         self._bars = [b for b in bars if b is not None]
         self._top = top
         self._rail_left = rail_left
@@ -154,12 +157,24 @@ class SettingsWindow(QDialog):
                                 max(300, right_start - left_end), bottom_h - 12)
 
     def _clamp_scroll(self, y: int) -> int:
-        """Keep the settings panel inside its rail (direct-host mode only)."""
+        """Keep the settings panel inside its rail (direct-host mode only).
+
+        Scrolls by what the current tab actually paints, not the panel's fixed
+        height (sized for the tallest tab fully open), so a short or collapsed tab
+        cannot be scrolled into blank space."""
         if self._settings is None:
             return 0
         visible = self.rect().height() - self._bottom_h - self._rails_top()
-        overflow = self._settings.height() - visible
+        content_h = getattr(self._settings, "content_height", None)
+        height = content_h() if callable(content_h) else self._settings.height()
+        overflow = height - visible
         return max(0, min(max(0, overflow), y))
+
+    def _on_settings_content_changed(self, shift: int, to_top: bool) -> None:
+        if _USE_SCROLL_AREA or self._settings is None:
+            return
+        self._settings_scroll_y = 0 if to_top else self._settings_scroll_y + shift
+        self._layout_children()
 
     def wheelEvent(self, event) -> None:       # noqa: N802
         """The panel is taller than the rail and has no scroll container of its
