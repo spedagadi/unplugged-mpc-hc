@@ -623,6 +623,11 @@ class _Sync:
                 values + (pkey,))
             self.updated += 1
             self.pending += 1
+            if row[8] and not art:
+                # The poster file went (deleted by the user): look it up again on
+                # this sync instead of waiting out the not-found retry delay.
+                self.con.execute("UPDATE items SET meta_checked = NULL WHERE pkey = ?",
+                                 (pkey,))
         self.con.commit()
         self.emit_changed()
 
@@ -825,6 +830,14 @@ class _Sync:
         for tkey, art, art_key in self.con.execute(
                 "SELECT tkey, art, art_key FROM shows_online WHERE COALESCE(art, '') <> ''"
                 ).fetchall():
+            if not (art_key or "").endswith(_ONLINE_TAG):
+                # Saved as <show>\poster.jpg: if that file was deleted, fetch it
+                # again rather than keep painting the cached copy.
+                src = (art_key or "").rsplit("|", 2)[0]
+                if not src or not os.path.exists(src):
+                    self.con.execute("DELETE FROM shows_online WHERE tkey = ?", (tkey,))
+                    self.con.commit()
+                    continue
             if os.path.exists(art):
                 n += self.con.execute(
                     "UPDATE items SET show_art = ?, show_art_key = ? WHERE kind = 'episode' "
