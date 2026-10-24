@@ -67,6 +67,9 @@ a = Analysis(
         (str(_SRC / 'mpvprocessor'), 'mpvprocessor'),
         # one tree, so mpvprocessor/assets.py resolves under _internal/assets/
         (str(_ASSETS), 'assets'),
+        # the settings guide is the help card's text store (ui/help_store.py) —
+        # it must travel with the app or the card has nothing to show
+        (str(_REPO / 'docs' / 'settings-guide.md'), 'docs'),
     ],
     hiddenimports=[
         'mpvprocessor',

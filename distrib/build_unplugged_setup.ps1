@@ -43,6 +43,28 @@ if (-not (Test-Path $appExe) -or
     ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe)).ProductVersion -ne $uiVersion.Matches[0].Groups[1].Value) {
     throw 'Packaged Unplugged.exe version does not match the UI source. Rebuild unplugged.spec before packaging.'
 }
+# The settings guide carries a version stamp its readers rely on, and its
+# "Current limitations" list is only true for one build: a stale stamp makes it
+# a wrong document, not an old one. Enforced like the versions above -- the
+# bump is a human step, with a re-read of the limitations while they are in there.
+$ver = $uiVersion.Matches[0].Groups[1].Value
+$guide = Join-Path $here '..\docs\settings-guide.md'
+$guideVersion = if (Test-Path $guide) {
+    Select-String -Path $guide -Pattern '^For \*\*Unplugged ([0-9.]+)\*\*'
+} else { $null }
+if (-not $guideVersion -or $guideVersion.Matches[0].Groups[1].Value -ne $ver) {
+    throw ('docs\settings-guide.md must carry the stamp "For **Unplugged ' + $ver +
+           '**" -- bump the header and re-read its Current limitations section before packaging.')
+}
+# The guide is also the help card's text store: every row the default rail can
+# show must resolve to guide text, or a user standing on a field gets a blank
+# card. --check applies the panel's own visibility rule (dev rows and curves
+# outside the house list are excluded exactly as the rail excludes them).
+$py = if ($env:UNPLUGGED_PYTHON) { $env:UNPLUGGED_PYTHON } else { 'C:\code\unplugged\app\.venv\Scripts\python.exe' }
+if (-not (Test-Path $py)) { throw "Help coverage check needs Python: set UNPLUGGED_PYTHON to the app venv's python.exe." }
+$helpCheck = [IO.Path]::GetFullPath((Join-Path $here '..\src\unplugged-ui\src\mpvprocessor\ui\help_store.py'))
+& $py $helpCheck --check
+if ($LASTEXITCODE -ne 0) { throw 'docs\settings-guide.md does not cover every visible row (missing list above).' }
 if ($SkipFilters) {
     Write-Host "NOTE: -SkipFilters -- LAV and DeckLinkSource.ax are OMITTED; only the GPL gate is waived." -ForegroundColor Yellow
     Write-Host "      The Blackmagic gates still apply: the app bundles SDK-derived code" -ForegroundColor Yellow
