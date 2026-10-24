@@ -84,6 +84,7 @@ const GUID g_iidDeckLink           = {0xc418fbdd, 0x0587, 0x48ed, {0x8f, 0xe5, 0
 // 'v210' = 0x30313276; the previous 0x38303176 spelling was 'v108'.)
 static const GUID MEDIASUBTYPE_v210_GUID = {0x30313276, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
 static const GUID MEDIASUBTYPE_P010_GUID = {0x30313050, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};  // DeckLinkSource direct output
+static const GUID MEDIASUBTYPE_P210_GUID = {0x30313250, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};  // DeckLinkSource 4:2:2 experiment (DECKLINK_P210=1)
 
 CComPtr<IPin> FindPin(const CComPtr<IBaseFilter>& filter, PIN_DIRECTION dir)
 {
@@ -1805,6 +1806,7 @@ void MpcPlayer::CaptureSourceMediaType(IPin* srcPin)
     else if (mt.subtype == MEDIASUBTYPE_v210_GUID) { videoStreamInfo_.pixelFormat = 1; videoStreamInfo_.subtypeName = L"v210"; }
     else if (mt.subtype == MEDIASUBTYPE_NV12) { videoStreamInfo_.pixelFormat = 2; videoStreamInfo_.subtypeName = L"NV12"; }
     else if (mt.subtype == MEDIASUBTYPE_P010_GUID) { videoStreamInfo_.pixelFormat = 4; videoStreamInfo_.subtypeName = L"P010"; }
+    else if (mt.subtype == MEDIASUBTYPE_P210_GUID) { videoStreamInfo_.pixelFormat = 5; videoStreamInfo_.subtypeName = L"P210"; }
     else {
         videoStreamInfo_.pixelFormat = 3;
         videoStreamInfo_.subtypeName = L"(raw)";
@@ -1894,6 +1896,7 @@ void MpcPlayer::ApplyMediaColorToRenderer(IPin* decOut)
     }
     if (ics == ICS_Auto) {
         const bool isP010 = (videoStreamInfo_.pixelFormat == 3 ||
+                             videoStreamInfo_.pixelFormat == 5 ||   // P210: same 10-bit assumption
                              videoStreamInfo_.subtypeName.find(L"010") != std::wstring::npos ||
                              videoStreamInfo_.subtypeName.find(L"P010") != std::wstring::npos);
         if (isP010) {

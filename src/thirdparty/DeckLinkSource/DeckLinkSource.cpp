@@ -40,10 +40,11 @@ constexpr bool kInCallbackDriverQueries = false;
 #include <dxva2api.h>
 
 // MEDIASUBTYPE_v210 ('v210' FOURCC media subtype) is not in the SDK's uuids.h.
-// Same GUID value MPCVR's MediaTypes.h accepts. The OUTPUT is P010 (see below):
-// MPCVR's allocator sizes raw v210 samples at ~2.5 B/px but the SDK's row-padded
-// layout needs ~2.67 B/px, so raw v210 can never fit an MPCVR sample — the
-// filter converts to P010 (10-bit 4:2:0, LAVVideo's production HDR path).
+// Same GUID value MPCVR's MediaTypes.h accepts. The INPUT is v210 (10-bit 4:2:2,
+// row-padded); raw v210 can't be delivered because MPCVR's allocator sizes it at
+// ~2.5 B/px while the padded layout needs ~2.67 B/px. So the filter converts to
+// P210 (10-bit 4:2:2, chroma intact — the default) or P010 (10-bit 4:2:0) with
+// DECKLINK_P210=0. See UseP210().
 const GUID MEDIASUBTYPE_v210 = {
     0x30313276, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 }
 };
@@ -51,6 +52,38 @@ const GUID MEDIASUBTYPE_v210 = {
 // SDK defines it as data in strmiids.lib but does NOT declare it in a header —
 // declare the extern and let the linker supply the value.
 EXTERN_C const GUID MEDIASUBTYPE_P010;
+
+// MEDIASUBTYPE_P210 ('P210' FOURCC; 10-bit 4:2:2 planar). The SDK's strmiids.lib
+// defines it (unlike v210), so declare it extern and link the canonical value —
+// a local definition collides at link time.
+EXTERN_C const GUID MEDIASUBTYPE_P210;
+
+// 10-bit 4:2:2 (P210) is the default ingest: the wire format from the card IS
+// v210 4:2:2, and P210 keeps that chroma intact instead of halving it before
+// the renderer ever sees it. It was P010-by-default while the renderer's
+// tone-map/grade stack ran only behind the D3D11 hardware VP (which has no
+// 4:2:2 10-bit input format); the renderer grew the tone map on its shader-
+// conversion path on 2026-10-24 (UpdateConvertColorShader defers the HDR
+// transfer to the correction pass; UpdateCorrectionShader builds the full
+// converter when the VP is absent), verified live with every dial moving.
+// DECKLINK_P210=0 reverts to P010 (4:2:0, hardware-VP path) with no rebuild.
+static bool UseP210()
+{
+    static const bool on = []() {
+        char b[8] = {};
+        const DWORD n = GetEnvironmentVariableA("DECKLINK_P210", b, (DWORD)sizeof(b));
+        return !(n > 0 && n < sizeof(b) && b[0] == '0');
+    }();
+    return on;
+}
+
+// Output frame size — the single source of truth shared by the media type, the
+// allocator and the copy guard, because the renderer trusts our biSizeImage.
+// P010 = 3 B/px (Y + half-res UV); P210 = 4 B/px (Y + full-row UV).
+static LONG OutSize(LONG w, LONG h)
+{
+    return (LONG)((LONGLONG)w * h * (UseP210() ? 4 : 3));
+}
 
 // Extended-color enum values absent from the SDK's dxva2api.h enums. Their
 // numeric twins in MF (MFVideoPrimaries_BT2020=9, MFVideoTransFunc_2084=15,
@@ -309,6 +342,39 @@ static void V210ToP010(const BYTE* src, LONG srcStride,
     }
 }
 
+// v210 -> P210 (10-bit 4:2:2 → 10-bit 4:2:2). Keeps every chroma sample, so
+// unlike the P010 path there is no vertical averaging — simpler and strictly
+// higher chroma bandwidth. Output: Y plane (w*h uint16) then interleaved UV
+// (w*h uint16 = full chroma row per luma row), 4 B/px.
+static LONG P210Size(LONG w, LONG h) { return (LONG)((LONGLONG)w * h * 4); }
+
+static void V210ToP210(const BYTE* src, LONG srcStride,
+    BYTE* dst, LONG dstBytes, LONG w, LONG h)
+{
+    const uint32_t packsPerLine = (uint32_t)w / 6;
+    if (dstBytes < P210Size(w, h)) return;
+
+    uint16_t* const dstY  = reinterpret_cast<uint16_t*>(dst);
+    uint16_t* const dstUV = dstY + (ptrdiff_t)w * h;
+
+    for (LONG line = 0; line < h; ++line) {
+        const uint32_t* s = reinterpret_cast<const uint32_t*>(src + (ptrdiff_t)line * srcStride);
+        uint16_t* y  = dstY  + (ptrdiff_t)line * w;
+        uint16_t* uv = dstUV + (ptrdiff_t)line * w;   // one full chroma row per line
+        for (uint32_t p = 0; p < packsPerLine; ++p) {
+            uint32_t val; uint16_t u, v, y1, y2;
+            val = *s++; u=(uint16_t)(val&0x3FF); y1=(uint16_t)((val>>10)&0x3FF); v=(uint16_t)((val>>20)&0x3FF);
+            *y++=(uint16_t)(y1<<6); *uv++=(uint16_t)(u<<6); *uv++=(uint16_t)(v<<6);
+            val = *s++; y1=(uint16_t)(val&0x3FF); u=(uint16_t)((val>>10)&0x3FF); y2=(uint16_t)((val>>20)&0x3FF);
+            *y++=(uint16_t)(y1<<6); *y++=(uint16_t)(y2<<6); *uv++=(uint16_t)(u<<6);
+            val = *s++; v=(uint16_t)(val&0x3FF); y1=(uint16_t)((val>>10)&0x3FF); u=(uint16_t)((val>>20)&0x3FF);
+            *y++=(uint16_t)(y1<<6); *uv++=(uint16_t)(v<<6); *uv++=(uint16_t)(u<<6);
+            val = *s++; y1=(uint16_t)(val&0x3FF); v=(uint16_t)((val>>10)&0x3FF); y2=(uint16_t)((val>>20)&0x3FF);
+            *y++=(uint16_t)(y1<<6); *y++=(uint16_t)(y2<<6); *uv++=(uint16_t)(v<<6);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Media type — P010 in VIDEOINFOHEADER2 (protocol parameters from the state).
 // DataFrame: Y plane (DWORD-padded) then interleaved UV — LAVVideo's P010
@@ -334,8 +400,9 @@ static void FillP010MediaType(CMediaType* pmt, const CaptureState& s)
     bi.biHeight = h;
     bi.biPlanes = 1;
     bi.biBitCount = 16;                 // 10-bit data in 16-bit words
-    bi.biCompression = MAKEFOURCC('P', '0', '1', '0');
-    bi.biSizeImage = (DWORD)P010Size(w, h);
+    bi.biCompression = UseP210() ? MAKEFOURCC('P', '2', '1', '0')
+                                 : MAKEFOURCC('P', '0', '1', '0');
+    bi.biSizeImage = (DWORD)OutSize(w, h);
 
     // Colorimetry (defaults; HDR events overwrite colorspace/eotf in state).
     // MPCVR reads dwControlFlags as a whole DXVA2_ExtendedFormat and only
@@ -353,7 +420,7 @@ static void FillP010MediaType(CMediaType* pmt, const CaptureState& s)
     vih->dwControlFlags = ef.value | AMCONTROL_USED | AMCONTROL_COLORINFO_PRESENT;
 
     pmt->SetType(&MEDIATYPE_Video);
-    pmt->SetSubtype(&MEDIASUBTYPE_P010);
+    pmt->SetSubtype(UseP210() ? &MEDIASUBTYPE_P210 : &MEDIASUBTYPE_P010);
     pmt->SetFormatType(&FORMAT_VideoInfo2);
     pmt->SetTemporalCompression(FALSE);
     pmt->SetSampleSize(vih->bmiHeader.biSizeImage);
@@ -364,8 +431,9 @@ static void FillP010MediaType(CMediaType* pmt, const CaptureState& s)
 // ---------------------------------------------------------------------------
 HRESULT CDeckLinkOutputPin::CheckMediaType(const CMediaType* pmt)
 {
+    const GUID& want = UseP210() ? MEDIASUBTYPE_P210 : MEDIASUBTYPE_P010;
     return (pmt->majortype == MEDIATYPE_Video &&
-            pmt->subtype == MEDIASUBTYPE_P010) ? S_OK : E_INVALIDARG;
+            pmt->subtype == want) ? S_OK : E_INVALIDARG;
 }
 
 HRESULT CDeckLinkOutputPin::SetMediaType(const CMediaType* pmt)
@@ -416,7 +484,7 @@ HRESULT CDeckLinkOutputPin::DecideBufferSize(IMemAllocator* pAlloc, ALLOCATOR_PR
     const LONG w = m_connWidth  > 0 ? m_connWidth  : (m_st.width  > 0 ? m_st.width  : 1920);
     const LONG h = m_connHeight > 0 ? m_connHeight : (m_st.height > 0 ? m_st.height : 1080);
     props->cBuffers = 3;                       // small: latency over slack
-    props->cbBuffer = P010Size(w, h);
+    props->cbBuffer = OutSize(w, h);
     props->cbAlign = 1;
     props->cbPrefix = 0;
     m_st.Unlock();
@@ -1380,14 +1448,17 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
             void* src = nullptr;
             videoFrame->GetBytes(&src);
             if (src) {
-                // Convert v210 (10-bit 4:2:2, SDK row-padded stride) → P010
-                // (10-bit 4:2:0) into the sample. sampleBytes is the rendered
-                // budget — the converter clamps to it without overrunning.
+                // Convert v210 (10-bit 4:2:2, SDK row-padded stride) → the chosen
+                // output: P010 (4:2:0, default) or P210 (4:2:2, DECKLINK_P210=1).
+                // sampleBytes is the rendered budget — the converter clamps to it
+                // without overrunning.
                 if (m_st->delivered < 3)
                     StateLog(m_st,
-                        "[DECKLINK][src] convert v210->P010: dst=%p src=%p stride=%d %dx%d need=%d sampleBytes=%d",
-                        dst, src, stride, realW, realH, P010Size(realW, realH), sampleBytes);
-                V210ToP010((const BYTE*)src, stride, dst, sampleBytes, realW, realH);
+                        "[DECKLINK][src] convert v210->%s: dst=%p src=%p stride=%d %dx%d need=%d sampleBytes=%d",
+                        UseP210() ? "P210" : "P010",
+                        dst, src, stride, realW, realH, OutSize(realW, realH), sampleBytes);
+                if (UseP210()) V210ToP210((const BYTE*)src, stride, dst, sampleBytes, realW, realH);
+                else           V210ToP010((const BYTE*)src, stride, dst, sampleBytes, realW, realH);
             } else {
                 StateLog(m_st, "[DECKLINK][src] GetBytes returned NULL src");
             }
