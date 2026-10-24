@@ -1590,6 +1590,7 @@ void PaintLeft(HDC dc, int w, int h) {
             case 1: pf = L"YCbCr 4:2:2 \u00b7 10-bit"; break;  // v210
             case 2: pf = L"YCbCr 4:2:0 \u00b7 8-bit"; break;   // NV12
             case 4: pf = L"YCbCr 4:2:0 \u00b7 10-bit"; break;  // P010
+            case 5: pf = L"YCbCr 4:2:2 \u00b7 10-bit"; break;  // P210 (DECKLINK_P210 experiment)
             default: pf = vs.subtypeName.empty() ? L"raw" : vs.subtypeName.c_str(); break;
             }
             PaintRow(dc, y, 110, w, L"Pixel fmt", pf, COL_TEXT); y += kRowH;
