@@ -2509,8 +2509,12 @@ class MainWindow(QMainWindow):
             if fresh_vf != self._detected_vf:
                 self._detected_vf = fresh_vf
                 self._engine.set_property("vf", fresh_vf or "")
+        # The URL acquisition actually started with (carries the port, e.g.
+        # decklink://DeckLink Quad HDMI Recorder@1) — never the config default,
+        # which can name a different/stale device and showed up "not populated
+        # properly" whenever the two disagreed. Same precedence as _start_vp.
         self._status_panel.update_capture_info(
-            self._profile.input.device,
+            self._app_config.active_input_url or self._profile.input.device,
             signal_info,
             self._detected_vf or "",
         )
