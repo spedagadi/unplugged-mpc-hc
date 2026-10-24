@@ -825,7 +825,7 @@ def build_rows():
     add("GT7 debug view", CYCLE, H, "hdr.gt7Dbg", "CURVE SETTINGS",
         ["Off", "Chroma scale", "Fade ratio", "Knee crossing", "Ceiling crossing"], 0,
         uncheck=False, curves=CURVES_GT7BOTH)
-    add("GT7 shoulder reach (low = more headroom)", SLIDER, H, "hdr.gtAlpha", "CURVE SETTINGS",
+    add("GT7 shoulder reach", SLIDER, H, "hdr.gtAlpha", "CURVE SETTINGS",
         min_=0.02, max_=0.90, val=0.25, default=0.25, uncheck=False,
         curves=CURVES_GT7BOTH)
     # GT7 DESATURATION — chroma follows the compression, not the gamut.
@@ -1065,6 +1065,12 @@ class S3ShellPanel(QWidget):
     # (shift, to_top): shift = how far the clicked header moved, so the chrome can keep
     # it under the pointer; to_top = a new tab, start at its top.
     content_changed = pyqtSignal(int, bool)
+    # Keyboard/hover focus landed on a ROW (the Row object) or off rows (None —
+    # a section header, another tab, an empty click). The help card is the consumer.
+    row_focused = pyqtSignal(object)
+    # A row's value changed by ANY path (drag, wheel, key, reset) — the card
+    # follows the live value; the INI write has already happened in _set.
+    row_updated = pyqtSignal(object)
 
     def __init__(self, rows=None, ini=None, engine=None, parent=None):
         super().__init__(parent)
@@ -1108,6 +1114,10 @@ class S3ShellPanel(QWidget):
         self._configure_curve_row()
         self.setFixedWidth(RIGHT_W)
         self.setMouseTracking(True)          # section hover highlight + sliders
+        # Position in _layout of the keyboard/hover-focused item, or -1. Kept as
+        # a LAYOUT position (not a row) because section headers are navigable too.
+        self._focus = -1
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         saved = self.group
         max_h = 0
         self._measuring = True
@@ -1260,6 +1270,7 @@ class S3ShellPanel(QWidget):
     def _set(self, r):
         if self.ini:
             self.ini.set(r.key, self._ini_value(r))
+        self.row_updated.emit(r)     # the help card follows every value path
 
         # s3_shell.cpp: HDR passthrough and tone-curve passthrough are mutually
         # exclusive — turning either ON switches the other OFF. Both configs are
@@ -1627,6 +1638,10 @@ class S3ShellPanel(QWidget):
     def _rebuild(self):
         active = self._active_curve()
         rows = [r for r in self.rows if r.group == self.group]
+        # Remember what held focus across the re-lay — curve changes hide rows,
+        # the accordion reflows, tabs wrap — so focus never points at a stale index.
+        anchor = (self._layout[self._focus][:3]
+                  if 0 <= self._focus < len(self._layout) else None)
         self._layout = []
         y = LIST_TOP + 60
         prev = None
@@ -1656,6 +1671,12 @@ class S3ShellPanel(QWidget):
             self._layout.append((False, r.label, self.rows.index(r), y, ROW_H))
             y += ROW_H
         self._content_h = y
+        if anchor is not None:
+            self._focus = next((i for i, item in enumerate(self._layout)
+                                if item[:3] == anchor), -1)
+        else:
+            self._focus = -1
+        self.row_focused.emit(self._row_at_focus())
         # (height is fixed once in __init__ — never resize here)
 
     def _is_collapsed(self, section) -> bool:
@@ -1720,15 +1741,19 @@ class S3ShellPanel(QWidget):
 
         # (no rule above the first row)
 
-        for is_header, text, idx, y, h in self._layout:
+        for pos, (is_header, text, idx, y, h) in enumerate(self._layout):
             if is_header:
-                self._paint_section(p, text, y)
+                self._paint_section(p, text, y, focused=(pos == self._focus))
             else:
-                self._paint_row(p, self.rows[idx], y)
+                self._paint_row(p, self.rows[idx], y, focused=(pos == self._focus))
 
-    def _paint_section(self, p, title, y):
+    def _paint_section(self, p, title, y, focused=False):
         # Content area starts at x0 = RAIL_W; chevron + title + separator line
         # (mirrors the shell's PaintRight loop exactly).
+        if focused:
+            fr = QRect(RAIL_W + 2, y, RIGHT_W - RAIL_W - 4, SECT_H)
+            p.fillRect(fr, HOT)
+            p.setPen(QPen(ACCENT2, 1)); p.drawRect(fr)
         x0 = RAIL_W
         collapsed = self._is_collapsed(title)
         hot = (x0 + PAD <= self.mouse.x() and y <= self.mouse.y() < y + SECT_H)
@@ -1774,7 +1799,11 @@ class S3ShellPanel(QWidget):
         p.drawText(badge, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                    r.text or "")
 
-    def _paint_row(self, p, r, y):
+    def _paint_row(self, p, r, y, focused=False):
+        if focused:
+            fr = QRect(RAIL_W + 2, y, RIGHT_W - RAIL_W - 4, ROW_H)
+            p.fillRect(fr, HOT)
+            p.setPen(QPen(ACCENT2, 1)); p.drawRect(fr)
         if r.type == PORT:
             self._paint_port_row(p, r, y)
             return
@@ -1903,52 +1932,108 @@ class S3ShellPanel(QWidget):
                 return is_header, idx, text
         return None, -1, None
 
-    def mousePressEvent(self, e):
-        try:
-            self._press(e)
-        except Exception:
-            log_exc("mousePressEvent")
+    def _hit_pos(self, y) -> int:
+        """The _layout POSITION under y (headers included), or -1."""
+        for i, (_h, _t, _idx, yy, hh) in enumerate(self._layout):
+            if yy <= y < yy + hh:
+                return i
+        return -1
 
-    def _press(self, e):
-        x, y = int(e.position().x()), int(e.position().y())
-        log(f"press ({x},{y})")
-        # icon rail
-        if x < RAIL_W:
-            i = (y - LIST_TOP) // ICON_STEP
-            if 0 <= i < len(GROUPS):
-                if i in self.blocked_groups:
-                    # Logged, because "I clicked it and nothing happened" is the report
-                    # this guard exists to make answerable.
-                    log(f"ignored switch to {GROUPS[i][1]}: blocked by app mode")
-                    return
-                log(f"switch rail group -> {i}")
-                self.group = i
-                self._rebuild(); self.update()
-                self.content_changed.emit(0, True)
+    def _set_focus(self, pos) -> None:
+        if not (0 <= pos < len(self._layout)):
+            pos = -1
+        if pos == self._focus:
             return
-        is_header, idx, text = self._hit(y)
-        log(f"hit header={is_header} idx={idx}")
-        if is_header:
-            if self._single_section:
-                return
-            # Which occurrence of this title was clicked (HDR has TONE MAPPING twice),
-            # so its new position can be found after the accordion reflows.
-            heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
+        self._focus = pos
+        self.update()
+        self.row_focused.emit(self._row_at_focus())
+
+    def _row_at_focus(self):
+        if 0 <= self._focus < len(self._layout):
+            is_header, _t, idx, _y, _h = self._layout[self._focus]
+            if not is_header:
+                return self.rows[idx]
+        return None
+
+    def _move_focus(self, d: int) -> None:
+        n = len(self._layout)
+        if not n:
+            return
+        if self._focus < 0:
+            self._set_focus(0 if d > 0 else n - 1)
+            return
+        nxt = self._focus + d
+        if 0 <= nxt < n:
+            self._set_focus(nxt)
+            return
+        # Walking off the end of the list is the tab switch — ↑ is unavailable
+        # (it is the global chrome hotkey), so ↓/PgUp must carry the whole nav.
+        if self._switch_group(1 if nxt >= n else -1):
+            self._set_focus(0 if d > 0 else max(0, len(self._layout) - 1))
+
+    def _switch_group(self, d: int) -> bool:
+        for _ in range(len(GROUPS)):
+            self.group = (self.group + d) % len(GROUPS)
+            if self.group not in self.blocked_groups:
+                break
+        else:
+            return False
+        self._rebuild(); self.update()
+        self.content_changed.emit(0, True)
+        return True
+
+    def _do_section_toggle(self, text, y=None) -> None:
+        heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
+        if not heads:
+            return
+        nth = 0
+        if y is not None:
             nth = next((k for k, hy in enumerate(heads) if hy <= y < hy + SECT_H), 0)
-            before = heads[nth] if nth < len(heads) else 0
-            opening = self.open_section.get(self.group) != text
-            self.open_section[self.group] = text if opening else None
-            log(f"section {text!r} -> {'open' if opening else 'closed'}")
-            self._rebuild(); self.update()
-            heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
-            after = heads[nth] if nth < len(heads) else before
-            # Closing the section above moves this header up; the chrome scrolls by
-            # the same amount so the header stays under the pointer.
-            self.content_changed.emit(after - before, False)
+        nth = min(nth, len(heads) - 1)
+        before = heads[nth]
+        opening = self.open_section.get(self.group) != text
+        self.open_section[self.group] = text if opening else None
+        log(f"section {text!r} -> {'open' if opening else 'closed'}")
+        self._rebuild(); self.update()
+        heads = [hy for ih, t, _i, hy, _h in self._layout if ih and t == text]
+        after = heads[min(nth, len(heads) - 1)] if heads else before
+        # Closing the section above moves this header up; the chrome scrolls by
+        # the same amount so the header stays under the pointer.
+        self.content_changed.emit(after - before, False)
+
+    def _step_focus(self, d: int) -> None:
+        """← / →: step the focused control, or open/close a focused header."""
+        if not (0 <= self._focus < len(self._layout)):
             return
-        if idx < 0:
+        is_header, text, idx, _y, _h = self._layout[self._focus]
+        if is_header:
+            if (d > 0 and self.open_section.get(self.group) != text) or \
+               (d < 0 and self.open_section.get(self.group) == text):
+                self._do_section_toggle(text)
             return
         r = self.rows[idx]
+        if r.type == SLIDER:
+            self._nudge(r, d)
+        elif r.type == CYCLE and r.options:
+            r.opt = (r.opt + (1 if d > 0 else -1)) % len(r.options)
+            self._set(r)
+            log(f"key cycle {r.key} -> {r.opt}")
+            if r.key == "hdr.toneMapCurve":
+                self._rebuild()
+            self.update()
+
+    def _activate_focus(self) -> None:
+        if not (0 <= self._focus < len(self._layout)):
+            return
+        is_header, text, idx, _y, _h = self._layout[self._focus]
+        if is_header:
+            self._do_section_toggle(text)
+        else:
+            self._activate(self.rows[idx])
+
+    def _activate(self, r) -> None:
+        """The ENTER semantics of every row type — shared by the mouse press
+        and the keyboard so a remote click does exactly what a real click does."""
         if r.type == TOGGLE:
             r.on = not r.on; self._set(r)
             log(f"toggle {r.key} -> {r.on}")
@@ -1976,6 +2061,117 @@ class S3ShellPanel(QWidget):
             else:
                 log(f"ui-corr: action row -> {r.key}")
                 self.action_requested.emit(r.key)
+
+    def _nudge(self, r, d: int) -> None:
+        """One increment (1 on int rows, 0.01 on float rows) — the wheel's step,
+        now shared with the keyboard."""
+        step = 1.0 if r.key in INT_SLIDERS else 10 ** -_SLIDER_DECIMALS
+        val = r.val + d * step
+        r.val = float(int(round(val))) if r.key in INT_SLIDERS \
+            else round(val, _SLIDER_DECIMALS)
+        if r.key in INT_SLIDERS:
+            r.val = float(min(int(r.max), max(int(r.min), int(r.val))))
+        else:
+            r.val = float(min(r.max, max(r.min, r.val)))
+        log(f"nudge {r.key} -> {r.val:g}")
+        self._set(r)
+        self.update()
+
+    # ── remote / keyboard navigation ────────────────────────────────────────
+    # NOTE: Key_Up is deliberately absent — it is the GLOBAL chrome hotkey
+    # (GlobalHotkey -> toggle) and never reaches this panel as a key event.
+    # Previous row is PageUp or Shift+Tab. Escape is left to the modal
+    # SettingsWindow (QDialog), which is exactly "leave chrome".
+    def keyPressEvent(self, e):
+        k = e.key()
+        shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if k == Qt.Key.Key_Tab:
+            k = Qt.Key.Key_Backtab if shift else Qt.Key.Key_Down
+        if k in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+            self._move_focus(1)
+        elif k in (Qt.Key.Key_Backtab, Qt.Key.Key_PageUp):
+            self._move_focus(-1)
+        elif k == Qt.Key.Key_Right:
+            self._step_focus(1)
+        elif k == Qt.Key.Key_Left:
+            self._step_focus(-1)
+        elif k in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._activate_focus()
+        else:
+            super().keyPressEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Chrome up (Up on the remote) lands the user ON a field at once: focus
+        # the first ROW (skipping a leading section header, whose card would
+        # otherwise stay hidden) so the help card answers the first question
+        # unasked.
+        if self._focus < 0 and self._layout:
+            pos = next((i for i, item in enumerate(self._layout) if not item[0]), 0)
+            self._set_focus(pos)
+
+    def focus_row_rect(self):
+        """The focused item's rect in PANEL coordinates (headers included).
+        The chrome centres the help card on it and scrolls to keep it visible."""
+        if 0 <= self._focus < len(self._layout):
+            _h, _t, _i, y, hh = self._layout[self._focus]
+            return QRect(RAIL_W + 2, y, RIGHT_W - RAIL_W - 4, hh)
+        return None
+
+    def tab_name(self, r) -> str:
+        return GROUPS[r.group][1]
+
+    def value_text(self, r) -> str:
+        """The row's current value as the user reads it — what the help card
+        shows in its strip mode beside the label."""
+        if r.type == TOGGLE:
+            return "ON" if r.on else "OFF"
+        if r.type == CYCLE:
+            return r.options[r.opt] if r.options else "—"
+        if r.type == SLIDER:
+            return _fmt_num(r.val)
+        if r.type == FILE:
+            return Path(r.text).name if r.text else "not set"
+        return r.text or "—"
+
+    def mousePressEvent(self, e):
+        try:
+            self._press(e)
+        except Exception:
+            log_exc("mousePressEvent")
+
+    def _press(self, e):
+        x, y = int(e.position().x()), int(e.position().y())
+        log(f"press ({x},{y})")
+        # icon rail
+        if x < RAIL_W:
+            i = (y - LIST_TOP) // ICON_STEP
+            if 0 <= i < len(GROUPS):
+                if i in self.blocked_groups:
+                    # Logged, because "I clicked it and nothing happened" is the report
+                    # this guard exists to make answerable.
+                    log(f"ignored switch to {GROUPS[i][1]}: blocked by app mode")
+                    return
+                log(f"switch rail group -> {i}")
+                self.group = i
+                self._rebuild(); self.update()
+                self.content_changed.emit(0, True)
+            return
+        self._set_focus(self._hit_pos(y))   # a click is also a focus move
+        is_header, idx, text = self._hit(y)
+        log(f"hit header={is_header} idx={idx}")
+        if is_header:
+            if self._single_section:
+                return
+            # Which occurrence of this title was clicked (HDR has TONE MAPPING twice),
+            # so its new position can be found after the accordion reflows.
+            self._do_section_toggle(text, y=y)
+            return
+        if idx < 0:
+            return
+        r = self.rows[idx]
+        if r.type != SLIDER:
+            self._activate(r)
         else:
             # Only a press ON the track starts a drag. A press on the row's label is
             # not a value change — it used to be, and it set the slider to whatever
@@ -2068,15 +2264,8 @@ class S3ShellPanel(QWidget):
         is_header, idx, _text = self._hit(y)
         r = None if is_header or not (0 <= idx < len(self.rows)) else self.rows[idx]
         if r is not None and r.type == SLIDER and dy and self._on_slider_track(r, x):
-            step = 1.0 if r.key in INT_SLIDERS else 10 ** -_SLIDER_DECIMALS
-            val = r.val + (step if dy > 0 else -step)
-            r.val = float(int(round(val))) if r.key in INT_SLIDERS \
-                else round(min(r.max, max(r.min, val)), _SLIDER_DECIMALS)
-            if r.key in INT_SLIDERS:
-                r.val = float(min(int(r.max), max(int(r.min), int(r.val))))
-            log(f"wheel {r.key} -> {r.val:g}")
-            self._set(r)
-            self.update()
+            self._set_focus(self._hit_pos(y))
+            self._nudge(r, 1 if dy > 0 else -1)
             event.accept()
             return
         event.ignore()
@@ -2123,6 +2312,12 @@ class S3ShellPanel(QWidget):
     def mouseMoveEvent(self, e):
         try:
             self.mouse = e.position().toPoint()
+            # Hover drives the SAME focus model as the keys, so the help card
+            # works on desktop and couch without two paths.
+            if self._active_slider is None:
+                pos = self._hit_pos(int(e.position().y()))
+                if pos >= 0 and not self._layout[pos][0] and pos != self._focus:
+                    self._set_focus(pos)
             # Drag ONLY the slider whose track was pressed, and only while the button
             # is still down. Choosing the row by y alone (as this did) meant a drag
             # that merely passed over a slider row rewrote that setting from the

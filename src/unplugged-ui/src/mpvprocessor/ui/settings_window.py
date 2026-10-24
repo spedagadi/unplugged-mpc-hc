@@ -23,12 +23,19 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QScrollArea
 
+from .help_card import HelpCard, CARD_W
+from .help_store import HelpStore
+
 # DIAGNOSTIC A/B (2026-09-15): content-area clicks do not register while the
 # rail/tab bar and every other region of this window do. The settings rail is
 # the only region hosted inside a container — a QScrollArea — while the status
 # rail and both bars are placed directly as children. Flip this to True to
 # restore the scroll-area hosting and re-test.
 _USE_SCROLL_AREA = False
+
+# Vertical slack kept clear above/below the focused row when the chrome
+# auto-scrolls to it — scrolling on every row would feel twitchy from a couch.
+ROW_SLACK = 48
 
 # Extra clearance above the screen's bottom edge for the transport/control bars.
 # Was 28, added when the two-row playback bar looked half-clipped on an overscanned
@@ -50,6 +57,7 @@ class SettingsWindow(QDialog):
         self.setStyleSheet("QDialog { background: transparent; }")
         self._status = None
         self._settings = None
+        self._card = None
         self._settings_scroll_y = 0     # only used when _USE_SCROLL_AREA is off
         self._bars: list = []
         self._rail_left = 300
@@ -80,6 +88,21 @@ class SettingsWindow(QDialog):
             sig = getattr(settings_panel, "content_changed", None)
             if sig is not None:
                 sig.connect(self._on_settings_content_changed)
+        # Context help card, pinned left of the settings rail. It follows the
+        # panel's focus model (remote keys or hover — one mechanism), so the
+        # description of the field the user is ON appears without moving when
+        # the settings column scrolls (a bottom-anchored strip vanished off
+        # screen on deep tabs — the placement this design replaces).
+        if getattr(settings_panel, "row_focused", None) is not None:
+            store = HelpStore()
+            if store.path is not None:
+                self._card = HelpCard(store, settings_panel, parent=self)
+                settings_panel.row_focused.connect(self._card.show_for)
+                settings_panel.row_updated.connect(self._card.note_value)
+            # Second: after the card has re-filled and resized itself, scroll
+            # the rail to keep the focused row on screen and re-place the card
+            # beside it. Order matters — the card sizes before this positions.
+            settings_panel.row_focused.connect(self._on_row_focused)
         self._bars = [b for b in bars if b is not None]
         self._top = top
         self._rail_left = rail_left
@@ -123,6 +146,26 @@ class SettingsWindow(QDialog):
                                        rails_top - self._settings_scroll_y,
                                        self._rail_right, h - bottom_h - rails_top)
             self._settings.show()
+        # The card sits NEXT TO and CENTRED ON the focused row: it travels with
+        # the focus. The clamp keeps it inside the visible rail area — on the
+        # first and last rows it glides along the edge instead of leaving the
+        # screen (the bottom-anchored placement the user reported could do
+        # nothing about; centring means it is never further than half a card
+        # away from the control it describes).
+        if self._card is not None and self._card.isVisibleTo(self):
+            ch = self._card.height() or self._card.sizeHint().height()
+            rect = None
+            if hasattr(self._settings, "focus_row_rect"):
+                rect = self._settings.focus_row_rect()
+            if rect is not None:
+                y = (rails_top - self._settings_scroll_y
+                     + rect.center().y() - ch // 2)
+            else:
+                y = rails_top + 44
+            top, bottom = rails_top + 8, h - bottom_h - ch - 8
+            self._card.move(max(10, w - self._rail_right - CARD_W - 12),
+                            max(top, min(bottom, y)))
+            self._card.raise_()
         # Bottom strip: the CONTROL bar spans full width — its internal stretch
         # pins [Restart · Stop · VP/Media] left and [Preset · Manage · gear]
         # right, exactly mirroring the rails. The play/seek bar sits CENTRED in
@@ -170,6 +213,29 @@ class SettingsWindow(QDialog):
         overflow = height - visible
         return max(0, min(max(0, overflow), y))
 
+    def _on_row_focused(self, _row) -> None:
+        """Remote/hover focus moved: keep the row itself visible (a card
+        centred on an off-screen row describes a control the user can't see),
+        then let _layout_children re-place the card beside it."""
+        if self._settings is None or not hasattr(self._settings, "focus_row_rect"):
+            return
+        rect = self._settings.focus_row_rect()
+        if rect is None:
+            return
+        rails_top = self._rails_top()
+        visible_bottom = self.rect().height() - self._bottom_h
+        screen_top = rails_top - self._settings_scroll_y + rect.top()
+        screen_bottom = rails_top - self._settings_scroll_y + rect.bottom()
+        scroll = self._settings_scroll_y
+        # One row of slack at each edge so walking the list feels smooth, not
+        # twitchy — the view only moves when the row would actually leave it.
+        if screen_bottom > visible_bottom - ROW_SLACK:
+            scroll += screen_bottom - (visible_bottom - ROW_SLACK)
+        elif screen_top < rails_top + ROW_SLACK:
+            scroll -= (rails_top + ROW_SLACK) - screen_top
+        self._settings_scroll_y = self._clamp_scroll(scroll)
+        self._layout_children()
+
     def _on_settings_content_changed(self, shift: int, to_top: bool) -> None:
         if _USE_SCROLL_AREA or self._settings is None:
             return
@@ -194,3 +260,10 @@ class SettingsWindow(QDialog):
     def resizeEvent(self, event) -> None:      # noqa: N802
         super().resizeEvent(event)
         self._layout_children()
+
+    def showEvent(self, event) -> None:        # noqa: N802
+        super().showEvent(event)
+        # Chrome up = remote keys belong to the rail: it navigates, and the
+        # focus event shows the first row's card immediately.
+        if self._settings is not None:
+            self._settings.setFocus(Qt.FocusReason.OtherFocusReason)
