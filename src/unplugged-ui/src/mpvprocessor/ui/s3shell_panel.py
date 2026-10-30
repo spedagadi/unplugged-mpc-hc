@@ -2078,10 +2078,10 @@ class S3ShellPanel(QWidget):
         self.update()
 
     # ── remote / keyboard navigation ────────────────────────────────────────
-    # NOTE: Key_Up is deliberately absent — it is the GLOBAL chrome hotkey
-    # (GlobalHotkey -> toggle) and never reaches this panel as a key event.
-    # Previous row is PageUp or Shift+Tab. Escape is left to the modal
-    # SettingsWindow (QDialog), which is exactly "leave chrome".
+    # Up navigates like PageUp/Shift+Tab: the global chrome hotkey was retired
+    # 2026-10-24 (it swallowed Up from every app on the machine), so the key
+    # reaches this panel natively whenever the rail holds focus. Escape is
+    # left to the modal SettingsWindow (QDialog), which is exactly "leave chrome".
     def keyPressEvent(self, e):
         k = e.key()
         shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -2089,7 +2089,7 @@ class S3ShellPanel(QWidget):
             k = Qt.Key.Key_Backtab if shift else Qt.Key.Key_Down
         if k in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
             self._move_focus(1)
-        elif k in (Qt.Key.Key_Backtab, Qt.Key.Key_PageUp):
+        elif k in (Qt.Key.Key_Backtab, Qt.Key.Key_PageUp, Qt.Key.Key_Up):
             self._move_focus(-1)
         elif k == Qt.Key.Key_Right:
             self._step_focus(1)

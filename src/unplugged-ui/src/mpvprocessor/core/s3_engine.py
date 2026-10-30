@@ -251,6 +251,14 @@ class S3Engine(QObject):
             pos = int(seconds * 1e7)
             self._lib.s3_cmd(json.dumps({"a": "seek", "pos": pos}).encode("utf-8"))
 
+    def resize_video(self) -> int:
+        """Re-place the renderer window into the viewport's current rect.
+        Required after every viewport resize (video-yields-space): a native
+        child window never follows its parent's size by itself."""
+        if not self._lib:
+            return -1
+        return int(self._lib.s3_cmd(b'{"a":"resize"}'))
+
     # P2 settings protocol: apply "grp.name=value" pairs (semicolon-separated),
     # e.g. {"hdr": {"sdrNits": 204}, "ml": {"gamma": 1.1}} -> "hdr.sdrNits=204;..."
     def apply_settings(self, groups: dict) -> None:

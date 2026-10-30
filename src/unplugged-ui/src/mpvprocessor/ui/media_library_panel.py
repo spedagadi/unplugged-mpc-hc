@@ -484,6 +484,11 @@ class MediaLibraryPanel(QWidget):
         self._lib.sync()
 
     # ── public API used by MainWindow ────────────────────────────────────────
+    def grid_widget(self):
+        """The tile list itself — MainWindow hands keyboard focus away from it
+        when playback starts (a hidden grid must not eat the playback keys)."""
+        return self._grid
+
     def show_message(self, text: str) -> None:
         self._info_lbl.setText(text)
 

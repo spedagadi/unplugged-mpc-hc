@@ -9,7 +9,12 @@ Modes:
   WATCH   — mpv playing, overlays hidden
   EDIT    — mpv playing, settings + status panels visible
 
-Up arrow — toggles WATCH ↔ EDIT from any window (global hotkey).
+Input model (2026-10-25): the app consumes keys ONLY while it is the
+foreground window — ordinary Qt keyPressEvent plus a foreground-scoped
+GetAsyncKeyState observer (the renderer's native child makes Qt's own key
+dispatch unreliable over playing video; the observer never misses). The
+retired global Up hotkey / Alt+F4 hook / playback hook were system-wide
+interceptors; nothing here touches another app's input.
 """
 
 from __future__ import annotations
@@ -36,7 +41,8 @@ from ..core.calibrate import (CalibrationSession, CALIBRATE_VIDEO, CALIBRATE_CSV
 
 from .background_widget import BackgroundWidget
 from .mpv_viewport import MpvViewport
-from .settings_window import SettingsWindow, BOTTOM_SAFE_PX
+from .video_window import VideoWindow
+from .settings_window import BOTTOM_SAFE_PX   # SettingsWindow retired 2026-10-25
 from .status_bar import StatusBar
 from .control_bar import ControlBar
 from .media_library_panel import MediaLibraryPanel
@@ -50,7 +56,6 @@ from .splash_screen import SplashScreen
 from .input_selector import InputSelector
 from .first_run_dialog import FirstRunDialog
 from ..core.s3_engine import S3Engine as MpvEngine, EngineState   # engine layer swapped to s3engine.dll
-from ..core.hotkey import GlobalHotkey
 from ..core.signal_monitor import SignalMonitor, SignalState
 from ..config.model import AppConfig, MpvProfile
 from ..config.serializer import build_mpv_args, build_media_player_args
@@ -122,6 +127,46 @@ class AppMode(Enum):
     EDIT  = auto()
 
 
+# Playback keys observed by the foreground poller (VK -> Qt key). The poller
+# is an OBSERVER: GetAsyncKeyState's low bit reports "pressed since last
+# query", so even a 30 ms tap is caught at 10 Hz polling. It swallows nothing
+# and acts only while our window is foreground with the chrome rails down.
+_POLL_KEYS = (
+    (0x26, Qt.Key.Key_Up), (0x20, Qt.Key.Key_Space),
+    (0x25, Qt.Key.Key_Left), (0x27, Qt.Key.Key_Right),
+    (0x4D, Qt.Key.Key_M), (0x1B, Qt.Key.Key_Escape),
+    (0xBB, Qt.Key.Key_Plus), (0xBD, Qt.Key.Key_Minus),
+)
+_POLL_QT_KEYS = frozenset(qk for _vk, qk in _POLL_KEYS)
+
+
+def _force_foreground(hwnd: int) -> None:
+    """Probe-proven (tools/input_probe/layered_probe.py, 2026-10-25): Alt-tap
+    + AttachThreadInput + SetForegroundWindow takes foreground from cold,
+    where a bare SetForegroundWindow loses to the foreground lock. Used when
+    the modal chrome hides — Windows otherwise hands the keyboard to a shell
+    window ('Search') and every later key dies (measured 5 builds running)."""
+    try:
+        u = ctypes.windll.user32
+        if u.GetForegroundWindow() == hwnd:
+            return
+        u.keybd_event(0x12, 0, 0, 0)          # VK_MENU down
+        u.keybd_event(0x12, 0, 0x0002, 0)     # VK_MENU up
+        fg = u.GetForegroundWindow()
+        ftid = u.GetWindowThreadProcessId(fg, None)
+        otid = ctypes.windll.kernel32.GetCurrentThreadId()
+        if ftid and ftid != otid:
+            u.AttachThreadInput(otid, ftid, True)
+            u.SetForegroundWindow(hwnd)
+            u.BringWindowToTop(hwnd)
+            u.AttachThreadInput(otid, ftid, False)
+        else:
+            u.SetForegroundWindow(hwnd)
+            u.BringWindowToTop(hwnd)
+    except Exception:   # noqa: BLE001 - reclaim must never break playback
+        pass
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -161,6 +206,17 @@ class MainWindow(QMainWindow):
         self._mouse_hide_timer.setInterval(3000)
         self._mouse_hide_timer.timeout.connect(self._hide_cursor)
         self._cursor_hidden = False
+        # Cursor + playback-key OBSERVER (2026-10-24/25): the renderer's mouse
+        # drain into Qt proved unreliable and Qt's key dispatch over the
+        # native video child delivers ~1 press in 12 (focus widget None), so
+        # this polls the OS 10x/s — foreground-scoped, consumes nothing.
+        # Movement restores the cursor and raises the chrome on the bottom
+        # edge; the key map arrives through _on_poll_key.
+        self._last_cur_pt = None
+        self._cursor_poll = QTimer(self)
+        self._cursor_poll.setInterval(100)
+        self._cursor_poll.timeout.connect(self._poll_cursor)
+        self._cursor_poll.start()
         # Set on PLAYING in media mode, cleared on a new play and on exit. The
         # engine reports "idle" both at startup and after a title ends, and the two
         # are indistinguishable in the state string alone -- so "we were playing and
@@ -202,7 +258,11 @@ class MainWindow(QMainWindow):
         self._apply_wallpaper()
         self._populate_profiles()
         self._status_panel.seed_configured_output(self._profile)
-        self.showFullScreen()
+        # Geometry-driven fullscreen, NOT the Qt fullscreen window state: the
+        # state would fight _set_window_column() when EDIT re-geometries this
+        # window into the right-hand rail column (2026-10-25 two-window model).
+        self._set_window_fullscreen()
+        self.show()
 
     # ------------------------------------------------------------------
     # Window
@@ -228,6 +288,9 @@ class MainWindow(QMainWindow):
         self._background   = BackgroundWidget(_DEFAULT_WALLPAPER, container)
         self._viewport     = MpvViewport(container)
         self._viewport.hide()
+        # The renderer's DirectX child lives in this SEPARATE top-level window
+        # (videoprocessor model), never inside the Qt window — see video_window.
+        self._video_win = VideoWindow()
 
         self._media_library = MediaLibraryPanel(self._app_config, container)
         self._media_library.hide()
@@ -275,6 +338,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._relayout()
 
+    _EDGE_BAND_PX = 40    # bottom-edge depth that raises the chrome
+
     def eventFilter(self, obj, event) -> bool:
         # WHY AN APPLICATION-LEVEL FILTER AND NOT mouseMoveEvent.
         #
@@ -295,7 +360,69 @@ class MainWindow(QMainWindow):
                  QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress,
                  QEvent.Type.Wheel):
             self._on_user_input()
+        # Double-click on the video toggles the rails (VLC-class), WATCH only.
+        # (The video window is NOACTIVATE + behind us in WATCH, so its clicks
+        # never reach Qt; the double-click that matters arrives via the
+        # observer's own forwarding below or from our own surface.)
+        if (t == QEvent.Type.MouseButtonDblClick
+                and self._mode == AppMode.WATCH):
+            QTimer.singleShot(0, self._toggle_edit_mode)
         return super().eventFilter(obj, event)
+
+    def _poll_cursor(self) -> None:
+        """Foreground-scoped observer — see creation site.
+
+        The key bits are read (and thereby CLEARED) on EVERY tick regardless
+        of mode/foreground. GetAsyncKeyState's low bit means "pressed since
+        last query"; if we only queried while in WATCH, a press made during
+        EDIT survived as a stale bit and re-fired the instant we returned to
+        WATCH — one physical Up then toggled twice (EDIT->WATCH->EDIT in
+        ~200 ms), which presented as "the chrome never stays up"
+        (measured 2026-10-25 12:15:01). Reading unconditionally fixes it.
+        """
+        try:
+            user32 = ctypes.windll.user32
+            pressed = []
+            for vk, qk in _POLL_KEYS:
+                if user32.GetAsyncKeyState(vk) & 0x0001:
+                    pressed.append(qk)
+            shift = bool(user32.GetAsyncKeyState(0x10) & 0x8000)
+            if self._mode != AppMode.WATCH:
+                return                       # bits consumed; Qt owns keys here
+            if user32.GetForegroundWindow() != int(self.winId()):
+                return                       # another app owns the desktop
+            pt = ctypes.wintypes.POINT()
+            if not user32.GetCursorPos(ctypes.byref(pt)):
+                return
+            cur = (pt.x, pt.y)
+            moved = self._last_cur_pt is not None and cur != self._last_cur_pt
+            self._last_cur_pt = cur
+            if moved:
+                self._on_user_input()
+                if self._app_config.app_mode == "media_player":
+                    bottom_global = self.mapToGlobal(self.rect().bottomLeft())
+                    if pt.y >= bottom_global.y() - self._EDGE_BAND_PX:
+                        QTimer.singleShot(0, self._toggle_edit_mode)
+            for qk in pressed:
+                _audit.info("pollkey: %s", qk.name)
+                QTimer.singleShot(
+                    0, lambda qk=qk, sh=shift: self._on_poll_key(qk, sh))
+        except Exception:   # noqa: BLE001 - observer must never break play
+            pass
+
+    def _poll_owns_keys(self) -> bool:
+        """True while the poller handles playback keys (WATCH, chrome down);
+        the window-level handler then stands down so a press applies once."""
+        return self._mode == AppMode.WATCH
+
+    def _on_poll_key(self, key, shift: bool) -> None:
+        if self._mode == AppMode.EDIT:
+            return                       # rails up: Qt focus owns the keys
+        if key == Qt.Key.Key_Escape:
+            self._escape_ladder()
+            return
+        if self._engine.is_playing():
+            self._play_key(key, shift)
 
     def _on_user_input(self) -> None:
         self._show_cursor()
@@ -320,14 +447,19 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
+        try:
+            kn = Qt.Key(key).name
+        except ValueError:
+            kn = hex(key)
+        _audit.info("key: press %s (mode=%s)", kn, self._mode.name)
 
         # ── Settings open/close ───────────────────────────────────────
         if key == Qt.Key.Key_Escape:
-            if self._right_panel.isVisible():
-                self._toggle_edit_mode()
+            if not self._poll_owns_keys():
+                self._escape_ladder()
             return
         if key == Qt.Key.Key_F1:
-            self._toggle_edit_mode()
+            QTimer.singleShot(0, self._toggle_edit_mode)
             return
         if key == Qt.Key.Key_F2:
             self._on_app_mode_changed("video_processor")
@@ -344,34 +476,74 @@ class MainWindow(QMainWindow):
         settings_open = self._right_panel.isVisible()
 
         if playing and not settings_open:
-            if key == Qt.Key.Key_Space:
-                self._engine.set_property("pause",
-                    not self._engine.get_property("pause", False))
-                return
-            if key == Qt.Key.Key_Left:
-                pos = self._engine.get_property("time-pos", 0) or 0
-                self._engine.seek(max(0.0, float(pos) - 30.0))
-                return
-            if key == Qt.Key.Key_Right:
-                pos = self._engine.get_property("time-pos", 0) or 0
-                dur = self._engine.get_property("duration", 0) or 0
-                if dur:
-                    self._engine.seek(min(float(dur), float(pos) + 30.0))
-                return
-            if key == Qt.Key.Key_Up:
-                vol = min(130, int(self._engine.get_property("volume", 100) or 100) + 5)
-                self._engine.set_property("volume", vol)
-                return
-            if key == Qt.Key.Key_Down:
-                vol = max(0, int(self._engine.get_property("volume", 100) or 100) - 5)
-                self._engine.set_property("volume", vol)
-                return
-            if key == Qt.Key.Key_M:
-                self._engine.set_property("mute",
-                    not self._engine.get_property("mute", False))
-                return
+            if not (self._poll_owns_keys() and key in _POLL_QT_KEYS):
+                if self._play_key(key, bool(
+                        event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+                    return
 
         super().keyPressEvent(event)
+
+    def _play_key(self, key, shift: bool = False) -> bool:
+        """The window-level playback map — shared by Qt key events and the
+        foreground poller. Up raises the chrome (deferred one event-loop
+        cycle: showing a MODAL window synchronously inside key dispatch
+        leaves it invisible over the video — measured 3x; the queued context
+        is the one that works)."""
+        if key == Qt.Key.Key_Space:
+            self._engine.set_property("pause",
+                not self._engine.get_property("pause", False))
+            return True
+        if key == Qt.Key.Key_Left:
+            pos = self._engine.get_property("time-pos", 0) or 0
+            self._engine.seek(max(0.0, float(pos) - 30.0))
+            self._toast("⏪ -30 s")
+            return True
+        if key == Qt.Key.Key_Right:
+            pos = self._engine.get_property("time-pos", 0) or 0
+            dur = self._engine.get_property("duration", 0) or 0
+            if dur:
+                self._engine.seek(min(float(dur), float(pos) + 30.0))
+                self._toast("+30 s ⏩")
+            return True
+        if key == Qt.Key.Key_Up:
+            QTimer.singleShot(0, self._toggle_edit_mode)
+            return True
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            vol = min(130, int(self._engine.get_property("volume", 100) or 100) + 5)
+            self._engine.set_property("volume", vol)
+            return True
+        if key in (Qt.Key.Key_Minus, Qt.Key.Key_Down):
+            vol = max(0, int(self._engine.get_property("volume", 100) or 100) - 5)
+            self._engine.set_property("volume", vol)
+            return True
+        if key == Qt.Key.Key_M:
+            self._engine.set_property("mute",
+                not self._engine.get_property("mute", False))
+            return True
+        return False
+
+    def _toast(self, text: str, ms: int = 2200) -> None:
+        """Transient top-of-window notice; reuses the warning toast widget."""
+        if getattr(self, "_warning_toast", None) is None:
+            self._warning_toast = WarningToast(self)
+        self._warning_toast.show_message(text, ms)
+
+    def _escape_ladder(self) -> None:
+        """ESC steps out one layer at a time: chrome → library → quit.
+
+        Field feedback (v1.2.0): with ESC bound only to the settings panel a
+        couch user had no keyboard path out of the app at all.
+        """
+        if self._mode == AppMode.EDIT:
+            self._set_mode(AppMode.WATCH if self._engine.is_playing()
+                           else AppMode.IDLE)
+            return
+        if self._app_config.app_mode == "media_player" and self._engine.is_playing():
+            self._engine.pause(True)
+            self._media_library.show()
+            self._media_library.raise_()
+            return
+        self.close()
 
     def mousePressEvent(self, event) -> None:
         if self._right_panel.isVisible():
@@ -396,7 +568,6 @@ class MainWindow(QMainWindow):
         else:
             _audit.info("app: automatic exit (title finished) — no confirmation by design")
         _audit.info("app: window close event — shutting down")
-        self._hotkey.stop()
         self._dl_monitor.stop()
         self._media_library.shutdown()
         # Close the window NOW so the X responds instantly. The engine teardown
@@ -434,7 +605,11 @@ class MainWindow(QMainWindow):
         sp_h  = h - panel_top - pb_h - cb_h - cb_m - BOTTOM_SAFE_PX - 4
 
         self._background.setGeometry(0, 0, w, h)
-        self._viewport.setGeometry(0, 0, w, h)      # fixed: video never moves
+        # The video is a SEPARATE top-level window now (video_window.py); this
+        # window lays out only its own Qt children. In EDIT this window IS the
+        # right-hand column (geometry set by _set_mode), so w/h are the
+        # column's and the same formulas place status-left / rail-right /
+        # bars-bottom inside it.
 
         # The poster grid wants the room: as wide as a TV row allows and the full
         # height between the top status strip and the bottom control bar.
@@ -446,38 +621,29 @@ class MainWindow(QMainWindow):
             ml_top = max(0, (h - ml_h) // 2)
         self._media_library.setGeometry((w - ml_w)//2, ml_top, ml_w, ml_h)
 
-        if not getattr(self, "_chrome_adopted", False):
-            self._status_bar.setGeometry(0, 0, w, sb_h)
-        if not getattr(self, "_chrome_adopted", False):
-            # Until the chrome window exists these live here; afterwards their
-            # geometry belongs to that window (positioning them here would move
-            # them inside it).
-            # BOTTOM_SAFE_PX: on an overscanned display the flush-at-the-edge placement put
-            # the volume slider and the seek bar half off the visible panel.
-            self._control_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX,
-                                           w - cb_m*2, cb_h)
-            self._playback_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX - pb_h - 4,
-                                            w - cb_m*2, pb_h)
-            pw = min(_SETTINGS_WIDTH, w)
-            sw = min(_STATUS_WIDTH, w - pw - 4)
-            self._status_panel.setGeometry(0, panel_top, sw, sp_h)
+        self._status_bar.setGeometry(0, 0, w, sb_h)
+        # BOTTOM_SAFE_PX: on an overscanned display the flush-at-the-edge placement put
+        # the volume slider and the seek bar half off the visible panel.
+        self._control_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX,
+                                       w - cb_m*2, cb_h)
+        self._playback_bar.setGeometry(cb_m, h - cb_h - cb_m - BOTTOM_SAFE_PX - pb_h - 4,
+                                       w - cb_m*2, pb_h)
+        pw = min(_SETTINGS_WIDTH, w)
+        sw = min(_STATUS_WIDTH, max(0, w - pw - 4))
+        self._status_panel.setGeometry(0, panel_top, sw, sp_h)
         if self._input_selector.isVisible():
             iw = min(340, w - 40)
             ih = 36
             self._input_selector.setGeometry((w - iw)//2, sb_h + 4, iw, ih)
 
         pw = min(_SETTINGS_WIDTH, w)
-        self._right_panel.setGeometry(w - pw, panel_top, pw, sp_h)
+        self._s3_settings.setGeometry(w - pw, panel_top, pw, sp_h)
 
-        # Overlays above the video widget (the capture path raises the viewport,
-        # which otherwise covers the status bar).
         self._status_bar.raise_()
-        if not getattr(self, "_chrome_adopted", False):
-            self._status_panel.raise_()
-            self._control_bar.raise_()
-            self._playback_bar.raise_()
-        if self._right_panel.isVisible():
-            self._right_panel.raise_()
+        self._status_panel.raise_()
+        self._control_bar.raise_()
+        self._playback_bar.raise_()
+        self._s3_settings.raise_()
 
     # ------------------------------------------------------------------
     # Engine
@@ -501,18 +667,6 @@ class MainWindow(QMainWindow):
         self._s3_settings.seed_ini()
         self._s3_gen = None
         self._engine.s3_status.connect(self._on_s3_status)
-        self._hotkey = GlobalHotkey(parent=self)
-        # Alt+F4 must always work (kiosk: the shell rarely holds focus).
-        # RegisterHotKey does not deliver Alt+F4 in practice — a low-level
-        # keyboard hook does, and it routes to closeEvent (confirm dialog).
-        try:
-            from ..core.altf4_hook import AltF4Hook
-            self._altf4 = AltF4Hook(parent=self)
-            self._altf4.triggered.connect(self.close)
-            self._altf4.start()
-        except Exception as e:                 # noqa: BLE001
-            _audit.warning("Alt+F4 hook failed: %s", e)
-
         # P0: the shell may never hold Windows focus (hotkey-driven kiosk), but
         # WM_MOUSEWHEEL goes to the FOCUSED window — so the wheel would die over
         # the panels. The LL-mouse bridge replays wheel deltas to the hovered
@@ -642,10 +796,6 @@ class MainWindow(QMainWindow):
         self._media_library.switch_requested.connect(
             lambda: self._on_app_mode_changed("video_processor"))
 
-        # Global hotkey
-        self._hotkey.hotkey_pressed.connect(self._toggle_edit_mode)
-        self._hotkey.start()
-
         # DeckLink signal monitor — fires when hardware reports signal loss/change
         self._dl_monitor.signal_locked.connect(self._on_dl_signal_locked)
         self._dl_monitor.format_changed.connect(self._on_dl_format_changed)
@@ -677,19 +827,14 @@ class MainWindow(QMainWindow):
             self._playback_bar.hide()
             self._playback_bar.reset()
             self._status_panel.hide()
+            self._s3_settings.hide()
             self._right_panel.hide()
             self._playback_controls.reset_for_new_file()
-            self._viewport.hide()
+            self._video_win.hide()
             self._status_bar.show()
             self._control_bar.show()
-            # The chrome is a separate top-level window docked over the whole frame
-            # with a transparent middle -- and a transparent top-level still OWNS
-            # mouse input in its transparent region. Left up, it sits over the media
-            # library and eats every click meant for it, while the chrome's own
-            # buttons keep working: exactly the "library visible but dead" report.
-            # The chrome is a watch-mode affordance; the picker screen is not watch
-            # mode, so it goes.
-            self._show_chrome(False)
+            self._set_topmost(False)
+            self._set_window_fullscreen()
             self._set_overlay_opacity(_OVERLAY_OPACITY_EDIT)
             if self._app_config.app_mode == "media_player":
                 self._background.show_instant()
@@ -699,23 +844,29 @@ class MainWindow(QMainWindow):
                 self._media_library.hide()
                 self._background.show_instant()
             self._settings_panel.hide()
+            _force_foreground(int(self.winId()))
 
         elif mode == AppMode.WATCH:
             self._status_panel.hide()
+            self._s3_settings.hide()
             self._right_panel.hide()
             self._background.hide_instant()
             # Start mouse hide timer when entering watch mode
             self._mouse_hide_timer.start()
             self._media_library.hide()
-            self._viewport.show()
+            self._video_win.show_fullscreen()
             self._settings_panel.hide()
             self._playback_bar.hide()
             self._status_bar.hide()
             self._control_bar.hide()
-            self.raise_()
-            self.activateWindow()
-            self._relayout()   # three-region layout: video expands full-width here
-            self._show_chrome(False)
+            # This window stays SHOWN fullscreen BEHIND the topmost video
+            # window: invisible to the eye, but a real shown window that can
+            # hold foreground and keyboard for the poller. Never hidden —
+            # hiding a top-level is what started every activation war.
+            self._set_topmost(False)
+            self._set_window_fullscreen()
+            self._relayout()
+            _force_foreground(int(self.winId()))
             # (The "blink pending on WATCH entry — re-acquiring" restart lived here.
             # Deleted 2026-09-21: it re-ran the acquisition overlay on WATCH entry when
             # a single unlocked monitor reading had set _dl_blink_seen during a disc
@@ -731,25 +882,55 @@ class MainWindow(QMainWindow):
             self._show_cursor()
             self._background.hide_instant()
             self._media_library.hide()
-            self._viewport.show()
-            # The in-window right rail is RETIRED: all interactive chrome
-            # (status + settings + bars) now lives in the single chrome window.
+            self._video_win.show_fullscreen()
+            # THIS WINDOW IS THE CHROME NOW: an opaque topmost right-hand
+            # column over the fullscreen video. No second window, no modal,
+            # no translucency, no adopt/reparent — ordinary Qt widgets in an
+            # ordinary focused window, which is the one configuration that
+            # has never had an input problem. The video window is NOACTIVATE
+            # so it cannot steal focus back when we raise ourselves.
             self._right_panel.hide()
             self._status_panel.show()
-            self._settings_panel.show()
+            self._s3_settings.show()
             if self._app_config.app_mode == "media_player":
                 self._playback_bar.show()
             else:
                 self._playback_bar.hide()
             self._status_bar.show()
             self._control_bar.show()
-            self._set_overlay_opacity(_OVERLAY_OPACITY_EDIT)
-            self.raise_()
-            self.activateWindow()
+            self._set_overlay_opacity(1.0)
+            self._set_window_column()
+            self._set_topmost(True)
             self._relayout()
-            self._show_chrome(True)    # interactive rail window (Up)
+            _force_foreground(int(self.winId()))
+            self._s3_settings.setFocus(Qt.FocusReason.OtherFocusReason)
 
         self._control_bar.set_edit_mode(mode == AppMode.EDIT)
+
+    def _set_topmost(self, on: bool) -> None:
+        """Z-order without show/hide and without Qt flag recreation."""
+        try:
+            u = ctypes.windll.user32
+            u.SetWindowPos(int(self.winId()), -1 if on else -2,
+                           0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        except Exception:   # noqa: BLE001
+            pass
+
+    def _set_window_fullscreen(self) -> None:
+        scr = QApplication.primaryScreen()
+        if scr is not None:
+            g = scr.geometry()
+            self.setGeometry(g.x(), g.y(), g.width(), g.height())
+
+    def _set_window_column(self) -> None:
+        """EDIT geometry: opaque right-hand column; the video stays fullscreen
+        behind and remains visible to the left of this window."""
+        scr = QApplication.primaryScreen()
+        if scr is None:
+            return
+        g = scr.geometry()
+        cw = min(980, max(640, g.width() - 640))
+        self.setGeometry(g.x() + g.width() - cw, g.y(), cw, g.height())
 
     def _set_overlay_opacity(self, opacity: float) -> None:
         for w in (self._status_bar, self._control_bar):
@@ -786,13 +967,14 @@ class MainWindow(QMainWindow):
     def _toggle_edit_mode(self) -> None:
         _audit.info(f"hotkey: toggle edit mode (current={self._mode.name})")
         if self._mode == AppMode.IDLE:
-            # Route to the interactive rail window (was the in-window panel,
-            # which is not clickable).
-            self._show_chrome(
-                getattr(self, "_chrome", None) is None
-                or not self._chrome.isVisible())
+            self._set_mode(AppMode.EDIT)
             return
-        self._set_mode(AppMode.EDIT if self._mode == AppMode.WATCH else AppMode.WATCH)
+        if self._mode == AppMode.EDIT and not (self._engine.is_playing()
+                                               or self._engine.is_paused()):
+            self._set_mode(AppMode.IDLE)
+            return
+        self._set_mode(AppMode.EDIT if self._mode == AppMode.WATCH
+                       else AppMode.WATCH)
 
     def _apply_auto_curve_default(self, is_hdr: bool, is_dv: bool,
                                   has_meta: bool = True) -> None:
@@ -955,33 +1137,19 @@ class MainWindow(QMainWindow):
 
         
     def _show_chrome(self, show: bool) -> None:
-        """ONE interactive chrome window (status left, settings right, transport
-        bottom) shown modally over the video. In-window widgets are not
-        clickable — the video renderer's window covers the client area for
-        input; a modal top-level window above it is (bench-verified). Toggled
-        by Up; the middle is transparent so the video shows through."""
-        if getattr(self, "_chrome", None) is None:
-            if not show:
-                return
-            self._chrome = SettingsWindow(self._app_config, self._profile,
-                                          parent=self)
-            self._chrome.adopt(self._status_panel, self._s3_settings,
-                               [self._control_bar, self._playback_bar],
-                               rail_left=min(_STATUS_WIDTH, 340),
-                               rail_right=min(_SETTINGS_WIDTH, 520),
-                               top=self._status_bar)
-            self._chrome_adopted = True
-            self._relayout()
+        """Legacy entry point for the few remaining call sites. There is no
+        second chrome window any more (2026-10-25, videoprocessor model): the
+        chrome IS this window's EDIT geometry — an opaque topmost right-hand
+        column over the fullscreen NOACTIVATE video window. Showing/hiding
+        "the chrome" is therefore the WATCH<->EDIT mode flip: geometry and
+        z-order change, the window itself is never shown/hidden, so no
+        activation event exists to lose the keyboard."""
         if show:
-            self._chrome.dock(self.frameGeometry())
-            self._chrome.show()
-            self._chrome.raise_()
-            self._chrome.activateWindow()
-            # The seek bar is PRESENT but inert in VP mode (the app's own rule
-            # hides it) — force it visible so the middle slot doesn't vanish.
-            self._playback_bar.show()
-        else:
-            self._chrome.hide()
+            if self._mode == AppMode.WATCH:
+                self._set_mode(AppMode.EDIT)
+        elif self._mode == AppMode.EDIT:
+            self._set_mode(AppMode.WATCH if self._engine.is_playing()
+                           else AppMode.IDLE)
 
     # ------------------------------------------------------------------
     # Wallpaper
@@ -1015,19 +1183,13 @@ class MainWindow(QMainWindow):
             self._splash.finished.connect(self._start_vp_capture)
 
     def _chrome_was_visible(self) -> bool:
-        """Hide the settings chrome and report whether it was up.
-
-        The chrome is a window-modal dialog (settings_window.py:40, "required for input
-        priority") parented to the main window. Qt's window-modality disables every OTHER
-        window in that hierarchy — so any dialog opened while the chrome is up paints fine
-        but is disabled, and every click on it lands nowhere. That is exactly how the
-        first-run dialog presented: visible, inert. Anything modal that must take input
-        while the chrome is open needs the chrome out of the way first.
-        """
-        chrome = getattr(self, "_chrome", None)
-        was = bool(chrome and chrome.isVisible())
+        """Step out of EDIT (the rails column) and report whether it was up,
+        so modal dialogs (first-run, confirm) open over a clean surface.
+        The chrome is this window's EDIT geometry now — no second window."""
+        was = self._mode == AppMode.EDIT
         if was:
-            chrome.hide()
+            self._set_mode(AppMode.WATCH if self._engine.is_playing()
+                           else AppMode.IDLE)
         return was
 
     def _show_first_run(self) -> None:
@@ -1041,10 +1203,10 @@ class MainWindow(QMainWindow):
         nothing.
         """
         was_library = self._media_library.isVisible()
-        was_viewport = self._viewport.isVisible()
+        was_viewport = self._video_win.isVisible()
         if was_library or was_viewport:
             self._media_library.hide()
-            self._viewport.hide()
+            self._video_win.hide()
             self._background.show_instant()
         chrome_up = self._chrome_was_visible()
         completed = [False]
@@ -1086,11 +1248,9 @@ class MainWindow(QMainWindow):
                 self._media_library.show()
                 self._media_library.raise_()
             if was_viewport:
-                self._viewport.show()
-                self._viewport.raise_()
+                self._video_win.show_fullscreen()
             if chrome_up:
-                self._chrome.show()
-                self._chrome.raise_()
+                self._set_mode(AppMode.EDIT)
         dlg.deleteLater()
 
     @pyqtSlot(str, str)
@@ -1159,11 +1319,9 @@ class MainWindow(QMainWindow):
         # stage names the hang.
         _audit.info("play path: enter _init_engine_with_options")
         self._engine_live = True
-        self._viewport.show()
-        self._viewport.raise_()
-        self._viewport.winId()
-        wid = self._viewport.hwnd()
-        _audit.info(f"play path: viewport hwnd={wid}")
+        self._video_win.show_fullscreen()
+        wid = self._video_win.hwnd()
+        _audit.info(f"play path: video host hwnd={wid}")
 
         # Initialise engine once — subsequent calls are no-ops; each engine guards
         # its own re-entry internally. (The old `if not self._engine._mpv` check
@@ -1342,6 +1500,14 @@ class MainWindow(QMainWindow):
         self._media_was_playing = False   # re-armed by the next PLAYING state
         self._current_file = path
         self._warned_codes = set()
+        # Focus handoff: the library grid would otherwise keep Qt focus while
+        # hidden and silently eat Up/Space/arrows during playback (the retired
+        # global hotkey masked this by taking Up before Qt ever saw it).
+        try:
+            self._media_library.grid_widget().clearFocus()
+        except Exception:   # noqa: BLE001 - focus polish must never block play
+            pass
+        self.setFocus()
         self._dv_switched_for = ""
         self._status_panel.set_dv_active(False)
         # Ensure audio is enabled (may be disabled from a previous VP capture session)
@@ -1671,7 +1837,7 @@ class MainWindow(QMainWindow):
         layout rebuild, every tick.
         """
         if (self._app_config.app_mode != "video_processor"
-                and getattr(self, "_chrome", None) is None):
+                and self._mode != AppMode.EDIT):
             return
         try:
             ports = poll_all_ports()
@@ -1840,8 +2006,7 @@ class MainWindow(QMainWindow):
             dlg.input_changed.connect(self._on_source_port_selected)
             dlg.exec()
             if chrome_up:
-                self._chrome.show()
-                self._chrome.raise_()
+                self._set_mode(AppMode.EDIT)
             self._ports_sig = None      # names may have changed
             self._refresh_ports()
         elif key == "sys.resetRenderer":
@@ -2206,13 +2371,12 @@ class MainWindow(QMainWindow):
         self._vp_retry_timer.stop()
         self._vp_check_timer.stop()
         self._acquire_overlay.dismiss()
-        # The chrome is a WINDOW-MODAL dialog (settings_window.py) and a mode switch is
-        # reachable from inside it, so closing the main window under a live modal is the
-        # same shape that made the first-run wizard paint and then refuse input. Take it
-        # out of the way first: the user has already left that screen either way.
-        chrome = getattr(self, "_chrome", None)
-        if chrome is not None:
-            chrome.hide()
+        # No second chrome window exists any more (the rails are this window's
+        # EDIT geometry), so there is no modal to take out of the way before
+        # the restart; stepping out of EDIT is enough.
+        if self._mode == AppMode.EDIT:
+            self._set_mode(AppMode.WATCH if self._engine.is_playing()
+                           else AppMode.IDLE)
         if self._engine.is_playing():
             self._engine_quiesce()
 
@@ -2338,11 +2502,9 @@ class MainWindow(QMainWindow):
             _audit.warning("capture: DeckLink monitor failed to open")
             self._detected_vf = None
 
-        self._viewport.show()
-        self._viewport.raise_()
-        self._viewport.winId()
-        wid = self._viewport.hwnd()
-        _audit.info("capture: step — viewport ready (wid=%s)", wid)
+        self._video_win.show_fullscreen()
+        wid = self._video_win.hwnd()
+        _audit.info("capture: step — video host ready (wid=%s)", wid)
         try:
             vp_startup = _vp_startup_opts(self._profile,
                                           signal_info=self._dl_monitor.get_signal_info()

@@ -1,0 +1,27 @@
+press (54,162)
+switch rail group -> 2
+press (46,147)
+switch rail group -> 1
+press (42,78)
+switch rail group -> 0
+press (38,139)
+switch rail group -> 1
+press (24,200)
+switch rail group -> 2
+press (35,263)
+switch rail group -> 3
+press (36,311)
+switch rail group -> 4
+press (146,15)
+press (13,134)
+switch rail group -> 1
+press (42,82)
+switch rail group -> 0
+press (49,172)
+switch rail group -> 2
+press (389,936)
+hit header=False idx=18
+toggle zion.debugCopyShaders -> True
+press (390,936)
+hit header=False idx=18
+toggle zion.debugCopyShaders -> False

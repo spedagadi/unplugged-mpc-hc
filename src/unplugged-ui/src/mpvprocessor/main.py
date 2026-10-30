@@ -71,6 +71,35 @@ def _setup_logging() -> None:
     legacy_handler.setFormatter(fmt)
     logger.addHandler(legacy_handler)
 
+    # stderr INTO the log (2026-10-24): the installed app has no console, so
+    # every Python traceback — unhandled exceptions inside Qt slots, dying
+    # threads — went nowhere. This blind spot hid the Alt+F4 hook crash, the
+    # hook-bundle death and a chrome-show failure on the same day. Anything
+    # written to stderr now lands as an ERROR line in the audit log.
+    class _StderrTee:
+        def __init__(self, stream, lg):
+            self._s, self._lg = stream, lg
+
+        def write(self, data):
+            try:
+                if self._s is not None:
+                    self._s.write(data)
+            except Exception:  # noqa: BLE001 - console may be detached
+                pass
+            for line in str(data).splitlines():
+                if line.strip():
+                    self._lg.error("stderr: %s", line)
+            return len(data)
+
+        def flush(self):
+            try:
+                if self._s is not None:
+                    self._s.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+    sys.stderr = _StderrTee(sys.stderr, logger)
+
     _purge_old_logs(logs_dir, keep=30)
 
 

@@ -15,12 +15,15 @@ Therefore there is exactly ONE chrome window, hosting every interactive region:
     │            transport / control buttons           │
     └──────────────────────────────────────────────────┘
 
-Up shows it (modal over the video); Up again hides it.
+Up/double-click shows it (modal over the video); Esc, double-click through
+the transparent middle, or pointer-idle-over-video dismisses it. It also has
+a BAR-ONLY mode: the same window showing just the transport bar, raised when
+the mouse reaches the bottom edge during playback (VLC-class peek).
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QScrollArea
 
 from .help_card import HelpCard, CARD_W
@@ -47,12 +50,26 @@ BOTTOM_SAFE_PX = 0
 
 
 class SettingsWindow(QDialog):
+    #: The pointer rested over the video middle long enough, or the user
+    #: double-clicked through it: MainWindow hides the chrome (and EDIT mode
+    #: returns to WATCH). Emitted by the window's own timers/interaction —
+    #: the rails staying busy keeps it silent.
+    dismiss_requested = pyqtSignal()
+
     def __init__(self, app_config, profile, parent=None) -> None:
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.Dialog |
                             Qt.WindowType.WindowStaysOnTopHint)
-        self.setModal(True)                 # required for input priority
+        self.setModal(True)
+        # MODAL is required for input — measured twice on 2026-10-25: the
+        # non-modal variant receives NO keys and NO clicks at all (09:21
+        # session: zero events after show). The 2026-09-15 bench verdict
+        # stands. The modal's one defect — the shell lunging for foreground
+        # ~30 ms after the hide (thief log 'Search' 09:13:21) — is handled
+        # on the close path: MainWindow._hide_chrome reclaims immediately
+        # AND re-asserts at 150/450 ms, before any real user action could
+        # have legitimately moved foreground elsewhere.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet("QDialog { background: transparent; }")
         self._status = None
@@ -63,6 +80,16 @@ class SettingsWindow(QDialog):
         self._rail_left = 300
         self._rail_right = 460
         self._bottom_h = 64
+        # VLC-class auto-dismiss: the dialog's OWN mouseMoveEvent fires only
+        # over the transparent middle (rails are children and consume their
+        # own moves) — that is precisely "pointer resting over the video", so
+        # it arms the dismissal timer, while any event inside a rail disarms it
+        # (keep-alive filter installed in adopt()).
+        self._bar_only = False
+        self.setMouseTracking(True)
+        self._hide_t = QTimer(self)
+        self._hide_t.setSingleShot(True)
+        self._hide_t.timeout.connect(self.dismiss_requested.emit)
     # ---------------------------------------------------------------
     def adopt(self, status_panel, settings_panel, bars, rail_left: int = 300,
               rail_right: int = 460, top=None) -> None:
@@ -112,6 +139,7 @@ class SettingsWindow(QDialog):
                 continue
             w.setParent(self)
             w.show()
+            w.installEventFilter(self)    # keep-alive: rail input stops the timer
 
     def dock(self, host_rect) -> None:
         self.setGeometry(host_rect)
@@ -125,10 +153,35 @@ class SettingsWindow(QDialog):
             return 0
         return self._top.height() + 4
 
+    def set_bar_only(self, on: bool) -> None:
+        """Two chrome modes: FULL (rails + bars — the interaction surface) and
+        BAR-ONLY (the transport peek raised by the bottom-edge mouse, video
+        unobstructed). Modal in BOTH modes — non-modal chrome receives no
+        input at all (measured 2026-10-25); the peek's slider must be
+        clickable. Keys the bar does not consume propagate up to MainWindow's
+        playback map."""
+        self._bar_only = on
+        self._layout_children()
+
     def _layout_children(self) -> None:
         r = self.rect()
         w, h = r.width(), r.height()
         bottom_h = self._bottom_h + BOTTOM_SAFE_PX
+        if self._bar_only:
+            # Transport peek: ONLY the playback bar, full width along the
+            # bottom. Everything else in this window is the video's.
+            for wgt in (self._top, self._status, self._settings):
+                if wgt is not None:
+                    wgt.hide()
+            if self._card is not None:
+                self._card.hide()
+            if self._bars:
+                self._bars[0].hide()          # control bar stays chrome-only
+            if len(self._bars) >= 2:
+                self._bars[1].setGeometry(12, h - bottom_h + 6,
+                                          w - 24, bottom_h - 12)
+                self._bars[1].show()
+            return
         # TOP strip (status bar: device/status + minimise/close buttons)
         if self._top is not None:
             self._top.setGeometry(0, 0, w, 36)
@@ -264,6 +317,37 @@ class SettingsWindow(QDialog):
     def showEvent(self, event) -> None:        # noqa: N802
         super().showEvent(event)
         # Chrome up = remote keys belong to the rail: it navigates, and the
-        # focus event shows the first row's card immediately.
-        if self._settings is not None:
+        # focus event shows the first row's card immediately. In the bar-only
+        # peek the rails are hidden — focus stays on this dialog, whose
+        # unconsumed keys propagate to MainWindow's playback map.
+        if self._bar_only:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        elif self._settings is not None:
             self._settings.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def reject(self) -> None:
+        # QDialog's default Esc path hides this window behind our back — no
+        # mode restore, no foreground reclaim (measured 2026-10-25 11:46:18:
+        # Esc "did nothing", mode stuck at EDIT). Route it through the same
+        # dismiss path as idle-timeout and double-click.
+        self.dismiss_requested.emit()
+
+    def mouseMoveEvent(self, event) -> None:   # noqa: N802
+        # Fires only over the transparent middle (children take their own
+        # moves) — pointer resting over the video: arm the dismissal.
+        self._hide_t.start(3000 if self._bar_only else 5000)
+        super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        # Double-click THROUGH the chrome's transparent middle = back to
+        # clean playback (mirror of the video double-click that opened it).
+        self._hide_t.stop()
+        self.dismiss_requested.emit()
+        event.accept()
+
+    def eventFilter(self, obj, event) -> bool:
+        t = event.type()
+        if t in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
+                 QEvent.Type.KeyPress, QEvent.Type.Wheel):
+            self._hide_t.stop()               # user is working IN the UI
+        return super().eventFilter(obj, event)

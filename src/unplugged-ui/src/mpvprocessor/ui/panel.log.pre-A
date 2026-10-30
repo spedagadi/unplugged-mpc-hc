@@ -1,0 +1,77 @@
+press (31,127)
+switch rail group -> 1
+press (41,127)
+switch rail group -> 1
+press (44,67)
+switch rail group -> 0
+press (36,149)
+switch rail group -> 1
+press (40,243)
+switch rail group -> 3
+press (32,313)
+switch rail group -> 4
+press (36,251)
+switch rail group -> 3
+press (43,194)
+switch rail group -> 2
+press (43,194)
+switch rail group -> 2
+press (41,146)
+switch rail group -> 1
+press (49,84)
+switch rail group -> 0
+press (44,128)
+switch rail group -> 1
+press (43,77)
+switch rail group -> 0
+press (32,154)
+switch rail group -> 1
+press (42,229)
+switch rail group -> 3
+press (131,5)
+press (43,83)
+switch rail group -> 0
+press (41,115)
+switch rail group -> 1
+press (47,179)
+switch rail group -> 2
+press (38,261)
+switch rail group -> 3
+press (27,178)
+switch rail group -> 2
+press (30,60)
+switch rail group -> 0
+press (350,110)
+hit header=None idx=-1
+press (350,120)
+hit header=None idx=-1
+press (360,110)
+hit header=False idx=0
+toggle zion.enabled -> False
+press (400,110)
+hit header=False idx=0
+toggle zion.enabled -> False
+press (32,251)
+switch rail group -> 3
+press (40,182)
+switch rail group -> 2
+press (45,129)
+switch rail group -> 1
+press (43,202)
+switch rail group -> 2
+press (40,74)
+switch rail group -> 0
+press (39,159)
+switch rail group -> 1
+press (38,199)
+switch rail group -> 2
+press (36,236)
+switch rail group -> 3
+press (35,307)
+switch rail group -> 4
+press (42,264)
+switch rail group -> 3
+press (44,196)
+switch rail group -> 2
+press (47,129)
+switch rail group -> 1
