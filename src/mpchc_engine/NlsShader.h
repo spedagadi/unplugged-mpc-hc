@@ -18,11 +18,18 @@ namespace nls {
 
 struct Params {
     float activeL = 0.0f, activeT = 0.0f, activeR = 1.0f, activeB = 1.0f;
-    float ratio = 1.0f;       // content/window aspect correction
+    // The aspect correction, SPLIT across the two axes. Each axis is mapped by
+    // its own factor and its own protected centre, so neither axis has to carry
+    // the whole distortion. ratioX * ratioY == 1 at an even split (image area
+    // kept) and ratioX / ratioY is the aspect correction itself, so
+    //   (ratioX, ratioY) == (k, 1)   is exactly the old horizontal-only pass,
+    //   (ratioX, ratioY) == (1, 1/k) is the vertical-only equivalent.
+    // A factor of 1 on an axis is the identity map for that axis.
+    float ratioX = 1.0f;      // horizontal axis correction
+    float ratioY = 1.0f;      // vertical axis correction
     float strength = 1.0f;    // 0..1
     float center = 0.35f;     // protected centre fraction
     float curve = 2.0f;       // 1..2.9
-    bool  vertical = true;
 };
 
 inline std::string Source(const Params& p)
@@ -44,11 +51,11 @@ cbuffer PS_CONSTANTS : register(b0)
 #define ACTIVE_T  __AT__
 #define ACTIVE_R  __AR__
 #define ACTIVE_B  __AB__
-#define RATIO     __RATIO__
+#define RATIO_X   __RX__
+#define RATIO_Y   __RY__
 #define STRENGTH  __STRENGTH__
 #define CENTER    __CENTER__
 #define CURVE     __CURVE__
-#define VERTICAL  __VERT__
 
 // The post-scale pass binds a POINT sampler at s0 (DX11VideoProcessor::
 // TextureCopyRect -> m_pSamplerPoint), so a plain tex.Sample() here fetches the
@@ -69,9 +76,9 @@ float4 sampleBilinear(float2 uv)
     return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);
 }
 
-float map_radius(float r)
+float map_radius(float r, float ratio0)
 {
-    float ratio = lerp(1.0, RATIO, saturate(STRENGTH));
+    float ratio = lerp(1.0, ratio0, saturate(STRENGTH));
     // RATIO > 1 stretches the outer band (window wider than the picture);
     // RATIO < 1 squeezes it (picture wider than the window). Both are the same
     // monotone map: slope RATIO at the protected centre, easing to the edge.
@@ -103,21 +110,21 @@ float map_radius(float r)
 
 float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
 {
+    // BOTH axes are mapped, each by its own factor with its own protected
+    // centre, so the protected region stays a rectangle instead of a cross.
+    // An axis whose factor is 1 is an exact identity (map_radius early-outs),
+    // which is what makes the single-axis modes bit-for-bit what they were.
     float2 src = coord;
-    if (VERTICAL > 0.5)
-    {
-        float c = coord.y * 2.0 - 1.0;
-        float m = map_radius(abs(c));
-        src.y = (c < 0.0 ? -m : m) * 0.5 + 0.5;
-        src.y = lerp(ACTIVE_T, ACTIVE_B, src.y);
-        src.x = lerp(ACTIVE_L, ACTIVE_R, src.x);
-    }
-    else
     {
         float c = coord.x * 2.0 - 1.0;
-        float m = map_radius(abs(c));
+        float m = map_radius(abs(c), RATIO_X);
         src.x = (c < 0.0 ? -m : m) * 0.5 + 0.5;
         src.x = lerp(ACTIVE_L, ACTIVE_R, src.x);
+    }
+    {
+        float c = coord.y * 2.0 - 1.0;
+        float m = map_radius(abs(c), RATIO_Y);
+        src.y = (c < 0.0 ? -m : m) * 0.5 + 0.5;
         src.y = lerp(ACTIVE_T, ACTIVE_B, src.y);
     }
     return sampleBilinear(src);
@@ -127,11 +134,11 @@ float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
     postfx::ReplaceAll(s, "__AT__", postfx::F(p.activeT));
     postfx::ReplaceAll(s, "__AR__", postfx::F(p.activeR));
     postfx::ReplaceAll(s, "__AB__", postfx::F(p.activeB));
-    postfx::ReplaceAll(s, "__RATIO__", postfx::F(p.ratio));
+    postfx::ReplaceAll(s, "__RX__", postfx::F(p.ratioX));
+    postfx::ReplaceAll(s, "__RY__", postfx::F(p.ratioY));
     postfx::ReplaceAll(s, "__STRENGTH__", postfx::F(p.strength));
     postfx::ReplaceAll(s, "__CENTER__", postfx::F(p.center));
     postfx::ReplaceAll(s, "__CURVE__", postfx::F(p.curve));
-    postfx::ReplaceAll(s, "__VERT__", p.vertical ? "1.0" : "0.0");
     return s;
 }
 

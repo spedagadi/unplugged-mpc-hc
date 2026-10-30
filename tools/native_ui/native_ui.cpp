@@ -341,8 +341,14 @@ static const wchar_t* kDeint[]={L"Disable",L"Enable",L"Hack future frames"};
 static const wchar_t* kSwap[]={L"Discard",L"Flip"};
 static const wchar_t* kFit[]={L"Source",L"Fixed aspect",L"Fill screen"};
 static const int kFitV[]={0,1,2};
-static const wchar_t* kNlsAxis[]={L"Auto",L"Horizontal",L"Vertical"};
-static const int kNlsAxisV[]={0,1,2};
+// Which axis carries the aspect correction. "Split" hands the horizontal axis
+// the share in the Split row and the vertical the rest, so the same correction
+// is paid in a milder way on both axes instead of all on one (the choice
+// "24 % sideways" or "24 % crop" becomes a dial between them). Values 1/2 are
+// exactly what the horizontal-only / vertical-only passes always did; a stored
+// 0 from the old Auto entry falls back to Horizontal on load.
+static const wchar_t* kNlsAxis[]={L"Horizontal",L"Vertical",L"Split"};
+static const int kNlsAxisV[]={1,2,3};
 // What to do when the picture must be fitted: warp, crop, or don't fill.
 static const wchar_t* kNlsFillMode[]={L"Auto",L"Stretch",L"Crop",L"Off"};
 static const int kNlsFillModeV[]={0,1,2,3};
@@ -485,7 +491,10 @@ static Row g_rows[]={
  {4,1,L"NON-LINEAR STRETCH",L"Strength","geo.nlsStrength",0,100,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Centre protection","geo.nlsCenter",0,45,1,45,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Curve","geo.nlsCurve",1.0,2.9,0.05,1.2,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {4,1,L"NON-LINEAR STRETCH",L"Max stretch","geo.nlsMax",100,150,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // Split: horizontal's share of the correction, in per cent (50 = even). Only
+ // used when Axis = Split; the vertical axis takes the rest.
+ {4,1,L"NON-LINEAR STRETCH",L"Split","geo.nlsSplit",0,100,1,50,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Max distortion","geo.nlsMax",100,150,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,2,L"NON-LINEAR STRETCH",L"Fill mode","geo.nlsFillMode",0,0,0,0,false,0,kNlsFillMode,4,kNlsFillModeV,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Fill limit","geo.nlsFillLimit",100,200,1,105,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,0,L"NON-LINEAR STRETCH",L"Lock band","geo.nlsLock",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -650,6 +659,13 @@ static std::string IniValue(const Row& r){
   }
   if(r.kind==2&&!strcmp(r.key,"hdr.toneMapCurve"))
     snprintf(b,sizeof(b),"%d",r.optvals?r.optvals[r.opt]:r.opt); // ENGINE value, not index
+  // Every row that exposes a SUBSET of the engine's enum must persist the ENGINE
+  // value: LoadSettingsIni looks the stored number up in optvals, so writing the
+  // INDEX only round-trips when index == value. It did not for {7,10}, {4,5},
+  // {2,3}, {0,8,10,16}, {1,0} ... - a stored choice came back as the row default
+  // on the next launch, and the new Axis row (index 2 = Split, engine 3) would
+  // have resurrected as Vertical. Identity tables are unaffected.
+  else if(r.kind==2&&r.optvals) snprintf(b,sizeof(b),"%d",r.optvals[r.opt]);
   else snprintf(b,sizeof(b),"%d",r.opt);
   return b;
 }
@@ -757,7 +773,8 @@ static void PushAll(){
     else if(r.kind==1){
       const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                       !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
-                      !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsMax")||
+                      !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||
+                      !strcmp(r.key,"geo.nlsMax")||
                       !strcmp(r.key,"geo.nlsFillLimit"))
                       ?r.val/100.0:r.val;
       snprintf(b,sizeof(b),"%s=%g",ek,v);
@@ -805,7 +822,8 @@ static void PushRow(const Row& r){ char b[192];
   case 1:{
     const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                     !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
-                    !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsMax")||
+                    !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||
+                    !strcmp(r.key,"geo.nlsMax")||
                     !strcmp(r.key,"geo.nlsFillLimit"))
                     ?r.val/100.0:r.val;
     snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%g\"}",ek,v); break; }

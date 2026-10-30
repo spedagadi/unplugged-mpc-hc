@@ -82,3 +82,9 @@ src/unplugged-ui/src/mpvprocessor/media/_omdb_key.py
 # they live next to the package but are not part of it.
 /src/unplugged-ui/src/mpvprocessor/ui/chrome_probe*.py
 /src/unplugged-ui/src/mpvprocessor/ui/panel.log*
+
+# Proof-harness output (nls_proof/sub_proof frames and builds) is reproduced by
+# the .bat next to each .cpp; only the source is worth versioning.
+/tools/engine_s3/*.bmp
+/tools/engine_s3/*_proof.exe
+/tools/engine_s3/*_proof_stats.json

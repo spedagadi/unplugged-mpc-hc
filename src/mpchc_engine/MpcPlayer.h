@@ -332,15 +332,20 @@ public:
         double panY = 0.0;      // -1..1 across overflow
     };
 
-    // Our NLS model: warp only the active picture to use the screen. Axis 0 picks
-    // from the content/window aspect, 1 forces horizontal, 2 forces vertical.
+    // Our NLS model: warp only the active picture to use the screen. The aspect
+    // correction is distributed over the two axes (see NlsShader.h):
+    //   axis 1 horizontal - the whole correction on x          (s = 1)
+    //   axis 2 vertical   - the whole correction on y          (s = 0)
+    //   axis 3 split      - `split` is horizontal's share       (s = split)
+    // so s = 1 is exactly what the horizontal-only pass always did.
     struct NlsSettings {
         bool  enabled = false;
-        int   axis = 0;             // 0 auto, 1 horizontal, 2 vertical
+        int   axis = 1;             // 1 horizontal, 2 vertical, 3 split (0 = old "auto")
+        float split = 0.5f;         // 0..1, horizontal's share of the correction
         float strength = 1.0f;      // 0..1
         float center = 0.35f;       // protected centre fraction
         float curve = 2.0f;         // 1..2.9
-        float maxStretch = 1.4f;    // cap
+        float maxStretch = 1.4f;    // per-axis distortion cap (both directions)
         // How much VERTICAL stretch filling may cost before it is refused.
         // 1.05 = fill only if the picture is at most 5 % wider than the window;
         // above that it is shown letterboxed at its own aspect (a 2.39 film on a
@@ -568,10 +573,13 @@ public:
     // True when the fill is being done by CROPPING (uniform scale, no warp), so
     // ApplyPostFx must not inject the warp on top of it.
     std::atomic<bool>  m_nlsCropFill{false};
-    // The warp factor the geometry actually left for the shader. A correction is
-    // SPLIT across the two axes (sqrt each) instead of dumping all of it on one:
-    // 27 % sideways is visibly ugly, 13 % sideways + 13 % cropped is not.
-    std::atomic<float> m_nlsWarpRatio{1.0f};
+    // The warp factor the geometry actually left for the shader, PER AXIS. The
+    // correction is split across the two axes instead of dumping all of it on
+    // one: 27 % sideways is visibly ugly, ~13 % sideways + ~13 % vertically is
+    // not. sx * sy == 1 at an even split and sx / sy is the aspect correction,
+    // so (k, 1) is exactly the old horizontal-only pass.
+    std::atomic<float> m_nlsWarpRatio{1.0f};    // horizontal
+    std::atomic<float> m_nlsWarpRatioY{1.0f};   // vertical
     // Picture canvas inside the host window (see SetVideoRect). Written on the UI
     // thread, read by ResizeVideo on the same thread; the atomics are only so the
     // status tick can report it without a lock.

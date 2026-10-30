@@ -1035,6 +1035,62 @@ HRESULT MpcPlayer::SeekChapter(int dir)
     return Seek((LONGLONG)(target * 10000000.0));
 }
 
+// The bidirectional NLS split, in ONE place.
+//
+// Both halves of the correction have to agree: ResizeVideo decides the geometry
+// (what is cropped) and ApplyPostFx bakes the shader (what is warped). They used
+// to communicate through the published warp ratio, but a settings push can arrive
+// on a thread that is not the graph thread — where ResizeVideo is DEFERRED — so
+// ApplyPostFx read the PREVIOUS setting's factors and every change landed in the
+// shader one push late (measured 2026-10-30 with nls_proof: the Split 50 leg
+// injected the previous Horizontal pass). Both now derive the factors from the
+// settings directly, so a deferred geometry update can no longer desynchronise
+// them.
+//
+//   sx = k^s, sy = k^(s-1)  =>  sx / sy == k (the aspect correction),
+//                                sx * sy == 1 at s = 0.5 (image area kept)
+// s = 1 is (k, 1): exactly the horizontal-only pass this replaces.
+// cx/cy are the per-axis geometry zooms that cover whatever the cap refused.
+static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
+                            bool applyCap, double& sx, double& sy,
+                            double* cx = nullptr, double* cy = nullptr)
+{
+    if (!(ratioAR > 0.0)) ratioAR = 1.0;
+    const double shareX = (axis == 2) ? 0.0
+                        : (axis == 3) ? std::clamp(split, 0.0, 1.0)
+                                      : 1.0;   // horizontal (and the old 0="auto")
+    sx = std::pow(ratioAR, shareX);
+    sy = std::pow(ratioAR, shareX - 1.0);
+    if (applyCap && cap > 1.0) {
+        sx = std::clamp(sx, 1.0 / cap, cap);
+        sy = std::clamp(sy, 1.0 / cap, cap);
+    }
+    const double residue = ratioAR * sy / std::max(sx, 0.001);
+    double gx = 1.0, gy = 1.0;
+    if (residue < 0.999)      gx = 1.0 / residue;   // picture still too wide: crop sides
+    else if (residue > 1.001) gy = residue;         // ... still too narrow: crop top/bottom
+    if (cx) *cx = gx;
+    if (cy) *cy = gy;
+}
+
+// What the fill is doing this frame: 0 none (letterbox), 1 warp, 2 crop.
+// Same reason as NlsSplitFactors: the geometry and the shader can run on
+// different threads with the geometry deferred, so a "crop to fill" flag read
+// from the published state arrived one push late and the Crop leg got the warp
+// injected on top of its crop (seen in nls_proof, 2026-10-30).
+static int NlsFillAction(double clientAR, double activeAR, bool bandValid,
+                         int fillMode, double fillLimit)
+{
+    const int mode = std::clamp(fillMode, 0, 3);
+    if (mode == 3) return 0;                       // Off
+    if (mode == 2) return 2;                       // Crop: always, no warp
+    const double ratioAR = (activeAR > 0.001) ? clientAR / activeAR : 1.0;
+    const double limit = std::clamp(fillLimit, 1.0, 2.0);
+    const bool warpOK = (mode == 1) || (ratioAR >= 1.0) || (1.0 / ratioAR <= limit);
+    if (mode == 1) return 1;                       // Stretch: warp regardless
+    return (warpOK && bandValid) ? 1 : 0;          // Auto: needs a confirmed band
+}
+
 HRESULT MpcPlayer::ResizeVideo()
 {
     // ONLY the graph's own thread may touch the renderer here. From any other
@@ -1096,8 +1152,8 @@ HRESULT MpcPlayer::ResizeVideo()
         // trusting the warp.
         int nlsAction = 0;                 // 0 none, 1 warp(fill), 2 crop(fill)
         bool geomCrop = false;
-        double warpRatio = 1.0;            // what the shader is asked to correct
-        double cropScale = 1.0;            // uniform zoom that covers the remainder
+        double warpX = 1.0, warpY = 1.0;   // per-axis factors the shader is asked to correct
+        double cropX = 1.0, cropY = 1.0;   // per-axis geometry zoom that covers the remainder
         const double clientAR = (double)clientW / (double)clientH;
         double fillScaleW = 0.0, fillScaleH = 0.0;   // cover rect, used by crop
         if (nl.enabled && m_nlsBandKnown.load()) {
@@ -1112,28 +1168,19 @@ HRESULT MpcPlayer::ResizeVideo()
             const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
             const double fillLimit = std::clamp((double)nl.fillLimit, 1.0, 2.0);
             const double ratioAR = clientAR / activeAR;
-            // The budget in BOTH directions. The WARP is capped by "Max stretch" — that is
-            // the user's answer to "NLS as much as possible" (e.g. 115 % = warp up to
-            // 15 %), and a uniform zoom covers whatever is left. "Fill limit" governs
-            // the opposite direction (picture wider than the window, where filling
-            // squeezes the edges): beyond it Auto fits instead.
-            // Stretch = uncapped warp, Crop = pure crop, Off = plain fit.
+            // The correction is split across both axes - see NlsSplitFactors.
             const double cap = std::clamp((double)nl.maxStretch, 1.0, 2.0);
-            warpRatio = (ratioAR >= 1.0) ? ((mode == 1) ? ratioAR : std::min(ratioAR, cap)) : ratioAR;
-            cropScale = (ratioAR >= 1.0) ? std::max(1.0, ratioAR / std::max(warpRatio, 0.01)) : 1.0;
-            const bool warpOK = (mode == 1) || (ratioAR >= 1.0) || (1.0 / ratioAR <= fillLimit);
-            if (mode == 3) nlsAction = 0;                  // Off
-            else if (mode == 2) nlsAction = 2;             // Crop: always, no warp
-            else if (mode == 1) nlsAction = 1;             // Stretch: warp regardless
-            // AUTO WAITS FOR A CONFIRMED BAND. Acting on "no bars detected" warped a
-            // scope film by 34.6 % (measured 30 Oct 15:48:52: bars=0/0 of 1436,
-            // activeAR=1.778 -> ratio=1.346, while the true correction was 0.991),
-            // and which way it went depended only on whether the detector latched a
-            // real band before or after the opening black frames - the "NLS is hit
-            // and miss at start-up" report. Auto now refuses to fill until the bar
-            // detection is stable and valid; the Stretch mode below still honours an
-            // explicit instruction to warp regardless.
-            else nlsAction = (warpOK && bandValid) ? 1 : 0; // Auto: needs a confirmed band
+            NlsSplitFactors(ratioAR, std::clamp(nl.axis, 0, 3), (double)nl.split, cap,
+                            mode != 1,        // Auto caps; Stretch never crops
+                            warpX, warpY, &cropX, &cropY);
+            // The decision lives in NlsFillAction (see its comment); the AUTO rule it
+            // implements waits for a confirmed band: acting on "no bars detected"
+            // warped a scope film by 34.6 % (measured 30 Oct 15:48:52: bars=0/0 of
+            // 1436, activeAR=1.778 -> ratio=1.346, while the true correction was
+            // 0.991), and which way it went depended only on whether the detector
+            // latched a real band before or after the opening black frames - the
+            // "NLS is hit and miss at start-up" report.
+            nlsAction = NlsFillAction(clientAR, activeAR, bandValid, mode, fillLimit);
             if (nlsAction != 1 && nlsAction != 2) {
                 static double s_loggedAR = 0.0;
                 if (fabs(s_loggedAR - activeAR) > 0.01) {
@@ -1172,6 +1219,9 @@ HRESULT MpcPlayer::ResizeVideo()
         int destW = clientW;
         int destH = clientH;
         m_nlsWarpRatio.store(1.0f);
+        m_nlsWarpRatioY.store(1.0f);
+        m_nlsWarpPct.store(0);      // no warp this pass: the panel must not show a stale one
+        m_nlsCropPct.store(0);
         if (g.mode != 2) {
             if (clientAR > videoAR) destW = (int)(clientH * videoAR + 0.5);
             else if (clientAR < videoAR) destH = (int)(clientW / videoAR + 0.5);
@@ -1179,16 +1229,18 @@ HRESULT MpcPlayer::ResizeVideo()
             destW = (int)lround(fillScaleW);
             destH = (int)lround(fillScaleH);
         } else if (nlsAction == 1 && m_nlsBandKnown.load()) {
-            // The warp takes the correction up to Fill limit; cropScale covers the
-            // remainder with a uniform zoom, so the screen is filled either way.
-            m_nlsWarpRatio.store((float)warpRatio);
-            m_nlsWarpPct.store((int)lround(fabs(warpRatio - 1.0) * 100.0));
-            m_nlsCropPct.store((int)lround(fabs(cropScale - 1.0) * 100.0));
+            // The warp takes each axis up to Max distortion; the geometry zoom
+            // covers the remainder, so the screen is filled either way. The crop
+            // is applied on the axis that has slack only (see `residue` above).
+            m_nlsWarpRatio.store((float)warpX);
+            m_nlsWarpRatioY.store((float)warpY);
+            m_nlsWarpPct.store((int)lround(std::max(fabs(warpX - 1.0), fabs(warpY - 1.0)) * 100.0));
+            m_nlsCropPct.store((int)lround((std::max(cropX, cropY) - 1.0) * 100.0));
             const double hA2 = m_nlsBandValid.load()
                 ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
-            destW = (int)lround((double)clientW * cropScale);
-            destH = geomCrop ? (int)lround((double)clientH / hA2 * cropScale)
-                             : (int)lround((double)clientH * cropScale);
+            destW = (int)lround((double)clientW * cropX);
+            destH = geomCrop ? (int)lround((double)clientH / hA2 * cropY)
+                             : (int)lround((double)clientH * cropY);
         }
         m_nlsGeomCrop.store(geomCrop);
         const double zoom = std::clamp(g.zoom, 0.5, 2.0);
@@ -3335,11 +3387,23 @@ void MpcPlayer::ApplyPostFx()
             // The geometry may already have absorbed part of the correction (the split in
             // ResizeVideo); the shader takes exactly what is left over.
             const double ratioAR = winAR / activeAR;
-            const double warp = (double)m_nlsWarpRatio.load();
-            const bool vertical = (pendingNls_.axis == 2);   // explicit override only
-            double ratio = (warp > 0.01) ? warp : (vertical ? 1.0 / ratioAR : ratioAR);
-            if (!(ratio > 0.0)) ratio = 1.0;
+            // Derived from the SETTINGS, not from what the geometry last published:
+            // a settings push can run off the graph thread, where ResizeVideo defers,
+            // and reading the published factors then baked the previous change into
+            // the shader (one push of lag, measured with nls_proof). NlsSplitFactors
+            // is the single definition both halves use.
             const double maxStretch = std::clamp((double)pendingNls_.maxStretch, 1.0, 2.0);
+            const int axis = std::clamp(pendingNls_.axis, 0, 3);
+            double rx = 1.0, ry = 1.0;
+            NlsSplitFactors(ratioAR, axis,
+                            (double)pendingNls_.split, maxStretch,
+                            pendingNls_.fillMode != 1,   // Stretch never crops, so never caps
+                            rx, ry);                     // the geometry owns the crop
+            // Same for the fill decision: NlsFillAction is the one definition, so a
+            // Crop leg cannot get the warp injected on top of its crop just because
+            // the geometry had not run yet when this push arrived.
+            const int fillAction = NlsFillAction(winAR, activeAR, haveBand,
+                                                 pendingNls_.fillMode, pendingNls_.fillLimit);
             // What filling WOULD cost on this title, in per cent. Published for the
             // INFO panel so "Fill limit" can be set knowingly (a 2.39 film on a
             // 16:9 screen needs ~36 % squeeze, a 16:9 title on a scope screen ~34 %
@@ -3347,37 +3411,38 @@ void MpcPlayer::ApplyPostFx()
             m_nlsNeedPct.store((int)lround(fabs(ratioAR - 1.0) * 100.0));
             // 2 % is below the threshold where a uniform stretch is visible, so
             // the common scope-film-on-scope-screen case (measured 1.009) gets the
-            // crop from the resize and NO shader pass at all.
+            // crop from the resize and NO shader pass at all. Each axis is tested
+            // on its own: a split that is 1 % on x and 13 % on y still needs the pass.
             //
             // A band that geometry REFUSED to fill must not be warped either: the picture
             // is being shown at its own aspect and a warp would only distort it.
             // The 2 % deadband applies to both directions — a 0.98 squeeze is as
             // invisible as a 1.02 stretch.
-            if (fabs(ratio - 1.0) > 0.02 && m_nlsFillOk.load() && !m_nlsCropFill.load()) {
-                if (ratio > 1.0) ratio = std::min(ratio, maxStretch);
+            if ((fabs(rx - 1.0) > 0.02 || fabs(ry - 1.0) > 0.02) && fillAction == 1) {
                 nls::Params np;
                 np.activeL = 0.0f;
                 np.activeR = 1.0f;
                 np.activeT = 0.0f;
                 np.activeB = 1.0f;
-                np.ratio = (float)ratio;
+                np.ratioX = (float)rx;
+                np.ratioY = (float)ry;
                 np.strength = pendingNls_.strength;
                 np.center = pendingNls_.center;
                 np.curve = pendingNls_.curve;
-                np.vertical = vertical;
                 nlsSrc = nls::Source(np);
                 Log("[NLS] %s bars=%d/%d of %d geomCrop=%d frameAR=%.3f activeAR=%.3f "
-                    "winAR=%.3f ratio=%.3f centre=%.2f curve=%.2f strength=%.2f",
-                    vertical ? "vertical" : "horizontal", top, bot, H, geomCrop ? 1 : 0,
-                    fullAR, activeAR, winAR, ratio,
+                    "winAR=%.3f ratio=%.3f/%.3f centre=%.2f curve=%.2f strength=%.2f",
+                    axis == 2 ? "vertical" : (axis == 3 ? "split" : "horizontal"),
+                    top, bot, H, geomCrop ? 1 : 0,
+                    fullAR, activeAR, winAR, rx, ry,
                     (double)np.center, (double)np.curve, (double)np.strength);
             } else {
                 Log("[NLS] no pass bars=%d/%d of %d geomCrop=%d winAR=%.3f activeAR=%.3f "
-                    "ratio=%.3f%s", top, bot, H, geomCrop ? 1 : 0,
-                    winAR, activeAR, ratio,
-                    m_nlsCropFill.load() ? " (crop to fill)"
-                        : (!m_nlsFillOk.load() ? " (fill refused: letterboxed at its own aspect)"
-                                               : " (crop only)"));
+                    "ratio=%.3f/%.3f%s", top, bot, H, geomCrop ? 1 : 0,
+                    winAR, activeAR, rx, ry,
+                    fillAction == 2 ? " (crop to fill)"
+                        : (fillAction == 0 ? " (fill refused: letterboxed at its own aspect)"
+                                           : " (crop only)"));
             }
         }
     }
@@ -4469,7 +4534,8 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             oAny = oAny || hit;
         } else if (grp == "geo") {
             if (name == "nls")            { nls.enabled = vb(v); nAny = true; }
-            else if (name == "nlsAxis")   { nls.axis = std::clamp((int)vd(v), 0, 2); nAny = true; }
+            else if (name == "nlsAxis")   { nls.axis = std::clamp((int)vd(v), 0, 3); nAny = true; }
+            else if (name == "nlsSplit")  { nls.split = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsStrength") { nls.strength = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.45f); nAny = true; }
             else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }
