@@ -7,7 +7,8 @@
 //    int  s3_attach(int64_t hwnd)                          // video window for MPCVR
 //    int  s3_start_device(const char* device_utf8)         // e.g. "DeckLink Quad HDMI Recorder (1)"
 //    int  s3_stats(char* buf, int cap)                     // JSON (see MpcPlayer::GetUiStatusJson)
-//    int  s3_cmd(const char* json_utf8)                    // {"a":"play"} {"a":"pause"} {"a":"stop"} {"a":"seek","pos":N}
+//    int  s3_cmd(const char* json_utf8)                    // {"a":"play"} {"a":"pause"} {"a":"stop"}
+//                                                          // {"a":"stopgraph"} {"a":"seek","pos":N}
 //    void s3_shutdown(void)                                // ordered teardown (DESIGN.md)
 //    int  s3_version(char* buf, int cap)
 //    int  s3_recent_log(char* buf, int cap)                // last engine log lines, newest last,
@@ -19,6 +20,10 @@
 
 #include <windows.h>
 #include <ole2.h>
+#include <dshow.h>
+#include <uuids.h>
+#include <atomic>
+#include <vector>
 
 #include <atomic>
 #include <cstdio>
@@ -29,6 +34,50 @@
 #include <thread>
 
 #include "MpcPlayer.h"
+
+// ---- offline chapter thumbnails -------------------------------------------------
+// Second, temporary graph: LAV Splitter -> LAV Video -> SampleGrabber -> Null.
+// It never touches the live playback graph; the UI runs this on a worker thread and
+// caches the resulting 16:9 frame. HDR is whatever LAV's RGB conversion produces
+// (approximate); SDR is exact.
+// File mode graph is the same one MpcPlayer builds: File Source (Async) -> LAV
+// Splitter -> LAV Video. (LAVSplitterSource by extension resolves to the codec-pack
+// copy and its first output is already video, which cannot feed LAV Splitter.)
+static const CLSID CLSID_AsyncReaderThumb = {0xE436EBB5,0x524F,0x11CE,{0x9F,0x53,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+static const CLSID CLSID_LavSplitterThumb = {0x171252A0,0x8820,0x4AFE,{0x9D,0xF8,0x5C,0x92,0xB2,0xD6,0x6B,0x04}};
+static const CLSID CLSID_LavVideoThumb    = {0xEE30215D,0x164F,0x4A92,{0xA4,0xEB,0x9D,0x4C,0x13,0x39,0x0F,0x9F}};
+static const CLSID CLSID_SampleGrabberThumb = {0xC1F400A0,0x3F08,0x11D3,{0x9F,0x0B,0x00,0x60,0x08,0x03,0x9E,0x37}};
+static const CLSID CLSID_NullRendererThumb  = {0xC1F400A4,0x3F08,0x11D3,{0x9F,0x0B,0x00,0x60,0x08,0x03,0x9E,0x37}};
+static const IID   IID_ISampleGrabberThumb  = {0x6B652FFF,0x11FE,0x4FCE,{0x92,0xAD,0x02,0x66,0xB5,0xD7,0xC7,0x8F}};
+struct ISampleGrabberCBX : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE SampleCB(double,IMediaSample*)=0;
+    virtual HRESULT STDMETHODCALLTYPE BufferCB(double,BYTE*,long)=0;
+};
+struct ISampleGrabberX : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE SetOneShot(BOOL)=0;
+    virtual HRESULT STDMETHODCALLTYPE SetMediaType(const AM_MEDIA_TYPE*)=0;
+    virtual HRESULT STDMETHODCALLTYPE GetConnectedMediaType(AM_MEDIA_TYPE*)=0;
+    virtual HRESULT STDMETHODCALLTYPE SetBufferSamples(BOOL)=0;
+    virtual HRESULT STDMETHODCALLTYPE GetCurrentBuffer(long*,long*)=0;
+    virtual HRESULT STDMETHODCALLTYPE GetCurrentSample(IMediaSample**)=0;
+    virtual HRESULT STDMETHODCALLTYPE SetCallback(ISampleGrabberCBX*,long)=0;
+};
+static void ThumbFreeMt(AM_MEDIA_TYPE& mt){
+    if(mt.cbFormat&&mt.pbFormat) CoTaskMemFree(mt.pbFormat);
+    if(mt.pUnk) mt.pUnk->Release();
+    ZeroMemory(&mt,sizeof(mt)); }
+class ThumbGrabCB : public ISampleGrabberCBX {
+public:
+    std::atomic<long> samples{0};
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,void** ppv) override {
+        if(!ppv) return E_POINTER;
+        if(riid==IID_IUnknown||riid==IID_ISampleGrabberThumb){ *ppv=this; AddRef(); return S_OK; }
+        *ppv=nullptr; return E_NOINTERFACE; }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE SampleCB(double,IMediaSample*) override { samples++; return S_OK; }
+    HRESULT STDMETHODCALLTYPE BufferCB(double,BYTE*,long) override { samples++; return S_OK; }
+};
 
 // MFC is statically linked into this DLL (mpchc_engine.lib is UseOfMfc Static), and the
 // subtitle stack made that load-bearing: the allocator-presenter and the pass-thru
@@ -323,6 +372,180 @@ __declspec(dllexport) int s3_start_device(const char* deviceUtf8)
     return (int)hr;
 }
 
+// ---- chapter thumbnail extraction ----------------------------------------------
+static std::wstring ThumbWide(const char* s){
+    if(!s||!*s) return std::wstring();
+    int n=MultiByteToWideChar(CP_UTF8,0,s,-1,nullptr,0);
+    if(n<=1) return std::wstring();
+    std::vector<wchar_t> b((size_t)n);
+    MultiByteToWideChar(CP_UTF8,0,s,-1,b.data(),n);
+    return std::wstring(b.data(),(size_t)n-1);
+}
+static bool PinOffers(IPin* p,const GUID& major){
+    IEnumMediaTypes* e=nullptr; if(!p||FAILED(p->EnumMediaTypes(&e))||!e) return false;
+    AM_MEDIA_TYPE* mt=nullptr; bool ok=false;
+    while(e->Next(1,&mt,nullptr)==S_OK){
+        if(mt->majortype==major) ok=true;
+        ThumbFreeMt(*mt); CoTaskMemFree(mt); mt=nullptr;
+        if(ok) break; }
+    e->Release(); return ok;
+}
+static IPin* ThumbPin(IBaseFilter* f,PIN_DIRECTION dir,bool videoOnly){
+    IEnumPins* e=nullptr; if(!f||FAILED(f->EnumPins(&e))||!e) return nullptr;
+    IPin* p=nullptr; IPin* found=nullptr;
+    while(e->Next(1,&p,nullptr)==S_OK){
+        PIN_DIRECTION d;
+        if(SUCCEEDED(p->QueryDirection(&d))&&d==dir&&(!videoOnly||PinOffers(p,MEDIATYPE_Video))){ found=p; break; }
+        p->Release(); }
+    e->Release(); return found;
+}
+static bool WriteBmpThumb(const std::wstring& path,const BYTE* data,long size,const BITMAPINFOHEADER& bih){
+    if(!data||size<=0) return false;
+    BITMAPFILEHEADER fh={};
+    fh.bfType=0x4D42; fh.bfOffBits=sizeof(fh)+sizeof(BITMAPINFOHEADER); fh.bfSize=fh.bfOffBits+(DWORD)size;
+    BITMAPINFOHEADER ih=bih;
+    ih.biSize=sizeof(BITMAPINFOHEADER); ih.biCompression=BI_RGB; ih.biSizeImage=(DWORD)size;
+    FILE* f=_wfopen(path.c_str(),L"wb"); if(!f) return false;
+    bool ok=fwrite(&fh,1,sizeof(fh),f)==sizeof(fh)&&fwrite(&ih,1,sizeof(ih),f)==sizeof(ih)&&
+            fwrite(data,1,(size_t)size,f)==(size_t)size;
+    fclose(f); return ok;
+}
+// Builds a throwaway graph and writes one BMP at `seconds`. Returns S_OK/HRESULT.
+extern "C" __declspec(dllexport) int s3_chapter_thumb(const char* fileUtf8,double seconds,
+                                                      const char* outBmpUtf8)
+{
+    std::wstring file=ThumbWide(fileUtf8), out=ThumbWide(outBmpUtf8);
+    if(file.empty()||out.empty()) return E_INVALIDARG;
+    HRESULT co=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+    bool uninit=SUCCEEDED(co);
+    HRESULT hr=S_OK; const char* stage="init";
+    IGraphBuilder* graph=nullptr; IBaseFilter* srcF=nullptr; IBaseFilter* split=nullptr;
+    IBaseFilter* dec=nullptr; IBaseFilter* grabF=nullptr; IBaseFilter* nullF=nullptr;
+    IFileSourceFilter* src=nullptr; ISampleGrabberX* grab=nullptr;
+    IMediaControl* ctl=nullptr; IMediaSeeking* seek=nullptr;
+    IPin* srco=nullptr; IPin* si=nullptr;
+    IPin* so=nullptr; IPin* di=nullptr; IPin* dout=nullptr; IPin* gi=nullptr;
+    IPin* go=nullptr; IPin* ni=nullptr;
+    ThumbGrabCB cb;
+    do {
+        stage="create graph";
+        hr=CoCreateInstance(CLSID_FilterGraph,nullptr,CLSCTX_INPROC_SERVER,IID_IGraphBuilder,(void**)&graph);
+        if(FAILED(hr)) break;
+        stage="create file source";
+        hr=CoCreateInstance(CLSID_AsyncReaderThumb,nullptr,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&srcF);
+        if(FAILED(hr)) break;
+        stage="create splitter";
+        hr=CoCreateInstance(CLSID_LavSplitterThumb,nullptr,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&split);
+        if(FAILED(hr)) break;
+        stage="create decoder";
+        hr=CoCreateInstance(CLSID_LavVideoThumb,nullptr,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&dec);
+        if(FAILED(hr)) break;
+        stage="create grabber";
+        hr=CoCreateInstance(CLSID_SampleGrabberThumb,nullptr,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&grabF);
+        if(FAILED(hr)) break;
+        stage="create null";
+        hr=CoCreateInstance(CLSID_NullRendererThumb,nullptr,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&nullF);
+        if(FAILED(hr)) break;
+        graph->AddFilter(srcF,L"File Source (Async)");
+        graph->AddFilter(split,L"LAV Splitter");
+        graph->AddFilter(dec,L"LAV Video Decoder");
+        graph->AddFilter(grabF,L"SampleGrabber");
+        graph->AddFilter(nullF,L"Null Renderer");
+        stage="file source QI";
+        if(FAILED(srcF->QueryInterface(IID_IFileSourceFilter,(void**)&src))||!src){ hr=E_NOINTERFACE; break; }
+        stage="load";
+        hr=src->Load(file.c_str(),nullptr);
+        if(FAILED(hr)) break;
+        stage="connect source-splitter";
+        srco=ThumbPin(srcF,PINDIR_OUTPUT,false);
+        si=ThumbPin(split,PINDIR_INPUT,false);
+        if(!srco||!si){ hr=VFW_E_NOT_FOUND; break; }
+        hr=graph->ConnectDirect(srco,si,nullptr);
+        if(FAILED(hr)) break;
+        stage="grabber QI";
+        if(FAILED(grabF->QueryInterface(IID_ISampleGrabberThumb,(void**)&grab))||!grab){ hr=E_NOINTERFACE; break; }
+        AM_MEDIA_TYPE mt={};
+        mt.majortype=MEDIATYPE_Video; mt.subtype=MEDIASUBTYPE_RGB32; mt.formattype=FORMAT_VideoInfo;
+        mt.cbFormat=sizeof(VIDEOINFOHEADER); mt.pbFormat=(BYTE*)CoTaskMemAlloc(mt.cbFormat);
+        if(!mt.pbFormat){ hr=E_OUTOFMEMORY; break; }
+        ZeroMemory(mt.pbFormat,mt.cbFormat);
+        VIDEOINFOHEADER* vih=(VIDEOINFOHEADER*)mt.pbFormat;
+        vih->bmiHeader.biSize=sizeof(BITMAPINFOHEADER); vih->bmiHeader.biWidth=0;
+        vih->bmiHeader.biHeight=0; vih->bmiHeader.biPlanes=1; vih->bmiHeader.biBitCount=32;
+        stage="set grabber type";
+        hr=grab->SetMediaType(&mt);
+        ThumbFreeMt(mt);
+        if(FAILED(hr)) break;
+        grab->SetCallback(&cb,0);
+        grab->SetBufferSamples(TRUE); grab->SetOneShot(FALSE);
+        stage="connect split-dec";
+        so=ThumbPin(split,PINDIR_OUTPUT,true);
+        di=ThumbPin(dec,PINDIR_INPUT,true);
+        if(!so||!di){ hr=VFW_E_NOT_FOUND; break; }
+        hr=graph->ConnectDirect(so,di,nullptr);
+        if(FAILED(hr)) break;
+        stage="connect dec-grab";
+        dout=ThumbPin(dec,PINDIR_OUTPUT,true);
+        gi=ThumbPin(grabF,PINDIR_INPUT,true);
+        if(!dout||!gi){ hr=VFW_E_NOT_FOUND; break; }
+        hr=graph->ConnectDirect(dout,gi,nullptr);
+        if(FAILED(hr)) break;
+        stage="connect grab-null";
+        go=ThumbPin(grabF,PINDIR_OUTPUT,false);
+        ni=ThumbPin(nullF,PINDIR_INPUT,false);
+        if(!go||!ni){ hr=VFW_E_NOT_FOUND; break; }
+        hr=graph->ConnectDirect(go,ni,nullptr);
+        if(FAILED(hr)) break;
+        stage="seek";
+        graph->QueryInterface(IID_IMediaSeeking,(void**)&seek);
+        if(seek){
+            LONGLONG t=(LONGLONG)((seconds>0.0?seconds:0.0)*10000000.0);
+            seek->SetPositions(&t,AM_SEEKING_AbsolutePositioning,nullptr,AM_SEEKING_NoPositioning);
+        }
+        stage="pause";
+        graph->QueryInterface(IID_IMediaControl,(void**)&ctl);
+        if(!ctl){ hr=E_NOINTERFACE; break; }
+        hr=ctl->Pause();
+        if(FAILED(hr)) break;
+        stage="run";
+        hr=ctl->Run();
+        if(FAILED(hr)) break;
+        stage="wait sample";
+        for(int i=0;i<240&&cb.samples.load()==0;++i) Sleep(50);
+        if(cb.samples.load()==0){ hr=HRESULT_FROM_WIN32(ERROR_TIMEOUT); break; }
+        stage="buffer";
+        AM_MEDIA_TYPE cmt={};
+        hr=grab->GetConnectedMediaType(&cmt);
+        if(FAILED(hr)) break;
+        VIDEOINFOHEADER* v=cmt.pbFormat?((VIDEOINFOHEADER*)cmt.pbFormat):nullptr;
+        long size=0; grab->GetCurrentBuffer(&size,nullptr);
+        if(size<=0||!v){ ThumbFreeMt(cmt); hr=E_FAIL; break; }
+        std::vector<BYTE> buf((size_t)size);
+        long got=size;
+        hr=grab->GetCurrentBuffer(&got,(long*)buf.data());
+        if(SUCCEEDED(hr)&&got>0){
+            BITMAPINFOHEADER bih=v->bmiHeader;
+            if(bih.biHeight==0&&vih) bih.biHeight=vih->bmiHeader.biHeight;
+            if(!WriteBmpThumb(out,buf.data(),got,bih)) hr=E_FAIL;
+        } else hr=E_FAIL;
+        ThumbFreeMt(cmt);
+    } while(false);
+    if(ctl) ctl->Stop();
+    if(srco)srco->Release(); if(si)si->Release();
+    if(so)so->Release(); if(di)di->Release(); if(dout)dout->Release(); if(gi)gi->Release();
+    if(go)go->Release(); if(ni)ni->Release();
+    if(seek)seek->Release(); if(ctl)ctl->Release(); if(src)src->Release(); if(grab)grab->Release();
+    if(srcF)srcF->Release(); if(split)split->Release(); if(dec)dec->Release();
+    if(grabF)grabF->Release(); if(nullF)nullF->Release();
+    if(graph)graph->Release();
+    if(uninit) CoUninitialize();
+    { char msg[512];
+      _snprintf_s(msg,sizeof(msg),_TRUNCATE,"[THUMB] '%s' t=%.1f hr=0x%08X stage=%s",
+                  fileUtf8,seconds,(unsigned)hr,stage);
+      EngineLog(msg); }
+    return (int)hr;
+}
+
 __declspec(dllexport) int s3_stats(char* buf, int cap)
 {
     if (!buf || cap <= 0) return -1;
@@ -337,6 +560,10 @@ __declspec(dllexport) int s3_stats(char* buf, int cap)
     // What the UI thread DOES own is the renderer's window, so the detach that the
     // refresh thread requests at end-of-title is cashed in here, on the poll.
     g_player()->ApplyPendingWindowDetach();
+    // Same rule for NLS: the live thread watches the renderer's detected black
+    // band and asks for a re-injection when it moves; the shader list is mutated
+    // here, on the thread that already pushes settings.
+    g_player()->ApplyPendingNlsRefresh();
     const std::string j = g_player()->GetUiStatusJson();
     const size_t n = j.size();
     if (n + 1 > (size_t)cap) {
@@ -386,6 +613,10 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
     // Live capture has nothing to stop — the engine owns start/stop and the
     // self-healing monitor drives transitions, so "stop" stays a benign pause.
     if (a == "stop")  return (int)g_player()->Pause();
+    // File playback's real Stop: mediaControl_->Stop() plus DetachRendererWindow()
+    // so the last frame stops covering the host/wallpaper when the library opens.
+    // Kept separate from "stop" so live capture keeps its benign-pause contract.
+    if (a == "stopgraph") return (int)g_player()->Stop();
     if (a == "open") {
         // Media Player mode — a real FILE, not a DeckLink device. This was the
         // route previously taken: the UI called s3_start_device with the file path
@@ -428,6 +659,32 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
             }
         }
         return (int)g_player()->ApplySettingsFlat(sets);
+    }
+    if (a == "videorect") {
+        // {"a":"videorect","x":..,"y":..,"w":..,"h":..} — the picture canvas inside
+        // the shell's client while chrome occupies the rest. w or h <= 0 clears it.
+        // The renderer's WINDOW is never resized for this: only the destination rect
+        // moves, which is safe during a live capture.
+        return (int)g_player()->SetVideoRect(atoi(JsonField(s, "x").c_str()),
+                                             atoi(JsonField(s, "y").c_str()),
+                                             atoi(JsonField(s, "w").c_str()),
+                                             atoi(JsonField(s, "h").c_str()));
+    }
+    if (a == "resize") {
+        // {"a":"resize"} — re-place the renderer's window into the current
+        // client rect of the attach target. The Qt shell resizes the viewport
+        // widget when the rails go up/down (video-yields-space); a native
+        // child window does NOT follow its parent's size on its own, so the
+        // shell must ask, exactly like s3_shell.cpp does on WM_SIZE.
+        return (int)g_player()->ResizeVideo();
+    }
+    if (a == "step") {
+        // {"a":"step","dir":1|-1} — one frame duration, paused first.
+        return (int)g_player()->StepFrame(atoi(JsonField(s, "dir").c_str()));
+    }
+    if (a == "chapter") {
+        // {"a":"chapter","dir":1|-1} — next/prev splitter chapter mark.
+        return (int)g_player()->SeekChapter(atoi(JsonField(s, "dir").c_str()));
     }
     if (a == "track") {
         // {"a":"track","index":N} — select the Nth AUDIO stream (audio-relative
