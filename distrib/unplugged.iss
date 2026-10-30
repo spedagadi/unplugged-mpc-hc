@@ -1,4 +1,4 @@
-﻿; ---------------------------------------------------------------------------
+; ---------------------------------------------------------------------------
 ; unplugged.iss -- installer for the Unplugged HTPC app and its filter chain.
 ;
 ; Derived in structure from mpc-hc_setup.iss and LAVFilters.iss in this tree;
@@ -51,7 +51,7 @@
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
 // The renderer's staging folder, named for this product since the filter became
@@ -63,7 +63,7 @@
 #define FiltersSrc   "..\..\unplugged-VideoRenderer\_bin\UnpluggedRenderer-0.10.8.2637"
 #define LavSrc       "..\..\LAVFilters\bin_x64"
 #define DlSrc        "..\src\thirdparty\DeckLinkSource\bin\Filters_x64"
-#define AppSrc       "..\src\unplugged-ui\dist\Unplugged"
+#define AppSrc       "..\dist\Unplugged-2.0.0"
 
 [Setup]
 ; A NEW AppId, not MPC-HC's: this is a different product and must not upgrade

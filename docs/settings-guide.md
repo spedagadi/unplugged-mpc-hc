@@ -3,12 +3,28 @@
 For **Unplugged 1.3.0**. Covers every control visible in the settings panel:
 what it does, its full range, and what the picture does when you move it.
 
+## Playback keys
+
+Media Player mode only — live capture has no position to seek. Every binding
+is an ordinary key inside the Unplugged window: nothing is captured while
+another app has focus, so Unplugged never interferes with anything else
+running on the machine.
+
+| Key | Action |
+| --- | --- |
+| Space | pause / resume |
+| ← / → | back / forward 30 s |
+| ↑ | show / hide the settings chrome while playing |
+| + / − or ↓ | volume up / down |
+| M | mute |
+| Esc | close settings → stop back to the library → quit the app, one layer per press |
+
 ## How to get started
 
 **Quick config**
 
-1. Press **Up** on the keyboard to toggle the live status and settings panels
-   (Up again hides them).
+1. Press **F1** to open the live status and settings panels (or **Up** while
+   something is playing); **Esc** closes them again.
 2. **Convert to SDR** — On.
 3. **SDR display nits**, **Static nits (max)** and **Display black (nits)** —
    set to your display's calibrated, measured values.
@@ -16,7 +32,11 @@ what it does, its full range, and what the picture does when you move it.
    the HDR tab.
 5. Leave the Zion tab settings on **Auto** where applicable.
 6. Calibration LUT files load from **Output → Display calibration**.
-7. Frame captures come from **Output → Save frame as PNG**.
+7. Frame captures come from **Output → Save frame as PNG** (asks where), or
+   **Ctrl+S** while the picture is paused, which writes straight to
+   `Pictures\Unplugged\<date>\frame_NNNN.png` — one folder per day, numbered so
+   captures never overwrite each other. The shortcut does nothing while playing:
+   pause first so the frame is the one you are looking at.
 
 **Why that order — three stages, in sequence:**
 
@@ -264,6 +284,28 @@ the rest of the frame is graded.
 | **Chroma upsampling** | `Nearest` / `Bilinear` / `CatmullRom` / `KrigBilateral` | Bilinear | How colour from 4:2:0 video (almost all of it) is expanded to full resolution. Nearest: raw blocks — diagnostic only. Bilinear: soft, never wrong. CatmullRom: a bit sharper. KrigBilateral: the sharpest colour edges (best on fine chroma detail like red text), the most GPU work. |
 | **Upscaling** | `Nearest` / `Mitchell` / `CatmullRom` / `Lanczos2` / `Lanczos3` / `Jinc2` | CatmullRom | The enlargement filter for smaller-than-display sources. Gentle climb from soft to sharp: Mitchell (very smooth) → CatmullRom (balanced default) → Lanczos2 → Lanczos3 (crisper, small risk of ringing on edges) → Jinc2 (sharpest, ringing-prone on grain). On noisy SD material, sharper is not better. |
 | **Downscaling** | `Box` / `Bilinear` / `Hamming` / `Bicubic` / `BicubicSharp` / `Lanczos` | Hamming | Shrinking a source to fit. Hamming is the balanced default: preserves detail without aliasing. Box/Bilinear go soft, Lanczos/BicubicSharp go crisp and can shimmer on fine patterns (thatches, fences). Matters most for 4K→1080p panels. |
+
+### Geometry
+
+| Setting | Choices / range | Default | What it does |
+| --- | --- | --- | --- |
+| **Fit mode** | `Source` / `Fixed aspect` / `Fill screen` | Source | How the picture is fitted to the window. Source respects the video's own aspect; Fixed aspect uses the **Fixed aspect** value; Fill screen stretches to the window and can remove black bars. |
+| **Fixed aspect** | 1.00 – 3.00 | 1.78 | The display aspect used in Fixed aspect mode. 1.78 = 16:9, 2.39 = scope. For a 2.35 screen use the screen's measured ratio. |
+| **Zoom** | 50 – 200 % | 100 % | Scales the fitted picture. Above 100 % crops the overflow; use with Pan. 100 % is the neutral fit. |
+| **Pan X** | -100 – 100 % | 0 % | Moves a zoomed picture horizontally across its overflow. Has no effect while the picture fits inside the window. |
+| **Pan Y** | -100 – 100 % | 0 % | Moves a zoomed picture vertically across its overflow. Has no effect while the picture fits inside the window. |
+| **Enable NLS** | On/Off | Off | Non-linear stretch: expands the active picture toward the screen edges while keeping the central band close to its original geometry. Intended for scope screens, projectors and anamorphic setups. Uses Fill geometry automatically. |
+| **Axis** | `Auto` / `Horizontal` / `Vertical` | Auto | Which axis absorbs the correction. Auto chooses horizontal for content narrower than the window and vertical for content wider. |
+| **Strength** | 0 – 100 % | 100 % | How much of the available correction is applied. 0 is off; 100 fills the screen. |
+| **Centre protection** | 0 – 45 % | 35 % | The central fraction kept closest to correct geometry. Larger protects more of the centre by moving more distortion to the edges. |
+| **Curve** | 1.0 – 2.9 | 2.0 | Distribution of the stretch across the outer band. Higher values push more distortion toward the edges. |
+| **Max stretch** | 100 – 150 % | 140 % | Upper limit for the aspect correction. Low values distort less but may leave bars; high values fill more aggressively. |
+| **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small). **Crop** scales uniformly until the picture covers the screen and cuts the overflow — zero distortion, spends picture. **Auto** warps while the correction is inside Fill limit and crops beyond it, so faces never get the hard squeeze. **Off** letterboxes at the picture's own aspect. |
+| **Fill limit** | 100 – 200 % | 105 % | The largest aspect correction Auto will WARP, in either direction (sides magnified for a narrow picture, drawn in for a wide one). Beyond it Auto switches to Crop, and Stretch letterboxes instead. The live panel's **Fill cost** row shows what the current title needs — a 2.39 film on a 16:9 screen is 36 %. |
+| **Axis** | `Auto` / `Horizontal` / `Vertical` | Auto | Which axis absorbs the correction. Auto is always horizontal — the geometry fills the window with the active band vertically and the full width horizontally, so any mismatch shows up as a horizontal scale: above 1 the sides are magnified (the classic stretch), below 1 they are drawn in gradually (a squeeze) while the protected centre stays at native scale. Vertical is an override for anamorphic setups. |
+| **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. |
+
+Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does.
 
 ### Output
 
