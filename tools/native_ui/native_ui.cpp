@@ -489,7 +489,7 @@ static Row g_rows[]={
  {4,0,L"NON-LINEAR STRETCH",L"Enable NLS","geo.nls",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,2,L"NON-LINEAR STRETCH",L"Axis","geo.nlsAxis",0,0,0,0,false,0,kNlsAxis,3,kNlsAxisV,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Strength","geo.nlsStrength",0,100,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {4,1,L"NON-LINEAR STRETCH",L"Centre protection","geo.nlsCenter",0,45,1,45,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Centre protection","geo.nlsCenter",0,90,1,45,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Curve","geo.nlsCurve",1.0,2.9,0.05,1.2,false,0,nullptr,0,nullptr,{},0,0,0,0},
  // Split: horizontal's share of the correction, in per cent (50 = even). Only
  // used when Axis = Split; the vertical axis takes the rest.

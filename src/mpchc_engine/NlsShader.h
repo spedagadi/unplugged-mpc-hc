@@ -86,12 +86,31 @@ float map_radius(float r, float ratio0)
     if (CENTER <= 0.0001)
     {
         // Smooth power curve over the whole radius: no internal boundary, and
-        // monotone for ratio either side of 1 (all terms stay positive).
-        return ratio * r - (ratio - 1.0) * pow(r, CURVE);
+        // monotone for ratio either side of 1 (all terms stay positive) - as long
+        // as the slope at r=1 is still positive: ratio - (ratio-1)*curve >= 0.
+        // An uncapped ratio (Stretch mode) with a high curve would fold the
+        // outermost pixels back on themselves, so the curve is bounded by that
+        // rather than by the slider.
+        float cv = (ratio > 1.0) ? min(CURVE, ratio / max(ratio - 1.0, 0.001))
+                                 : CURVE;
+        return ratio * r - (ratio - 1.0) * pow(r, cv);
     }
-    float c = min(CENTER, 0.45);
+    // THE PROTECTED CENTRE MAY RUN ALMOST TO THE EDGE. It used to be clamped at
+    // 0.45, which put the whole transition inside the middle half of the screen:
+    // anything between 72 % and the edge was stretched/squeezed, and a face
+    // sitting there read as elongated. Raising it confines the correction to a
+    // rim, and inside the protected region the map is a uniform scale per axis -
+    // i.e. no distortion at all, only zoom - so the middle of the picture stays
+    // clean and the rim takes the whole redistribution.
+    //
+    // The limit is arithmetic, not taste: the linear segment ends at c*ratio, so
+    // a squeeze (ratio < 1) is always safe, while a stretch needs c < ~1/ratio,
+    // and 2/ratio - 1 keeps the ramp gentle enough for the Hermite below to stay
+    // monotone. (Verified for ratio 0.5..1.5, centre 0..0.94, curve 1..2.9.)
+    float cmax = (ratio > 1.0) ? max(0.0, min(0.94, 2.0 / ratio - 1.0)) : 0.94;
+    float c = min(max(CENTER, 0.0), cmax);
     if (r <= c) return r * ratio;
-    float span = max(1.0 - c, 0.0001);
+    float span = max(1.0 - c, 0.02);
     float t = saturate((r - c) / span);
     float t2 = t * t, t3 = t2 * t, t4 = t3 * t, t5 = t4 * t;
     // QUINTIC Hermite: matches value, slope AND curvature at both ends, so the
@@ -104,6 +123,12 @@ float map_radius(float r, float ratio0)
     float startPosition = c * ratio;
     float startSlope = ratio;
     float edgeSlope = max(0.30, 1.0 - (ratio - 1.0) * CURVE);
+    // A short rim ramp would otherwise ask the fixed edge slope for more than the
+    // segment can give and fold back on itself. Applied only where the shape is
+    // NEW (centre > 45 %) or the ratio is extreme (uncapped Stretch beyond 1.5),
+    // so every existing setting keeps the curve it has today.
+    if (c > 0.45 || ratio > 1.5)
+        edgeSlope = min(edgeSlope, 2.0 * ((1.0 - startPosition) / span));
     return h00 * startPosition + h10 * span * startSlope +
            h01 + h11 * span * edgeSlope;
 }

@@ -159,6 +159,32 @@ def map_radius(r, ratio0, strength, center, curve):
     if abs(ratio - 1.0) <= 0.001:
         return r
     if center <= 0.0001:
+        cv = min(curve, ratio / max(ratio - 1.0, 0.001)) if ratio > 1.0 else curve
+        return ratio * r - (ratio - 1.0) * r ** cv
+    cmax = max(0.0, min(0.94, 2.0 / ratio - 1.0)) if ratio > 1.0 else 0.94
+    c = min(max(center, 0.0), cmax)
+    if r <= c:
+        return r * ratio
+    span = max(1.0 - c, 0.02)
+    t = min(max((r - c) / span, 0.0), 1.0)
+    t2, t3, t4, t5 = t * t, t * t * t, t * t * t * t, t * t * t * t * t
+    h00 = 1 - 10 * t3 + 15 * t4 - 6 * t5
+    h10 = t - 6 * t3 + 8 * t4 - 3 * t5
+    h01 = 10 * t3 - 15 * t4 + 6 * t5
+    h11 = -4 * t3 + 7 * t4 - 3 * t5
+    start = c * ratio
+    edge = max(0.30, 1.0 - (ratio - 1.0) * curve)
+    if c > 0.45 or ratio > 1.5:
+        edge = min(edge, 2.0 * ((1.0 - start) / span))
+    return h00 * start + h10 * span * ratio + h01 + h11 * span * edge
+
+
+def old_map_radius(r, ratio0, strength, center, curve):
+    """The map as shipped before the centre could pass 45 %."""
+    ratio = 1.0 + (ratio0 - 1.0) * min(max(strength, 0.0), 1.0)
+    if abs(ratio - 1.0) <= 0.001:
+        return r
+    if center <= 0.0001:
         return ratio * r - (ratio - 1.0) * r ** curve
     c = min(center, 0.45)
     if r <= c:
@@ -177,14 +203,15 @@ def map_radius(r, ratio0, strength, center, curve):
 
 def test_shader_model():
     bad = []
-    for center in (0.0, 0.2, 0.35, 0.45):
+    for center in (0.0, 0.2, 0.35, 0.45, 0.6, 0.75, 0.85, 0.9, 0.94):
         for curve in (1.0, 1.5, 2.0, 2.9):
-            for ratio in (0.5, 0.7, 0.85, 0.95, 1.0, 1.05, 1.15, 1.4):
+            for ratio in (0.4, 0.5, 0.7, 0.85, 0.95, 1.0, 1.05, 1.15, 1.3,
+                          1.5, 1.6, 1.79, 2.0, 2.5):
                 prev = -1.0
-                for i in range(1001):
-                    m = map_radius(i / 1000.0, ratio, 1.0, center, curve)
+                for i in range(2001):
+                    m = map_radius(i / 2000.0, ratio, 1.0, center, curve)
                     if m < prev - 1e-6:
-                        bad.append((center, curve, ratio, i / 1000.0))
+                        bad.append((center, curve, ratio, i / 2000.0))
                         break
                     prev = m
                 if abs(map_radius(1.0, ratio, 1.0, center, curve) - 1.0) > 1e-6:
@@ -194,6 +221,18 @@ def test_shader_model():
     check("map_radius is the identity at ratio 1",
           all(abs(map_radius(i / 100.0, 1.0, 1.0, 0.35, 2.0) - i / 100.0) < 1e-12
               for i in range(101)))
+
+    # A centre protection up to 45 % on the common ratios must produce exactly
+    # the shipped curve (the raised cap may only ADD shapes, never change this).
+    worst = 0.0
+    for center in (0.0, 0.2, 0.35, 0.45):
+        for curve in (1.0, 2.0, 2.9):
+            for ratio in (0.5, 0.7, 0.85, 1.05, 1.15, 1.3):
+                for i in range(0, 200):
+                    r = i / 200.0
+                    worst = max(worst, abs(map_radius(r, ratio, 1.0, center, curve)
+                                           - old_map_radius(r, ratio, 1.0, center, curve)))
+    check("centre <= 45 % keeps the shipped curve", worst < 1e-9, f"worst={worst:.2e}")
 
     # Half strength must stay closer to the identity than full strength.
     ok = True

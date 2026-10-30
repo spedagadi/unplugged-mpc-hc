@@ -4558,7 +4558,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "nlsAxis")   { nls.axis = std::clamp((int)vd(v), 0, 3); nAny = true; }
             else if (name == "nlsSplit")  { nls.split = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsStrength") { nls.strength = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
-            else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.45f); nAny = true; }
+            else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.90f); nAny = true; }
             else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }
             else if (name == "nlsMax")    { nls.maxStretch = std::clamp((float)vd(v), 1.0f, 1.5f); nAny = true; }
             else if (name == "nlsFillLimit") { nls.fillLimit = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }

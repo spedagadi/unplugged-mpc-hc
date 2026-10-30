@@ -90,6 +90,13 @@ static const Cfg kCfgs[] = {
       "nls_proof_8_auto_def140.bmp" },
     { "auto-def110",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.1",
       "nls_proof_9_auto_def110.bmp" },
+    // Rim mode: protect the middle almost to the edge and dump the whole
+    // correction into a narrow rim (the operator's "extreme at the edges, keep
+    // the centre intact"). Horizontal axis, because a stretching axis cannot be
+    // protected past ~1/ratio.
+    { "rim-protect",    "geo.nlsFillMode=1;geo.nlsAxis=1;geo.nlsMax=1.4;geo.nlsCenter=0.9;"
+                        "geo.nlsCurve=2.9",
+      "nls_proof_10_rim.bmp" },
 };
 
 static std::string g_outDir;

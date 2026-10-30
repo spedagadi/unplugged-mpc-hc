@@ -343,7 +343,7 @@ public:
         int   axis = 1;             // 1 horizontal, 2 vertical, 3 split (0 = old "auto")
         float split = 0.5f;         // 0..1, horizontal's share of the correction
         float strength = 1.0f;      // 0..1
-        float center = 0.35f;       // protected centre fraction
+        float center = 0.35f;       // protected centre fraction, 0..0.90
         float curve = 2.0f;         // 1..2.9
         float maxStretch = 1.4f;    // per-axis distortion cap (both directions)
         // How much VERTICAL stretch filling may cost before it is refused.

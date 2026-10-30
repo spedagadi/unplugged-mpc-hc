@@ -212,7 +212,47 @@ user has tested it on a couple of titles and says a cross-title lock is wanted.
 
 ---
 
-## 8. Build / staging (unchanged from the evening handoff)
+## 8. Centre protection: the 45 % cap was the elongation
+
+An end-user capture pair (`nls_off.png` / `nls_on.png`, 2.4:1 title on a 16:9
+screen, Split 50, Max distortion 115) shows "elongated heads" at the sides. The
+face at 65 % width measures sx/sy = 1.02 - the centre is fine. The elongation is
+the TRANSITION band, and it started at 72.5 % of the half-width because
+`map_radius` clamped the protected centre to 0.45 in three places (shader,
+engine clamp, slider max).
+
+Inside the protected region the map is a uniform scale per axis, so the picture
+there is **not distorted at all, only zoomed**; everything outside takes the
+correction. Raising the cap therefore confines the whole redistribution to a
+rim - exactly the operator's "extreme distortion at the edges, crop that area".
+Implemented:
+
+- shader `cmax = (ratio > 1) ? max(0, min(0.94, 2/ratio - 1)) : 0.94`, engine
+  clamp 0..0.90, slider 0..90 (default 45).
+- A stretching axis (ratio > 1) cannot be protected as far as a squeezing one -
+  the linear segment would run past the endpoint - so with Axis = Split the
+  vertical axis caps the protection at ~0.74. **For maximum rim
+  concentration use Axis = Horizontal** (Scope -> 16:9 is a squeeze, so it takes
+  the full 0.94).
+- Two latent folds fixed while verifying the range: the `CENTER = 0` power
+  branch folded for ratio > 1 with a high curve (clamped by `ratio/(ratio-1)`),
+  and the Hermite folded for ratio >= 1.6 at the old fixed 0.45 (edge slope now
+  limited to twice the secant, applied only for c > 0.45 or ratio > 1.5, so every
+  existing setting keeps its shipped curve bit-for-bit - asserted in
+  `nls_math_check.py`).
+
+Verified: monotone for ratio 0.4..3.0, centre 0..0.94, curve 1..2.9; the
+generated HLSL compiles; `nls_proof` injects `centre=0.90 curve=2.90 hr=0`.
+
+**Not built:** a literal "crop after the warp". The pass can only resample the
+window-sized image, so the warp always spans exactly what is on screen; Zoom
+re-aims the window rather than removing a distorted rim. The rim-concentrated
+map above is the achievable form of that idea. A crop that removes the rim is the
+existing Max-distortion crop.
+
+---
+
+## 9. Build / staging (unchanged from the evening handoff)
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.7\resources\app\git\cmd;" + $env:PATH
