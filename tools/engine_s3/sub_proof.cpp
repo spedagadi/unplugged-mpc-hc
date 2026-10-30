@@ -148,15 +148,21 @@ static void PollOnce() {
             g_phase = 2; g_phaseAt = now;
         }
         break;
-    // The A/B that tests track SWITCHING, at one fixed timestamp: 4:30.
-    //   track 0 = "Deutsch Forced (SRT)"  -> has NO event at 4:30 (verified from the file:
-    //                                        its events are 0:05, 3:42, 3:47, then 19:10)
-    //   track 4 = "Deutsch SDH (PGS)"     -> a full subtitle track, text at 4:30
-    // So frame 1 must be bare and frame 2 must carry text. Same picture, same position,
-    // one variable - and the switch exercises the decoder swap (libass -> CPGSSub), which
-    // is the code path that was silently clearing the provider.
+    // (2026-10-26: the original Dune-era assumption block deleted — it described the
+    // old default file. Against 28.Years.Later: track 0 = "English (subrip)" with
+    // ffprobe-verified events 270.562..272.855 (frame 1 lands ~272.5 s inside it),
+    // track 2 = "English (SDH)" dense 248..266 s (frame 2 lands ~262.5 s inside
+    // 262.220..263.762). Both legs English per instruction; both grabs must carry text.)
+    // Every subtrack switch queues a re-open (BuildGraph's pending-subtitle block),
+    // and a second s3_cmd DURING that re-open deadlocks the engine — measured
+    // 2026-10-26 11:42: the rebuild runs on the refresh thread holding m_graphMtx,
+    // ConfigureRendererWindow's put_Owner SendMessage's to THIS thread's window,
+    // and this thread is parked inside Seek() waiting for m_graphMtx. Nobody pumps.
+    // So: after each subtrack, wait for the graph to be back in "playing" before
+    // the next command. (Deadlock filed as its own defect; gating the harness is
+    // not a fix for the app, it is what lets the subtitle feature be measured.)
     case 2:
-        if (now - g_phaseAt > 500) {
+        if (now - g_phaseAt > 500 && st == "playing") {
             Cmd("{\"a\":\"seek\",\"pos\":2700000000}");    // 4:30
             g_phase = 3; g_phaseAt = now;
         }
@@ -172,15 +178,23 @@ static void PollOnce() {
     // un-splice/re-splice, which does live pin surgery). Both the render and the teardown
     // afterwards have to survive it, so this is the phase that tests the fix rather than
     // the feature that already worked.
+    // Track 2 = "English (SDH) (subrip)" — the second leg is English-only per the
+    // 2026-10-26 instruction. ffprobe s:2: dense coverage 248..266 s; seek 260 s and
+    // grab ~2.5 s later lands inside 262.220..263.762.
     case 4:
         if (now - g_phaseAt > 1000) {
-            Cmd("{\"a\":\"subtrack\",\"index\":4}");
-            Cmd("{\"a\":\"seek\",\"pos\":2700000000}");    // same 4:30 as frame 1
-            g_phase = 12; g_phaseAt = now;
+            Cmd("{\"a\":\"subtrack\",\"index\":2}");       // re-open queued; the
+            g_phase = 12; g_phaseAt = now;                 // seek comes in phase 12
         }
         break;
     case 12:
-        if (now - g_phaseAt > 4000) {
+        if (now - g_phaseAt > 500 && st == "playing") {
+            Cmd("{\"a\":\"seek\",\"pos\":2600000000}");    // 4:20, inside an s:2 event
+            g_phase = 21; g_phaseAt = now;
+        }
+        break;
+    case 21:
+        if (now - g_phaseAt > 2500) {
             Cmd(GrabCmd(kOut2).c_str());
             g_phase = 5; g_phaseAt = now;
         }
@@ -196,8 +210,13 @@ static void PollOnce() {
         }
         break;
     case 10:
-        if (now - g_phaseAt > 6000) {           // rebuild done; graph restarts at 0
-            Cmd("{\"a\":\"subtrack\",\"index\":0}");
+        if (now - g_phaseAt > 6000 && st == "playing") {   // dither re-open done
+            Cmd("{\"a\":\"subtrack\",\"index\":0}");       // queues ANOTHER re-open
+            g_phase = 22; g_phaseAt = now;
+        }
+        break;
+    case 22:
+        if (now - g_phaseAt > 500 && st == "playing") {
             Cmd("{\"a\":\"seek\",\"pos\":13840000000}");
             g_phase = 6; g_phaseAt = now;
         }
@@ -284,7 +303,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 
 int main(int argc, char** argv) {
-    const char* dll = "C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\dist\\Unplugged\\_internal\\s3engine.dll";
+    // argv[2] selects the engine under test. The default stays the packaged copy
+    // (that is the harness's purpose: "the EXACT s3engine.dll the app ships"), but
+    // testing an engine change against it silently measures a stale binary - which
+    // is exactly what happened once. Pass the freshly built DLL explicitly.
+    const char* dll = (argc > 2) ? argv[2]
+        : "C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\dist\\Unplugged\\_internal\\s3engine.dll";
+    printf("engine under test: %s\n", dll);
     const char* file = (argc > 1) ? argv[1]
         : "D:\\Dune.2021.German.TrueHD.Atmos.DL.2160p.UHD.BluRay.DV.HDR.HEVC.Remux-NIMA4K.mkv";
 
@@ -316,7 +341,9 @@ int main(int argc, char** argv) {
                 fflush(stdout);
                 ExitProcess(3);
             }
-            if ((long long)GetTickCount() - g_t0 > 180000) {
+            // 240 s: the re-open gates (phases 2, 12, 10, 22) each add a wait for the
+            // graph to return to "playing" that did not exist when 180 s was chosen.
+            if ((long long)GetTickCount() - g_t0 > 240000) {
                 printf("FAIL: 180 s timeout at phase %d lastState=%s\n", (int)g_phase, g_lastState.c_str());
                 fflush(stdout);
                 ExitProcess(4);
