@@ -483,6 +483,15 @@ MpcPlayer::MpcPlayer()
             // capture thread holds; measured as a UI freeze and, with a chrome
             // toggle, a hung window that had to be killed.
             if (m_videoRectPending.exchange(false)) ResizeVideo();
+            // Same thread, AFTER the geometry above: a paused frame only repaints
+            // when asked to, and asking before the new destination rect landed
+            // drew the old one (NLS on/off on a paused frame looked dead).
+            if (m_redrawPending.exchange(false) && snapshot_.state != State::Stopped) {
+                Log("[ENGINE] paused redraw after a settings change (geometry applied: %d)",
+                    m_videoRectPending.load() ? 0 : 1);
+                if (CComQIPtr<IExFilterConfig> cfg = renderer_)
+                    cfg->Flt_SetBool("cmd_redraw", true);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
@@ -3391,11 +3400,10 @@ void MpcPlayer::ApplyPendingSettings()
     // A PAUSED frame is held by the renderer and only repainted when a new sample
     // arrives, so a geometry / NLS change made while paused stayed invisible until
     // playback resumed (reported: NLS off->on on a paused frame did nothing).
-    // Ask the renderer for one redraw of the frame it is holding.
-    if (!m_inGraphBuild && snapshot_.state == State::Paused) {
-        if (CComQIPtr<IExFilterConfig> cfg = renderer_)
-            cfg->Flt_SetBool("cmd_redraw", true);
-    }
+    // The redraw is asked for on the GRAPH thread (see the live loop): this call
+    // runs on the caller's thread, where ResizeVideo has only QUEUED the new
+    // rect, and a redraw here would draw the old geometry with the new shader.
+    if (!m_inGraphBuild && snapshot_.state == State::Paused) m_redrawPending = true;
 }
 
 void MpcPlayer::ApplyPostFx()

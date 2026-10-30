@@ -6496,9 +6496,11 @@ public:
   // seek/volume drag — those RE-ARM rather than return, so a transient condition
   // delays the hide instead of cancelling it for good.
   // True while the pointer is inside ANY visible pane (strip, bar or either rail).
-  // Used by the cursor rule: over UI the pointer is always visible. The rails are
-  // ordinary user panels now, so a hidden cursor over a rail being used would read
-  // as a broken window.
+  // Used by the cursor rule AND by the idle timer: a pointer resting on a rail is
+  // someone using it, and taking the pane away from under them was reported as
+  // "the settings panel keeps disappearing while I tune" - bringing it back costs
+  // several clicks. Earlier this timer consulted only the bars, because the rails
+  // were permanent; they auto-hide now, so they must hold the chrome open too.
   bool OverChrome(){
     POINT p{}; if(!::GetCursorPos(&p)) return false;
     CWnd* panes[4]={&m_top,&m_bar,&m_status,&m_settings};
@@ -6519,19 +6521,6 @@ public:
     ::ScreenToClient(m_hWnd,&p);
     const int band=Px(48)+Px(12)+Px(12);
     return p.y>=cr.bottom-band && p.x>=cr.left && p.x<cr.right; }
-  // True while the pointer is inside the STRIP or the TRANSPORT BAR. The idle timer
-  // must not pull the bar out from under someone using it. The rails are deliberately
-  // NOT consulted: they are permanent user panels now, so a pointer resting over one
-  // of them must not keep the auto-hiding bars on screen forever.
-  bool OverBars(){
-    POINT p{}; if(!::GetCursorPos(&p)) return false;
-    CWnd* bars[2]={&m_top,&m_bar};
-    for(CWnd* c: bars){
-      if(!c->GetSafeHwnd() || !c->IsWindowVisible()) continue;
-      POINT q=p; ::ScreenToClient(c->GetSafeHwnd(),&q);
-      CRect r; c->GetClientRect(&r);
-      if(r.PtInRect(q)) return true; }
-    return false; }
   // The 300 ms poll keeps only what is genuinely periodic: the preset picker's
     // click-outside dismissal. It neither reads the pointer for the UI nor hides
     // anything — the sampler owns pointer state, the idle timer owns hiding.
@@ -6585,7 +6574,7 @@ public:
     // Mode-agnostic: VP is always "showing something", media needs a file loaded.
     if(!(m_vp || InFilePlayback()) || m_lib.IsWindowVisible() || card){
       ChromeTimerArm(CHROME_IDLE_MS); return; }
-    if(m_bar.Busy() || OverBars() || InBottomDock()){
+    if(m_bar.Busy() || OverChrome() || InBottomDock()){
       // Held open: push the deadline out by the FULL timeout each time, exactly as
       // MPC-HC retriggers m_zoneHideTicks on every update while the cursor is in the
       // zone. Re-arming with a short delay instead made the bars vanish ~1 s after
@@ -7313,6 +7302,9 @@ protected:
     { static UINT pk=0; static DWORD pt=0; DWORD now=GetTickCount();
       if(vk==pk && now-pt<60){ LogF("  dup key suppressed vk=%02X",vk); return; }
       pk=vk; pt=now; }
+    // A keypress is use: tuning with the arrows or toggling NLS with N must hold
+    // the chrome open the same way a pointer move does.
+    UiActivity();
     // The confirm card is non-modal but keyboard-first: Esc dismisses it rather
     // than toggling chrome, Enter is the Yes button.
     if(m_confirm.IsWindowVisible()){

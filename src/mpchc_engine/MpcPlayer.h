@@ -596,6 +596,13 @@ public:
     // The shell must never call into the renderer itself: during a live capture that
     // blocks on the lock the capture thread holds.
     std::atomic<bool> m_videoRectPending{false};
+    // "The picture changed but nothing is arriving to repaint it." A paused frame
+    // is held by the renderer and only redrawn when a new sample arrives, so a
+    // settings change made while paused stayed invisible until playback resumed.
+    // The request is honoured on the GRAPH thread, after ResizeVideo has applied
+    // whatever geometry change was queued - asking on the caller's thread drew
+    // the old rect and then nothing repainted the new one.
+    std::atomic<bool> m_redrawPending{false};
     // The thread that owns the graph/renderer (the live thread). ResizeVideo refuses
     // to run anywhere else and defers instead - see its comment.
     std::thread::id m_graphThreadId{};
