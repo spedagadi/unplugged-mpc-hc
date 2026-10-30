@@ -77,3 +77,8 @@ src/unplugged-ui/src/mpvprocessor/media/_omdb_key.py
 /tools/native_ui/*.bak-*
 /tools/native_ui/*.damaged
 /tools/native_ui/pics/*.png
+
+# Chrome probe harnesses and the panel logs they read/write are local diagnostics;
+# they live next to the package but are not part of it.
+/src/unplugged-ui/src/mpvprocessor/ui/chrome_probe*.py
+/src/unplugged-ui/src/mpvprocessor/ui/panel.log*
