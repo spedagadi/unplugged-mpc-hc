@@ -1,0 +1,7502 @@
+﻿// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
+// SOURCE IS ASCII-ONLY: all non-ASCII glyphs use \uXXXX escapes (a prior
+// PowerShell Set-Content double-encoded raw UTF-8 literals into mojibake).
+// Must match the identifier in Unplugged.rc (the executable's icon resource).
+#define IDI_APP 101
+//
+// Windowing (proven by tools/input_proof): ONE top-level MFC frame owns focus;
+// s3_attach(frame) parents the MPCVR DirectX child to fill the client and
+// put_MessageDrain returns video-area input to our wndproc. UI panes are REAL
+// child windows raised above the video child (same-parent z-order) — clickable
+// and paintable over DirectX, which Qt's painted widgets cannot be. Show/hide
+// is child ShowWindow: no activation events, so no foreground war.
+//
+// Layout/controls replicate 1.3.0 (metrics from s3shell_panel.py /
+// status_panel.py / playback_bar.py). Commands via s3_cmd JSON.
+
+#include <afxwin.h>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <ctime>
+#include <string>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <fstream>
+#include <map>
+#include <set>
+#include <regex>
+#include <algorithm>
+#include <wincrypt.h>
+#include <shobjidl.h>
+#include <urlmon.h>
+#include <wrl.h>
+#include "vendor/webview2/include/WebView2.h"
+#include <gdiplus.h>
+#include <dwmapi.h>
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE      // older SDK headers lack the macro
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#pragma comment(lib,"gdiplus.lib")
+#pragma comment(lib,"dwmapi.lib")
+#pragma comment(lib,"shell32.lib")
+#pragma comment(lib,"urlmon.lib")
+#pragma comment(lib,"advapi32.lib")
+
+extern "C" {
+__declspec(dllimport) int  s3_attach(int64_t hwnd);
+__declspec(dllimport) int  s3_cmd(const char* jsonUtf8);
+__declspec(dllimport) int  s3_stats(char* buf, int cap);
+__declspec(dllimport) void s3_shutdown(void);
+__declspec(dllimport) int  s3_start_device(const char* deviceUtf8);   // "" = capture off
+}
+
+static const COLORREF PANEL=RGB(14,14,16), PANEL2=RGB(35,35,39), ACTIVE_BG=RGB(30,30,32),
+  BORDER=RGB(36,36,40), ACCENT=RGB(232,85,31), ACCENT2=RGB(255,138,76),
+  TEXT=RGB(242,242,242), MID=RGB(138,138,144), LO=RGB(90,90,90),
+  OFF_BG=RGB(42,42,46), TIME=RGB(204,204,204), GROOVE=RGB(46,46,48),
+  KEYC=RGB(0x66,0x66,0x66), VALC=RGB(0xE0,0xE0,0xE0), DIMC=RGB(0x44,0x44,0x44);
+static const int RIGHT_W=440, RAIL_W=80, CAT_H=26, ROW_H=40, PAD=16,
+  SECT_H=26, ICON_H=58, ICON_STEP=64, CONTROL_W=148, VALUE_W=58;
+
+static int g_dpi=96;
+static const int EDGE_BLEED=2;      // px the frame extends past the monitor, see OnCreate
+// Defined here (assigned by LoadWallpaper below) so the splash pane can pad its
+// clipped corners with the real wallpaper pixels behind it.
+static Gdiplus::Bitmap* volatile g_wall=nullptr;
+static double g_seekWant=-1; static ULONGLONG g_seekT=0;
+static const wchar_t* g_fontFam=L"Segoe UI";
+static void LogF(const char* f,...);
+static void LoadUiFonts(){
+  // 1.3.0 registers its bundled Inter TTFs before choosing the font stack. Do
+  // the same, process-private, so the UI does not depend on Inter being installed.
+  static bool done=false; if(done) return; done=true;
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?L".":d.substr(0,p);
+  const std::wstring dirs[]={d+L"\\assets\\brand\\fonts",d+L"\\_internal\\assets\\brand\\fonts",
+    L"C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\assets\\brand\\fonts"};
+  const wchar_t* files[]={L"Inter-Regular.ttf",L"Inter-Medium.ttf",L"Inter-SemiBold.ttf",L"Inter-Bold.ttf"};
+  for(const auto&dir:dirs) for(auto file:files){ std::wstring path=dir+L"\\"+file;
+    if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES)
+      AddFontResourceExW(path.c_str(),FR_PRIVATE,nullptr); }
+}
+static void PickFont(){ HDC dc=GetDC(nullptr);
+  HFONT f=CreateFont(-20,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Inter");
+  HFONT of=(HFONT)SelectObject(dc,f); wchar_t face[64]={}; GetTextFaceW(dc,64,face);
+  SelectObject(dc,of); DeleteObject(f); ReleaseDC(nullptr,dc);
+  if(_wcsicmp(face,L"Inter")==0) g_fontFam=L"Inter";
+  LogF("UI font family='%S' (1.3.0 stack, raw pixel sizes)",g_fontFam); }
+static int Px(int v){ return MulDiv(v,g_dpi,96); }
+static int RowH(){ return Px(ROW_H); }
+static int Cmd(const char* j){ return s3_cmd(j); }
+// Dedicated VIDEO HOST child window (s3_shell g_hVideo model). The MPCVR
+// DirectX child is parented to THIS, not to the frame, so engine rebuilds that
+// recreate the video child can never jump above the UI panes (they only ever
+// reorder inside the host). Drained input from the video surface is forwarded
+// up to the frame here.
+static HWND g_host=0; static WNDPROC g_hostOrig=0;
+static void PaintWallpaper(HWND h);           // defined with the library block below
+static HBITMAP WallCanvas();                  // the pre-scaled wallpaper, for pads
+// An input message aimed at the video host arrives TWICE: once from Windows and
+// once drained back out of MPCVR (put_MessageDrain posts to the same hwnd). Both
+// were forwarded, so one double-click toggled the chrome off AND back on. Drop a
+// forwarded message that repeats the previous one within 50ms.
+static UINT s_lm=0; static WPARAM s_lw=0; static LPARAM s_ll=0; static DWORD s_lt=0;
+static LRESULT CALLBACK HostProc(HWND h,UINT m,WPARAM w,LPARAM l){
+  if(m==WM_ERASEBKGND){ PaintWallpaper(h); return 1; }   // idle wallpaper; MPCVR covers it in play
+  if(m==WM_SETCURSOR){ ::SetCursor(::LoadCursor(nullptr,IDC_ARROW)); return TRUE; }
+  switch(m){
+  case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+  case WM_RBUTTONDOWN: case WM_MOUSEWHEEL: case WM_KEYDOWN: case WM_KEYUP: {
+    DWORD now=::GetTickCount();
+    if(m==s_lm && w==s_lw && l==s_ll && now-s_lt<50) return 0;   // duplicate drain copy
+    s_lm=m; s_lw=w; s_ll=l; s_lt=now;
+    // No coordinate translation here: the chrome's gesture and the cursor rule are
+    // driven by the pointer SAMPLER (GetCursorPos), not by this message. Forwarding
+    // is just an accelerator for "something happened"; the point is not used.
+    if(HWND par=::GetParent(h)) ::PostMessageW(par,m,w,l);
+    return 0; } }
+  return CallWindowProcW(g_hostOrig,h,m,w,l);
+}
+// Timestamped and tick-relative: without a clock there was no way to measure the
+// UI-thread stall that shows the system busy cursor at open (the "spinner").
+// t=<ms since first log line> lets one run prove where the seconds go.
+static DWORD g_t0=0;
+static void LogF(const char* f,...){ static FILE* lg=nullptr; if(!lg) lg=fopen("native_ui_log.txt","a");
+  if(!lg)return; if(!g_t0) g_t0=GetTickCount();
+  SYSTEMTIME st; GetLocalTime(&st);
+  fprintf(lg,"%02u:%02u:%02u.%03d t=%lu ",st.wHour,st.wMinute,st.wSecond,st.wMilliseconds,
+          (unsigned long)(GetTickCount()-g_t0));
+  va_list a; va_start(a,f); vfprintf(lg,f,a); va_end(a); fputc('\n',lg); fflush(lg); }
+static std::string Narrow(const std::wstring& w){ int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);
+  std::string s(n,0); WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);
+  while(!s.empty()&&s.back()==0)s.pop_back(); return s; }
+static std::wstring Widen(const std::string& u);
+
+static void RR(CDC* dc,CRect r,int rad,COLORREF f){ CPen p(PS_NULL,0,f); CBrush b(f);
+  CPen* op=dc->SelectObject(&p); CBrush* ob=dc->SelectObject(&b);
+  dc->RoundRect(r,CPoint(rad,rad)); dc->SelectObject(op); dc->SelectObject(ob); }
+static void FillR(CDC* dc,CRect r,COLORREF c){ dc->FillSolidRect(r,c); }
+static void StrokeR(CDC* dc,CRect r,int rad,COLORREF c,int width=1){
+  CPen p(PS_SOLID,width,c); CPen* op=dc->SelectObject(&p);
+  HBRUSH nb=(HBRUSH)GetStockObject(NULL_BRUSH); HBRUSH ob=(HBRUSH)dc->SelectObject(nb);
+  dc->RoundRect(r,CPoint(rad,rad)); dc->SelectObject(op); dc->SelectObject(ob);
+}
+static void ApplyDwmRound(HWND h){
+  if(!h) return; DWORD pref=DWMWCP_ROUND;
+  DwmSetWindowAttribute(h,DWMWA_WINDOW_CORNER_PREFERENCE,&pref,sizeof(pref));
+  // DWM paints its own 1px light window border; with our accent pen that reads as
+  // two borders, one of them clipped. Remove it (same DWMWA_COLOR_NONE as the frame).
+  COLORREF none=0xFFFFFFFE; DwmSetWindowAttribute(h,34,&none,sizeof(none));
+}
+static void CardAA(CDC* dc,CRect rc,COLORREF fill,COLORREF border,int radius){
+  Gdiplus::Graphics g(dc->GetSafeHdc());
+  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+  g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+  const Gdiplus::REAL inset=2.0f;   // keep the 2px pen wholly inside the window
+  Gdiplus::RectF r(inset,inset,(Gdiplus::REAL)rc.Width()-inset*2,(Gdiplus::REAL)rc.Height()-inset*2);
+  Gdiplus::REAL d=(Gdiplus::REAL)radius*2.0f;
+  Gdiplus::GraphicsPath p;
+  p.AddArc(r.X,r.Y,d,d,180,90); p.AddArc(r.X+r.Width-d,r.Y,d,d,270,90);
+  p.AddArc(r.X+r.Width-d,r.Y+r.Height-d,d,d,0,90);
+  p.AddArc(r.X,r.Y+r.Height-d,d,d,90,90); p.CloseFigure();
+  Gdiplus::SolidBrush fillBrush(Gdiplus::Color(255,GetRValue(fill),GetGValue(fill),GetBValue(fill)));
+  g.FillPath(&fillBrush,&p);
+  Gdiplus::Pen bp(Gdiplus::Color(255,GetRValue(border),GetGValue(border),GetBValue(border)),2.0f);
+  g.DrawPath(&bp,&p);
+}
+static void TxtG(CDC* dc,CRect r,const wchar_t* s,COLORREF c,int px,int weight,
+                 float tracking,UINT al,const wchar_t* fam){
+  if(al&DT_VCENTER) al|=DT_SINGLELINE;
+  // Text scales with the SAME factor as every rect, control and row height
+  // (Px), on purpose. It used to be raw device pixels, which is coherent only at
+  // 96 dpi: at 300 % (an elderly user's setting) the rail was drawn three times
+  // larger with 13 px labels inside it — big empty controls, unreadable text.
+  // Scaling both keeps the layout identical to 100 % relative to the logical
+  // desktop, which is what a DPI-aware window is supposed to do.
+  CFont f; f.CreateFont(-Px(px),0,0,0,weight,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,fam);
+  if(tracking>0) dc->SetTextCharacterExtra((int)(tracking+0.5f));
+  CFont* of=dc->SelectObject(&f); dc->SetTextColor(c); dc->SetBkMode(TRANSPARENT);
+  dc->DrawTextW(s,-1,r,al); dc->SelectObject(of);
+  if(tracking>0) dc->SetTextCharacterExtra(0);
+}
+static void TxtW(CDC* dc,CRect r,const wchar_t* s,COLORREF c,int px,bool bold=false,
+                 UINT al=DT_LEFT|DT_VCENTER|DT_SINGLELINE,const wchar_t* fam=g_fontFam){
+  // DrawText IGNORES DT_VCENTER unless DT_SINGLELINE is also set (MSDN: "Use with
+  // the DT_SINGLELINE flag"), and DT_CENTER then centres the wrapped block rather
+  // than the line. Every explicit DT_VCENTER caller was silently top-aligned --
+  // the dialog's Yes/Cancel and title among them (user-reported 2026-10-25).
+  TxtG(dc,r,s,c,px,bold?FW_SEMIBOLD:FW_NORMAL,0.0f,al,fam);
+}
+static void TxtBlock(CDC* dc,CRect r,const wchar_t* s,COLORREF c,int px,bool bold){
+  // Multiline text must be centred as a BLOCK. DT_VCENTER forces DT_SINGLELINE
+  // in this project's TxtW, so using it on mode cards would break the line breaks.
+  CFont f; f.CreateFont(-Px(px),0,0,0,bold?FW_SEMIBOLD:FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,g_fontFam);
+  CFont* of=dc->SelectObject(&f); dc->SetTextColor(c); dc->SetBkMode(TRANSPARENT);
+  CRect m=r; int h=dc->DrawTextW(s,-1,&m,DT_CENTER|DT_WORDBREAK|DT_CALCRECT);
+  CRect out(r.left,r.CenterPoint().y-h/2,r.right,r.CenterPoint().y-h/2+h);
+  dc->DrawTextW(s,-1,&out,DT_CENTER|DT_WORDBREAK); dc->SelectObject(of);
+}
+// Font + text-measure helpers, needed by the layout code that sizes labels to their
+// text (status strip, library header). Defined here so every pane can use them.
+static HFONT MkFont(int px,bool bold){ return CreateFontW(-Px(px),0,0,0,bold?FW_SEMIBOLD:FW_NORMAL,
+  0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,g_fontFam); }
+static int TextW(const wchar_t* s,int px,bool bold){ HDC dc=GetDC(nullptr); HFONT f=MkFont(px,bold);
+  HFONT of=(HFONT)SelectObject(dc,f); SIZE sz={0,0}; GetTextExtentPoint32W(dc,s,(int)wcslen(s),&sz);
+  SelectObject(dc,of); DeleteObject(f); ReleaseDC(nullptr,dc); return sz.cx; }
+
+static bool JNum(const char* j,const char* k,double& o){ char p[64]; snprintf(p,sizeof(p),"\"%s\":",k);
+  const char* q=strstr(j,p); if(!q)return false; o=strtod(q+strlen(p),nullptr); return true; }
+static const char* Sect(const char* st,const char* n){ char p[32]; snprintf(p,sizeof(p),"\"%s\":{",n); return strstr(st,p); }
+static bool JBool(const std::string& j,const char* key,bool def=false){
+  std::string pat=std::string("\"")+key+"\""; size_t p=j.find(pat); if(p==std::string::npos) return def;
+  p=j.find(':',p+pat.size()); if(p==std::string::npos) return def; ++p;
+  while(p<j.size()&&isspace((unsigned char)j[p]))++p;
+  if(p>=j.size()) return def;
+  return j[p]=='t'||j[p]=='T'||j[p]=='1';
+}
+static bool SeenSetupMarker(){
+  HKEY h=nullptr; bool seen=false;
+  if(RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Unplugged",0,KEY_QUERY_VALUE,&h)==ERROR_SUCCESS){
+    seen=(RegQueryValueExW(h,L"SeenSetup",nullptr,nullptr,nullptr,nullptr)==ERROR_SUCCESS);
+    RegCloseKey(h); }
+  return seen;
+}
+static void WriteSeenSetupMarker(){
+  HKEY h=nullptr;
+  if(RegCreateKeyExW(HKEY_CURRENT_USER,L"Software\\Unplugged",0,nullptr,0,KEY_SET_VALUE,nullptr,&h,nullptr)==ERROR_SUCCESS){
+    const char one[]="1"; RegSetValueExA(h,"SeenSetup",0,REG_SZ,(const BYTE*)one,2); RegCloseKey(h); }
+}
+static bool JNumAt(const char* b,const char* k,double& o){ if(!b)return false; char p[64]; snprintf(p,sizeof(p),"\"%s\":",k);
+  const char* q=strstr(b,p); if(!q)return false; o=strtod(q+strlen(p),nullptr); return true; }
+static bool JStrAt(const char* b,const char* k,char* o,int c){ if(!b)return false; char p[64]; snprintf(p,sizeof(p),"\"%s\":\"",k);
+  const char* q=strstr(b,p); if(!q)return false; q+=strlen(p); int i=0; while(q[i]&&q[i]!='"'&&i<c-1){o[i]=q[i];++i;} o[i]=0; return true; }
+static int PqToNits(double pq){ if(pq<=0)return 0; double m1=0.1593017578125,m2=78.84375,c1=0.8359375,c2=18.8515625,c3=18.6875;
+  double t=pow(pq,1/m2), tmp=t-c1; if(tmp<0)tmp=0; double den=c2-c3*t; if(den<=0)return 0;
+  return (int)(0.5+10000*pow(tmp/den,1/m1)); }
+
+// track names: bracket-aware scan (names contain ']' e.g. "[ger]").
+static void ParseTracks(const char* st,const char* sect,std::vector<std::wstring>& out,int& active){
+  out.clear(); active=0;
+  char pat[64]; snprintf(pat,sizeof(pat),"\"%s\":{",sect);
+  const char* s=strstr(st,pat); if(!s){ LogF("tracks[%s]: no block",sect); return; }
+  const char* t=strstr(s,"\"tracks\":["); if(!t){ LogF("tracks[%s]: no array",sect); return; }
+  const char* begin=t+10; const char* q=begin; int depth=1; bool instr=false,esc=false; const char* end=nullptr;
+  while(*q){ char c=*q; if(instr){ if(esc)esc=false; else if(c=='\\')esc=true; else if(c=='"')instr=false; }
+    else { if(c=='"')instr=true; else if(c=='[')depth++; else if(c==']'){ if(--depth==0){end=q;break;} } } ++q; }
+  if(!end){ LogF("tracks[%s]: unterminated",sect); return; }
+  const char* p=begin; int idx=0;
+  while(p<end){ const char* nm=strstr(p,"\"name\":\""); if(!nm||nm>end)break; nm+=8;
+    const char* e=strchr(nm,'"'); if(!e||e>end)break;
+    const char* nxt=strstr(e,"\"name\":\""); const char* oe=(nxt&&nxt<end)?nxt:end;
+    const char* act=strstr(e,"\"active\":"); if(act&&act<oe&&act[9]=='1') active=idx;
+    std::string u(nm,(size_t)(e-nm)); int wn=MultiByteToWideChar(CP_UTF8,0,u.c_str(),-1,nullptr,0);
+    if(wn>0){ std::wstring w((size_t)wn,0); MultiByteToWideChar(CP_UTF8,0,u.c_str(),-1,&w[0],wn);
+      while(!w.empty()&&(w.back()==0||w.back()==L'\n'))w.pop_back(); out.push_back(w); }
+    ++idx; p=e+1; }
+  LogF("tracks[%s]: parsed=%d active=%d",sect,(int)out.size(),active);
+}
+static std::wstring CleanName(std::wstring s,bool isAudio){
+  if(s.size()>2 && s[1]==L':' && (s[0]==L'A'||s[0]==L'S')) s.erase(0,2);
+  const wchar_t* drop[]={L"[default]",L"[forced]",L"[default,forced]"};
+  for(auto d:drop){ size_t p; while((p=s.find(d))!=std::wstring::npos) s.erase(p,wcslen(d)); }
+  size_t p=0;
+  while((p=s.find(L'(',p))!=std::wstring::npos){ size_t e=s.find(L')',p); if(e==std::wstring::npos)break;
+    std::wstring in=s.substr(p+1,e-p-1); bool noise=false;
+    const wchar_t* keys[]={L"hz",L"kb/s",L"truehd",L"ac3",L"dts",L"aac",L"pcm",L"flac",L"subrip",L"vobsub",L"pgs",L"48000",L"44100"};
+    for(auto k:keys) if(in.find(k)!=std::wstring::npos){noise=true;break;}
+    if(isAudio && in.find(L',')!=std::wstring::npos) noise=true;
+    if(noise) s.erase(p,e-p+1); else p=e+1; }
+  std::wstring o; bool sp=false;
+  for(wchar_t c:s){ if(c==L' '){ if(!sp&&!o.empty())o+=c; sp=true; } else { o+=c; sp=false; } }
+  while(!o.empty()&&o.back()==L' ')o.pop_back();
+  return o;
+}
+
+// Curve-conditional visibility for the CURVE SETTINGS rows (the `curves` field).
+// A row shows only when the selected Tone curve's engine value has its bit set here.
+// Values are IVideoRenderer.h TONE_CURVE_* — traced from ps_convert_pq_to_sdr.hlsl
+// exactly as s3shell_panel.py's CURVES_* sets do (s3shell_panel.py:366-368,412-418).
+#define CV_ACES 1
+#define CV_REINHARD 2
+#define CV_HABLE 3
+#define CV_MOBIUS 4
+#define CV_BT2390 5
+#define CV_ST2094 6
+#define CV_UNPLUGGED 7   // the Hable house curve, shown as "Unplugged"
+#define CV_GT7 8
+#define CV_SPLINE 9
+#define CV_GT7_ADAPT 10
+#define CMBIT(v) (1<<(v))
+#define CM_GT7BOTH   (CMBIT(CV_GT7)|CMBIT(CV_GT7_ADAPT))
+#define CM_GT7ADAPT  (CMBIT(CV_GT7_ADAPT))
+#define CM_MAXCLL    (CMBIT(CV_HABLE)|CMBIT(CV_BT2390)|CMBIT(CV_ST2094)|CMBIT(CV_GT7)|CMBIT(CV_GT7_ADAPT))
+#define CM_SOFTKNEE  (CMBIT(CV_HABLE)|CMBIT(CV_GT7)|CMBIT(CV_GT7_ADAPT))
+#define CM_NEUTRAL   (CMBIT(CV_HABLE))
+#define CM_CHROMA    (CMBIT(CV_ACES)|CMBIT(CV_REINHARD)|CMBIT(CV_HABLE)|CMBIT(CV_MOBIUS)|CMBIT(CV_BT2390)|CMBIT(CV_ST2094))
+#define CM_SPLINE    (CMBIT(CV_SPLINE))
+// ui.showGradeInternals escape hatch (s3shell_panel.py DEV_INI_KEY). No INI yet in this
+// port, so it is a compile-time flag; dev rows still PUSH their defaults (hidden-but-
+// pushed, matching 1.3.0) — they are only hidden from the rail.
+static bool g_showInternals = false;
+// UI-only SYSTEM settings (noeng rows): the context-help card and auto-next.
+// 1.3.0 always showed the card and had no auto-next; both are user-controlled here.
+static bool g_helpBanner = true, g_autoNext = true;
+// Persisted chrome layout: panels are off until the user explicitly turns them on.
+static bool g_showInfo=false, g_showSettings=false;
+// Presets: Default is virtual (compiled row defaults) and always present; custom
+// presets are per-user INI snapshots in %LOCALAPPDATA%\Unplugged\presets.
+static std::wstring g_activePreset = L"Default";
+static bool g_presetDirty = false, g_applyingPreset = false, g_presetWarned = false;
+struct Row;
+static void PresetInitFromIni();
+static bool WritePresetFile(const std::wstring& name,bool announce=true);
+static void PresetNoteRowChanged(const Row& r);
+
+struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
+  double mn,mx,step,val; bool on; int opt; const wchar_t* const* opts; int nopts; const int* optvals;
+  std::vector<std::wstring> names; int noff=0; int noeng=0;
+  int dev=0;     // 1 = hidden unless g_showInternals (still pushed)
+  int curves=0;  // bitmask of Tone-curve values that show this row; 0 = always
+  // The value the row was BORN with (build_rows), captured before the INI load.
+  // Used only by the confirmed ZION reset; runtime state never changes these.
+  double defVal=0; bool defOn=false; int defOpt=0;
+  std::wstring file;  // kind 4 (FILE): the calibration .cube path
+  // kind 6 (PORT): runtime DeckLink state, populated by RefreshSourcePorts().
+  std::wstring payload,text; int locked=0,dr=0;
+};
+static const wchar_t* kHd[]={L"Bitstream",L"PCM"}; static const int kHdV[]={1,0};
+static const wchar_t* kCurve[]={L"Unplugged",L"GT7 Adapt"}; static const int kCurveV[]={7,10};
+static const wchar_t* kGamut[]={L"BT.709 (standard)",L"BT.2020 (wide)"}; static const int kGamutV[]={0,1};
+static const wchar_t* kWinHdr[]={L"Do not change",L"On (fullscreen)",L"On",L"On/off (fullscreen)",L"On/off"};
+static const wchar_t* kGt7Dbg[]={L"Off",L"Chroma scale",L"Fade ratio",L"Knee crossing",L"Ceiling crossing"};
+static const wchar_t* kMlMode[]={L"Auto",L"Manual",L"Off"}; static const int kMlModeV[]={2,1,0};
+static const wchar_t* kChromaMode[]={L"Default",L"Manual",L"Off"};
+static const wchar_t* kTexFmt[]={L"Auto",L"8-bit",L"10-bit",L"16-bit float"}; static const int kTexFmtV[]={0,8,10,16};
+static const wchar_t* kDeint[]={L"Disable",L"Enable",L"Hack future frames"};
+static const wchar_t* kSwap[]={L"Discard",L"Flip"};
+static const wchar_t* kFit[]={L"Source",L"Fixed aspect",L"Fill screen"};
+static const int kFitV[]={0,1,2};
+static const wchar_t* kNlsAxis[]={L"Auto",L"Horizontal",L"Vertical"};
+static const int kNlsAxisV[]={0,1,2};
+// What to do when the picture must be fitted: warp, crop, or don't fill.
+static const wchar_t* kNlsFillMode[]={L"Auto",L"Stretch",L"Crop",L"Off"};
+static const int kNlsFillModeV[]={0,1,2,3};
+// Scaling options are the renderer's own enums (IVideoRenderer.h) filtered to
+// the ones that are actually good; optvals keeps the engine value explicit so
+// dropping entries can never silently remap a stored value.
+//   chroma: Catmull-Rom is the floor, KrigBilateral is the best (DX11).
+//   upscale: Lanczos3 and Jinc2m — Jinc2m is the default (best reconstruction).
+//   downscale: Bicubic sharp and Lanczos — Lanczos is the default; Box/Bilinear/
+//   Hamming were removed (soft, and the low-tap ones alias on fine lines).
+static const int kChromaScaleV[]={2,3};
+static const int kUpscaleV[]={4,5};
+static const int kDownscaleV[]={5,4};
+static const wchar_t* kChromaScale[]={L"CatmullRom",L"KrigBilateral"};
+static const wchar_t* kUpscale[]={L"Lanczos3",L"Jinc2"};
+static const wchar_t* kDownscale[]={L"Lanczos",L"BicubicSharp"};
+static const wchar_t* kLutModes[]={L"Off",L"Gamma only",L"Greyscale",L"Full 3D"};
+#define SRC_PORT_SLOT {1,6,L"Input Device",L"","",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0}
+static Row g_rows[]={
+ // PLAYBACK (0)
+ {0,5,L"AUDIO",L"Track","pb.audioTrack",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0},
+ {0,2,L"AUDIO",L"HD audio","audio.mode",0,0,0,0,false,0,kHd,2,kHdV,{},0,0},
+ {0,1,L"AUDIO",L"Delay","pb.audioDelay",-500,500,0.01,0,false,0,nullptr,0,nullptr,{},0,1},
+ {0,7,L"SUBTITLES",L"Track","pb.subTrack",0,0,0,0,false,0,nullptr,0,nullptr,{L"Off"},1,0},
+ // SOURCE (1) — 16 runtime slots (the DLL's own maximum), then the three actions.
+ SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT,
+ SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT,
+ SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT,
+ SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT, SRC_PORT_SLOT,
+ {1,3,L"Input Device",L"\x27F3  Rescan inputs","src.rescan",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {1,3,L"Input Device",L"\x270E  Rename inputs\x2026","src.rename",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {1,3,L"Input Device",L"\x25B6  First-time setup\x2026 (restarts app)","src.setup",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ // HDR (2) — the full 1.3.0 inventory (s3shell_panel.py build_rows(), group H).
+ // Row order, sections, ranges and defaults are transcribed from the spec, not
+ // paraphrased. Trailing fields: {…,noff,noeng,dev,curves}.
+ // ── TONE MAPPING ──
+ {2,0,L"TONE MAPPING",L"Prefer DV over PQ/HLG","hdr.preferDoVi",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {2,0,L"TONE MAPPING",L"Convert to SDR","hdr.convertToSdr",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"SDR display nits","hdr.sdrNits",25,400,1,80,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,2,L"TONE MAPPING",L"Tone curve","hdr.toneMapCurve",0,0,0,0,false,0,kCurve,2,kCurveV,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"Exposure","hdr.exposureTrim",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"Shadow detail","hdr.shadowLift",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"Contrast","hdr.punch",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,2,L"TONE MAPPING",L"Output gamut","hdr.outputGamut",0,0,0,0,false,0,kGamut,2,kGamutV,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"Gamut capacity (709)","hdr.gamutCap",0.2,1.0,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"TONE MAPPING",L"Highlight desat","hdr.hiDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // ── CURVE SETTINGS — rows hide themselves unless the selected Tone curve reads
+ // them (the curves= gating from build_rows; with the default two-curve rail only
+ // "GT7 Adapt" (10) shows any of them) ──
+ {2,1,L"CURVE SETTINGS",L"Title peak (nits)","hdr.titlePeak",100,4000,1,1000,false,0,nullptr,0,nullptr,{},0,0,0,CM_MAXCLL},
+ {2,1,L"CURVE SETTINGS",L"Soft knee (0=off)","hdr.softKnee",0,4,0.01,0.21,false,0,nullptr,0,nullptr,{},0,0,1,CM_SOFTKNEE},
+ {2,1,L"CURVE SETTINGS",L"Soft knee ratio","hdr.softKneeRatio",1.0,5.0,0.01,2.48,false,0,nullptr,0,nullptr,{},0,0,1,CM_SOFTKNEE},
+ {2,1,L"CURVE SETTINGS",L"Soft knee width","hdr.softKneeWidth",0.05,1.0,0.01,0.42,false,0,nullptr,0,nullptr,{},0,0,1,CM_SOFTKNEE},
+ {2,0,L"CURVE SETTINGS",L"Auto exposure","hdr.autoRefW",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"Exposure target","hdr.refWTgt",0.20,0.70,0.01,0.42,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"Highlight neutral (head)","hdr.highlightNeutral",0,1,0.01,0.9,false,0,nullptr,0,nullptr,{},0,0,0,CM_NEUTRAL},
+ {2,1,L"CURVE SETTINGS",L"Chroma desat (exp)","hdr.chromaExp",-1.0,3.5,0.01,1.35,false,0,nullptr,0,nullptr,{},0,0,0,CM_CHROMA},
+ {2,1,L"CURVE SETTINGS",L"GT7 blend (ch<->UCS)","hdr.gtBlend",0,1,0.01,0.6,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"GT7 chroma fade from","hdr.gtFade",0.3,2.0,0.01,0.98,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"GT7 adapt to scene peak","hdr.gtAdapt",0,1,0.01,0.25,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7ADAPT},
+ {2,2,L"CURVE SETTINGS",L"GT7 debug view","hdr.gt7Dbg",0,0,0,0,false,0,kGt7Dbg,5,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"GT7 shoulder reach","hdr.gtAlpha",0.02,0.90,0.01,0.25,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"GT7 desaturation","hdr.gtDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
+ {2,1,L"CURVE SETTINGS",L"Spline contrast","hdr.tmContrast",0,1.5,0.01,0.5,false,0,nullptr,0,nullptr,{},0,0,0,CM_SPLINE},
+ {2,1,L"CURVE SETTINGS",L"Spline shadow pivot","hdr.tmPivot",0,1,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,CM_SPLINE},
+ // ── DISPLAY TARGET ──
+ {2,2,L"DISPLAY TARGET",L"Windows HDR","hdr.toggleDisplay",0,0,0,0,false,0,kWinHdr,5,nullptr,{},0,0,0,0},
+ {2,1,L"DISPLAY TARGET",L"Static nits (max)","hdr.maxNits",10,1000,5,1000,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"DISPLAY TARGET",L"Display black (nits)","hdr.blackNits",0,2,0.001,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"DISPLAY TARGET",L"Subtitle/OSD brightness","hdr.osdBright",0,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // ── POST-FX — MPCVR post-scale custom shaders (the engine's postfx group) ──
+ {2,0,L"POST-FX",L"Adaptive sharpen","postfx.sharpen",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"POST-FX",L"Sharpen strength","postfx.sharpenStr",0.3,1.5,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,0,L"POST-FX",L"Deband","postfx.deband",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"POST-FX",L"Deband threshold","postfx.debandThresh",0,256,1,32,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"POST-FX",L"Deband range","postfx.debandRange",1,64,1,16,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"POST-FX",L"Deband iterations","postfx.debandIter",1,4,1,1,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"POST-FX",L"Deband grain","postfx.debandGrain",0,128,1,24,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // ZION (3) — all 34 rows from build_rows(), same order/sections/defaults.
+ {3,0,nullptr,L"Enable ML grade","zion.enabled",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,3,nullptr,L"\x27F2  Reset grade to defaults","zion.reset",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {3,0,L"TONE CURVE",L"Band controller","zion.ctl",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,2,L"TONE CURVE",L"Mode","zion.toneMode",0,0,0,0,false,0,kMlMode,3,kMlModeV,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Shadow","zion.shadowToe",0,0.40,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Shadow dehaze","zion.shadowDehaze",0,1.0,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Gamma","zion.gamma",0.5,1.5,0.01,1,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Gamma top-up","zion.gammaTopUp",-0.50,0.50,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Mid-tone target","zion.tgtMid",0.0,0.95,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Highlight","zion.highlight",-0.3,0.4,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"TONE CURVE",L"Highlight shoulder","zion.highlightRolloffCtrl",-0.2,0.2,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,2,L"CHROMA",L"Mode","zion.chromaMode",0,0,0,0,false,0,kChromaMode,3,nullptr,{},0,1,0,0},
+ {3,1,L"CHROMA",L"Normal","zion.chN",1.0,1.3,0.01,1.08,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"CHROMA",L"Fire","zion.chF",1.0,1.3,0.01,1.15,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"CHROMA",L"Knee","zion.knee",0.1,0.9,0.01,0.45,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"CHROMA",L"Skin","zion.skin",0.5,1.0,0.01,0.95,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"MICRO CONTRAST",L"Enable","zion.contrast",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"MICRO CONTRAST",L"Strength","zion.contrastStrength",0,0.5,0.01,0.15,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"MICRO CONTRAST",L"Zone lo","zion.contrastZoneLo",0,0.6,0.01,0.15,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"MICRO CONTRAST",L"Ratio cap","zion.contrastRatioCap",1.0,2.0,0.01,1.4,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"MICRO CONTRAST",L"Skin protect","zion.contrastSkinProtect",0,1.0,0.01,0.65,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"DEBUG",L"HDR passthrough","hdr.hdrPass",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"DEBUG",L"Tone curve passthrough","zion.debugCopyShaders",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"DEBUG",L"Frame log","zion.debugFrameLog",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"DEBUG",L"MC heat","zion.contrastDebugVis",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"BLACK BARS",L"Repaint bars","zion.barsRepaint",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"BLACK BARS",L"Highlight bars","zion.barsHighlight",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"SKY SEG",L"Enable","zion.skyEnabled",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"SKY SEG",L"Strength","zion.skyStrength",0,1.0,0.01,0.6,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"SKY SEG",L"Mask overlay","zion.skyOverlay",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"PERSON SKIN",L"Enable","zion.personEnabled",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"PERSON SKIN",L"Strength","zion.personStrength",0,1.0,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,0,L"PERSON SKIN",L"Mask overlay","zion.personOverlay",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {3,1,L"PERSON SKIN",L"Tone preserve","zion.skinPreserve",0,1.0,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // OUTPUT (4) — all 26 rows from build_rows(). dev=1 rows stay hidden unless
+ // ui.showGradeInternals, but are still loaded and pushed like 1.3.0.
+ {4,0,L"VIDEO PROCESSING",L"Use Direct3D 11","out.useD3D11",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,2,L"VIDEO PROCESSING",L"Texture format","out.texFormat",0,0,0,0,false,0,kTexFmt,4,kTexFmtV,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"VP NV12","out.vpNV12",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"VP P01x","out.vpP01x",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"VP YUY2","out.vpYUY2",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"VP Other","out.vpOther",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,2,L"VIDEO PROCESSING",L"Deinterlacing","out.deinterlace",0,0,0,0,false,1,kDeint,3,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"Double frame rate","out.deintDouble",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"Blend deint 4:2:0","out.deintBlend",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"Shader VP resize","out.shaderVP",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"Super Resolution","out.superRes",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,0,L"VIDEO PROCESSING",L"RTX Video HDR","out.rtxVideoHdr",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,2,L"VIDEO PROCESSING",L"Chroma upsampling","out.chromaScaling",0,0,0,0,false,1,kChromaScale,2,kChromaScaleV,{},0,0,0,0},
+ {4,2,L"VIDEO PROCESSING",L"Upscaling","out.upscaling",0,0,0,0,false,1,kUpscale,2,kUpscaleV,{},0,0,0,0},
+ {4,2,L"VIDEO PROCESSING",L"Downscaling","out.downscaling",0,0,0,0,false,0,kDownscale,2,kDownscaleV,{},0,0,0,0},
+ {4,0,L"VIDEO PROCESSING",L"Interpolate at 50%","out.interpolate50",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"VIDEO PROCESSING",L"Use dithering","out.useDither",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,2,L"GEOMETRY",L"Fit mode","geo.mode",0,0,0,0,false,0,kFit,3,kFitV,{},0,0,0,0},
+ {4,1,L"GEOMETRY",L"Fixed aspect","geo.aspect",1.0,3.0,0.01,1.78,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"GEOMETRY",L"Zoom","geo.zoom",50,200,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"GEOMETRY",L"Pan X","geo.panX",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"GEOMETRY",L"Pan Y","geo.panY",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,0,L"NON-LINEAR STRETCH",L"Enable NLS","geo.nls",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,2,L"NON-LINEAR STRETCH",L"Axis","geo.nlsAxis",0,0,0,0,false,0,kNlsAxis,3,kNlsAxisV,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Strength","geo.nlsStrength",0,100,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Centre protection","geo.nlsCenter",0,45,1,45,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Curve","geo.nlsCurve",1.0,2.9,0.05,1.2,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Max stretch","geo.nlsMax",100,150,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,2,L"NON-LINEAR STRETCH",L"Fill mode","geo.nlsFillMode",0,0,0,0,false,0,kNlsFillMode,4,kNlsFillModeV,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Fill limit","geo.nlsFillLimit",100,200,1,105,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,0,L"NON-LINEAR STRETCH",L"Lock band","geo.nlsLock",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,2,L"OUTPUT",L"Swap effect","out.swapEffect",0,0,0,0,false,1,kSwap,2,nullptr,{},0,0,1,0},
+ {4,0,L"OUTPUT",L"Exclusive fullscreen","out.exclusiveFS",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"OUTPUT",L"Wait for VBlank","out.vBlank",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"OUTPUT",L"Adjust present time","out.adjustPresent",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"OUTPUT",L"Reinit on display change","out.reinitDisplay",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {4,0,L"OUTPUT",L"Show statistics","out.showStats",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,3,L"OUTPUT",L"Save frame as PNG","__capFrame",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {4,4,L"DISPLAY CALIBRATION",L"Calibration LUT","out.cubeLut",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,2,L"DISPLAY CALIBRATION",L"LUT mode","out.cubeLutMode",0,0,0,0,false,3,kLutModes,4,nullptr,{},0,0,0,0},
+ // SYSTEM (5) — Tray is dev-hidden; reset and setup use 1.3.0 confirmations.
+ {5,0,L"App",L"Tray icon","sys.trayIcon",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+  // Moved here from the title strip (30 Oct): a support action belongs in System,
+  // and the same kind==3 CTA pattern as "Save frame as PNG" already exists here.
+  {5,3,L"App",L"Report a problem","__report",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,0,L"App",L"Show context banner for settings","ui.helpBanner",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,0,L"App",L"Play next item automatically","ui.autoNext",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,3,L"App",L"\x27F2  Reset renderer settings","sys.resetRenderer",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,3,L"App",L"\x25B6  First-time setup\x2026 (restarts app)","src.setup",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+};
+static const int NROWS=_countof(g_rows);
+// Mirror the two INI-backed UI rows into globals the rail/playback read.
+static void SyncUiFlags(){
+  for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+    if(!strcmp(r.key,"ui.helpBanner")) g_helpBanner=r.on;
+    else if(!strcmp(r.key,"ui.autoNext")) g_autoNext=r.on; } }
+// The port of s3shell_panel.py's KEY_MAP (row key -> MpcPlayer::ApplySettingsFlat
+// name). Without it the engine silently discards the push: ApplySettingsFlat matches
+// on the SHORT name (hdr.convSdr, not hdr.convertToSdr) and an unmatched name sets
+// hit=false — measured 2026-10-26: 7 of 12 HDR controls and every zion.* control were
+// dead on arrival because the port copied the UI keys but not this table. Only keys
+// whose engine name DIFFERS from the row key need an entry; the rest pass through.
+static const char* EngineKey(const char* k){
+  struct M{const char*ui;const char*en;};
+  static const M m[]={
+   {"hdr.convertToSdr","hdr.convSdr"},{"hdr.toneMapCurve","hdr.curve"},
+   {"hdr.toggleDisplay","hdr.toggle"},{"hdr.maxNits","hdr.dispNits"},
+   {"hdr.outputGamut","hdr.gamut"},{"hdr.osdBright","hdr.osdBrt"},
+   {"hdr.exposureTrim","hdr.expTrim"},{"hdr.shadowLift","hdr.shLift"},
+   {"hdr.hdrPass","hdr.raw"},
+   {"postfx.debandThresh","postfx.dbThresh"},{"postfx.debandRange","postfx.dbRange"},
+   {"postfx.debandIter","postfx.dbIter"},{"postfx.debandGrain","postfx.dbGrain"},
+   {"zion.enabled","ml.enable"},{"zion.toneMode","ml.mode"},{"zion.shadowToe","ml.shadow"},
+   {"zion.shadowDehaze","ml.shDehaze"},{"zion.gamma","ml.gamma"},{"zion.highlight","ml.highlight"},
+   {"zion.highlightRolloffCtrl","ml.hiRoll"},{"zion.gammaTopUp","ml.gammaTopUp"},
+   {"zion.tgtMid","ml.tgtMid"},{"zion.ctl","ml.ctl"},{"zion.ctlWhite","ml.ctlWhite"},
+   {"zion.chN","ml.chN"},{"zion.chF","ml.chF"},{"zion.knee","ml.knee"},{"zion.skin","ml.skin"},
+   {"zion.contrast","ml.contrastEnable"},{"zion.contrastStrength","ml.contrast"},
+   {"zion.contrastZoneLo","ml.csZoneLo"},{"zion.contrastRatioCap","ml.csCap"},
+   {"zion.contrastSkinProtect","ml.csSkin"},{"zion.contrastDebugVis","ml.contrastVis"},
+   {"zion.barsRepaint","ml.bars"},{"zion.barsHighlight","ml.barsHighlight"},
+   {"zion.debugCopyShaders","ml.debugCopy"},{"zion.debugFrameLog","ml.debugLog"},
+   {"zion.skyEnabled","ml.sky"},{"zion.skyStrength","ml.skyStr"},{"zion.skyOverlay","ml.skyVis"},
+   {"zion.personEnabled","ml.person"},{"zion.personStrength","ml.persStr"},
+   {"zion.personOverlay","ml.personOv"},{"zion.skinPreserve","ml.skinPres"},
+   {"out.useD3D11","out.d3d11"},{"out.texFormat","out.tex"},{"out.vpNV12","out.nv12"},
+   {"out.vpP01x","out.p010"},{"out.vpYUY2","out.yuy2"},{"out.vpOther","out.other"},
+   {"out.deinterlace","out.deint"},{"out.deintDouble","out.deintDb"},{"out.deintBlend","out.deintBl"},
+   {"out.chromaScaling","out.chroma"},{"out.upscaling","out.upsc"},{"out.downscaling","out.downsc"},
+   {"out.useDither","out.dither"},{"out.vBlank","out.vblank"},{"out.adjustPresent","out.adjust"},
+   {"out.reinitDisplay","out.reinit"},{"out.swapEffect","out.swapEffect"},
+   {"sys.trayIcon","out.tray"},
+  };
+  for(const auto&e:m) if(!strcmp(k,e.ui)) return e.en;
+  return k;
+}
+// The Tone curve row's current ENGINE value (kCurveV), for CURVE SETTINGS gating.
+static int CurCurve(){ for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+  if(r.kind==2&&!strcmp(r.key,"hdr.toneMapCurve")) return r.optvals?r.optvals[r.opt]:r.opt; } return 0; }
+static Row* FindRow(const char* key){ for(auto&r:g_rows) if(!strcmp(r.key,key)) return &r; return nullptr; }
+static std::string JsonEscape(const std::string& s){ std::string o; o.reserve(s.size()+16);
+  for(char c:s){ if(c=='\\'||c=='"') o+='\\'; o+=c; } return o; }
+static void EnsureGdiplus(){ static bool on=false; if(on) return;
+  Gdiplus::GdiplusStartupInput si; ULONG_PTR tok=0;
+  if(Gdiplus::GdiplusStartup(&tok,&si,nullptr)==Gdiplus::Ok) on=true; }
+static bool PngEncoderClsid(CLSID& clsid){
+  EnsureGdiplus(); UINT n=0,bytes=0;
+  if(Gdiplus::GetImageEncodersSize(&n,&bytes)!=Gdiplus::Ok||!bytes) return false;
+  std::vector<BYTE> buf(bytes); auto info=(Gdiplus::ImageCodecInfo*)buf.data();
+  if(Gdiplus::GetImageEncoders(n,bytes,info)!=Gdiplus::Ok) return false;
+  for(UINT i=0;i<n;++i) if(!wcscmp(info[i].MimeType,L"image/png")){ clsid=info[i].Clsid; return true; }
+  return false;
+}
+static void PushLut(){
+  Row* path=FindRow("out.cubeLut"),*mode=FindRow("out.cubeLutMode");
+  if(!path||!mode) return;
+  const int m=mode->opt;
+  // 1.3.0 _push_lut(): mode 0 clears the renderer but KEEPS the chosen path in
+  // the INI. The empty unload must also reach the renderer's persisted settings.
+  const std::string file=(m>0)?Narrow(path->file):std::string();
+  std::string j=std::string("{\"a\":\"lut\",\"file\":\"")+JsonEscape(file)+"\",\"mode\":"+std::to_string(m)+"}";
+  int rc=Cmd(j.c_str()); LogF("CMD lut mode=%d path='%s' rc=%d",m,file.c_str(),rc);
+  if(file.empty()){ int sr=Cmd("{\"a\":\"save\"}"); LogF("CMD save after LUT clear rc=%d",sr); }
+}
+// Port of s3shell_panel.py push_all(): send the WHOLE mapped settings set in ONE
+// grouped command at engine startup and on every graph generation. This is the wheel
+// the port dropped — without it the renderer never receives ml.enable=true, so the
+// ML-grade taste shader (shadow detail / contrast) never runs and sdrNits lands in a
+// pipeline that ignores it. Measured 2026-10-26: the rail pushed correct keys and the
+// renderer held the values ([live] hdr readback changed) yet the picture did not,
+// because the surrounding state 1.3.0 establishes via push_all was absent.
+// Only rows whose ENGINE key is a real settings group are pushed; the imperative rows
+// (pb.* track/subtrack, audio.mode, src.*) are excluded exactly as 1.3.0 keeps them
+// out of KEY_MAP so push_all can never re-trigger the mode->re-open->gen->push loop.
+static bool IsSettingsKey(const char* ek){
+  // LUT path/mode are COMMANDS ({"a":"lut"}), not ApplySettingsFlat fields.
+  if(!strcmp(ek,"out.cubeLut")||!strcmp(ek,"out.cubeLutMode")) return false;
+  return !strncmp(ek,"hdr.",4)||!strncmp(ek,"ml.",3)||!strncmp(ek,"out.",4)||
+         !strncmp(ek,"geo.",4)||!strncmp(ek,"postfx.",9);
+}
+static bool IsPassthroughRow(const Row& r){
+  return !strcmp(r.key,"hdr.hdrPass")||!strcmp(r.key,"zion.debugCopyShaders");
+}
+
+// ---- SETTINGS PERSISTENCE (s3shell_panel.py SettingsIni + seed_ini) ----------
+// 1.3.0's source of truth is %LOCALAPPDATA%\Unplugged\s3_shell.ini. The renderer
+// still loads its own registry at construction, but the rail must NOT start from
+// hardcoded defaults and overwrite that state: it loads this file first, keeps
+// every key (including rows this port has not built yet), and re-pushes on each
+// graph generation. Writes are atomic and failures are LOGGED, never swallowed.
+static std::map<std::string,std::string> g_ini;
+static std::wstring g_iniPath;
+static bool g_iniDirty=false;
+
+static std::wstring SettingsIniPath(){
+  wchar_t base[MAX_PATH];
+  DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
+  if(n&&n<MAX_PATH){ std::wstring d=std::wstring(base)+L"\\Unplugged";
+    CreateDirectoryW(d.c_str(),nullptr); return d+L"\\s3_shell.ini"; }
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\');
+  return (p==std::wstring::npos?std::wstring(L"."):d.substr(0,p))+L"\\s3_shell.ini";
+}
+static std::string IniTrim(std::string s){
+  size_t a=0,b=s.size(); while(a<b&&(s[a]==' '||s[a]=='\t'||s[a]=='\r'||s[a]=='\n'))++a;
+  while(b>a&&(s[b-1]==' '||s[b-1]=='\t'||s[b-1]=='\r'||s[b-1]=='\n'))--b;
+  return s.substr(a,b-a);
+}
+static bool IniBool(const std::string& s){
+  return s=="1"||_stricmp(s.c_str(),"true")==0||_stricmp(s.c_str(),"on")==0||_stricmp(s.c_str(),"yes")==0;
+}
+static std::string IniGet(const char* k){ auto it=g_ini.find(k); return it==g_ini.end()?std::string():it->second; }
+static bool IsIntSlider(const char* k){
+  // s3shell_panel.py INT_SLIDERS: fields the engine truncates to int. Other
+  // sliders remain two-decimal floats even when their native drag step is 1.
+  static const char* keys[]={"hdr.sdrNits","hdr.maxNits","hdr.osdBright","hdr.titlePeak",
+    "postfx.debandIter","hdr.exposureTrim","hdr.shadowLift","hdr.punch"};
+  for(auto k2:keys) if(!strcmp(k,k2)) return true; return false;
+}
+static std::string IniValue(const Row& r){
+  if(r.kind==0&&!strcmp(r.key,"out.superRes")) return r.on?"4":"0"; // SUPERRES_1440p
+  if(r.kind==0) return r.on?"True":"False";
+  if(r.kind==4) return Narrow(r.file);
+  char b[64];
+  if(r.kind==1){
+    if(IsIntSlider(r.key)){ snprintf(b,sizeof(b),"%d",(int)floor(r.val+0.5)); return b; }
+    snprintf(b,sizeof(b),"%.2f",r.val); std::string s=b; size_t dot=s.find('.');
+    if(dot!=std::string::npos) while(s.size()>dot+2&&s.back()=='0') s.pop_back();
+    return s;
+  }
+  if(r.kind==2&&!strcmp(r.key,"hdr.toneMapCurve"))
+    snprintf(b,sizeof(b),"%d",r.optvals?r.optvals[r.opt]:r.opt); // ENGINE value, not index
+  else snprintf(b,sizeof(b),"%d",r.opt);
+  return b;
+}
+static void SaveIni(const char* why){
+  if(!g_iniDirty) return;
+  if(g_iniPath.empty()) g_iniPath=SettingsIniPath();
+  std::wstring tmp=g_iniPath+L".tmp";
+  FILE* f=_wfopen(tmp.c_str(),L"wb");
+  if(!f){ LogF("ini SAVE FAILED %S (%s)",g_iniPath.c_str(),why); return; }
+  fprintf(f,"# unplugged engine settings (s3_shell schema)\n");
+  for(const auto& kv:g_ini) fprintf(f,"%s=%s\n",kv.first.c_str(),kv.second.c_str());
+  bool ok=(fclose(f)==0);
+  if(ok) ok=MoveFileExW(tmp.c_str(),g_iniPath.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+  if(!ok){ DeleteFileW(tmp.c_str()); LogF("ini SAVE FAILED %S (%s) err=%lu",g_iniPath.c_str(),why,GetLastError()); return; }
+  g_iniDirty=false; LogF("ini saved %d keys (%s)",(int)g_ini.size(),why);
+}
+static void SaveRowIni(const Row& r){
+  if(!r.key||!*r.key) return;
+  g_ini[r.key]=IniValue(r); g_iniDirty=true; SaveIni("change");
+}
+static void SeedIni(){
+  // seed_ini(): fill/normalise mapped rows, existing values win in MEANING. This
+  // writes once at startup, never once per key, and also seeds the curve format.
+  int changed=0;
+  for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+    if(r.kind!=0&&r.kind!=1&&r.kind!=2) continue;
+    if(!IsSettingsKey(EngineKey(r.key))&&strncmp(r.key,"ui.",3)!=0) continue;
+    const std::string want=IniValue(r); auto it=g_ini.find(r.key);
+    if(it==g_ini.end()||it->second!=want){ g_ini[r.key]=want; ++changed; } }
+  if(g_ini.find("ui.curveValueIsEngine")==g_ini.end()){ g_ini["ui.curveValueIsEngine"]="true"; ++changed; }
+  if(g_ini.find("ui.showAllTonemappers")==g_ini.end()){ g_ini["ui.showAllTonemappers"]="false"; ++changed; }
+  if(changed){ g_iniDirty=true; SaveIni("seed"); }
+  LogF("ini ready: %d entries, seeded/normalised=%d path=%S",(int)g_ini.size(),changed,g_iniPath.c_str());
+}
+static void CaptureDefaults(){
+  static bool done=false; if(done) return;
+  for(int i=0;i<NROWS;++i){ g_rows[i].defVal=g_rows[i].val;
+    g_rows[i].defOn=g_rows[i].on; g_rows[i].defOpt=g_rows[i].opt; }
+  done=true;
+}
+static void LoadSettingsIni(){
+  CaptureDefaults();       // born defaults, before any persisted value is applied
+  g_iniPath=SettingsIniPath(); g_ini.clear();
+  std::ifstream in(g_iniPath.c_str(),std::ios::binary); std::string line;
+  while(std::getline(in,line)){ line=IniTrim(line);
+    if(line.empty()||line[0]=='#') continue; size_t eq=line.find('='); if(eq==std::string::npos) continue;
+    std::string k=IniTrim(line.substr(0,eq)),v=IniTrim(line.substr(eq+1));
+    if(!k.empty()) g_ini[k]=v; }
+  // Close before SeedIni's SaveIni: with the read handle still open the tmp ->
+  // s3_shell.ini MoveFileEx fails with err=5 and the seeded keys are lost.
+  in.close();
+  g_showInternals=IniBool(IniGet("ui.showGradeInternals"));
+  const bool curveEngine=IniBool(IniGet("ui.curveValueIsEngine"));
+  static const int allCurves[]={1,2,3,4,5,7,8,9,10,11};
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; auto it=g_ini.find(r.key); if(it==g_ini.end()) continue;
+    const std::string& v=it->second;
+    if(r.kind==0){
+      r.on=IniBool(v);
+      if(!strcmp(r.key,"out.superRes")){ // any nonzero SUPERRES_* value means On
+        char* end=nullptr; long n=strtol(v.c_str(),&end,10); if(end!=v.c_str()&&n!=0) r.on=true; }
+    }
+    else if(r.kind==4){ r.file=Widen(v); }
+    else if(r.kind==1){ char* end=nullptr; double d=strtod(v.c_str(),&end); if(end!=v.c_str()) r.val=d; }
+    else if(r.kind==2){
+      if(!strcmp(r.key,"hdr.toneMapCurve")){
+        int raw=atoi(v.c_str()),engine=0;
+        if(curveEngine){ for(int cv:allCurves) if(raw==cv) engine=raw; }
+        else if(raw>=0&&raw<(int)_countof(allCurves)) engine=allCurves[raw];
+        else { for(int cv:allCurves) if(raw==cv) engine=raw; }
+        // The native rail currently offers the 1.3.0 default two-curve table.
+        // An unoffered curve falls back to Unplugged, never a nearest neighbour.
+        r.opt=0; for(int j=0;j<2;++j) if(kCurveV[j]==engine) r.opt=j;
+      } else {
+        // Rows that expose a SUBSET of the engine's enum carry optvals; the INI
+        // stores the engine value, so it has to be looked up in the subset.
+        // Without this, pruning bad scalers would silently remap a stored value
+        // (e.g. 2 = Hamming) onto whatever now sits at index 2.
+        const int o=atoi(v.c_str());
+        if(r.optvals){
+          int found=-1;
+          for(int j=0;j<r.nopts;++j) if(r.optvals[j]==o) found=j;
+          if(found>=0) r.opt=found;   // not in the kept set -> row default stands
+        } else if(o>=0&&o<r.nopts) r.opt=o;
+      }
+    }
+  }
+  SyncUiFlags();       // ui.helpBanner / ui.autoNext from the persisted rows
+  g_showInfo=IniBool(IniGet("ui.showInfo"));
+  g_showSettings=IniBool(IniGet("ui.showSettings"));
+  LogF("ini loaded %d entries from %S (helpBanner=%d autoNext=%d info=%d settings=%d)",(int)g_ini.size(),
+       g_iniPath.c_str(),(int)g_helpBanner,(int)g_autoNext,
+       (int)g_showInfo,(int)g_showSettings);
+  SeedIni();
+}
+
+static void PushAll(){
+  std::string s; char b[96]; int n=0;
+  for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+    if(r.noeng) continue;
+    if(r.kind!=0&&r.kind!=1&&r.kind!=2) continue;      // kind 5/7 are imperative commands
+    const char* ek=EngineKey(r.key);
+    if(!IsSettingsKey(ek)) continue;
+    if(r.kind==0&&!strcmp(r.key,"out.superRes")) snprintf(b,sizeof(b),"%s=%d",ek,r.on?4:0);
+    else if(r.kind==0) snprintf(b,sizeof(b),"%s=%s",ek,r.on?"true":"false");
+    else if(r.kind==1){
+      const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
+                      !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
+                      !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsMax")||
+                      !strcmp(r.key,"geo.nlsFillLimit"))
+                      ?r.val/100.0:r.val;
+      snprintf(b,sizeof(b),"%s=%g",ek,v);
+    }
+    else snprintf(b,sizeof(b),"%s=%d",ek,r.optvals?r.optvals[r.opt]:r.opt);
+    if(!s.empty()) s+=';'; s+=b; ++n; }
+  if(!s.empty()){
+    std::string j=std::string("{\"a\":\"set\",\"sets\":\"")+s+"\"}";
+    int rc=Cmd(j.c_str()); LogF("PUSHALL %d keys rc=%d",n,rc); }
+  PushLut();   // LUT is a command, re-applied on every graph generation like 1.3.0
+}
+static void PushRow(const Row& r){ char b[192];
+  SaveRowIni(r);   // 1.3.0 SettingsIni.set(): persist on every user change
+  PresetNoteRowChanged(r);   // Default is read-only: mark dirty + warn once
+  SyncUiFlags();   // UI-only rows take effect immediately
+  if(r.noeng){ LogF("CMD skipped (INI-only) %s",r.key); return; }
+  if(r.kind==4||!strcmp(r.key,"out.cubeLutMode")){ PushLut(); return; }
+  const char* ek=EngineKey(r.key);
+  // THE ENABLE SWITCH IS THE MASTER. Turning ML grade on while TONE CURVE -> Mode
+  // says Off made the switch inert: the renderer activates only for Manual or Auto,
+  // so the click was delivered, accepted and then discarded (measured 30 Oct:
+  // ml.enable=true with ml.mode=0, renderer reporting "mode: Off active: no", for
+  // every toggle). The switch is what the operator is told turns the grade on, so
+  // when the Mode would veto it the switch sets the Mode to Auto and says so - and
+  // the Mode row follows, so the panel and the engine can never disagree. Off stays
+  // reachable through this switch, which is its off.
+  if(r.kind==0&&!strcmp(r.key,"zion.enabled")&&r.on){
+    Row* m=FindRow("zion.toneMode");
+    if(m&&m->kind==2){
+      const int cur=m->optvals?m->optvals[m->opt]:m->opt;
+      if(cur==0){
+        m->opt=0;                       // index 0 == "Auto" (kMlModeV = {2,1,0})
+        const int nv=m->optvals?m->optvals[m->opt]:m->opt;
+        LogF("enable ML grade: Mode was Off -> Auto (engine ml.mode=%d)",nv);
+        SaveRowIni(*m); PresetNoteRowChanged(*m);
+        snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"ml.mode=%d\"}",nv);
+        int mrc=Cmd(b); LogF("CMD %s (ml.mode) rc=%d",b,mrc);
+      } }
+  }
+  if(r.kind==0&&!strcmp(r.key,"out.superRes")){
+    snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"out.superRes=%d\"}",r.on?4:0);
+    int rc=Cmd(b); LogF("CMD %s rc=%d",b,rc); return; }
+  switch(r.kind){
+  case 0: snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%s\"}",ek,r.on?"true":"false"); break;
+  case 1:{
+    const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
+                    !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
+                    !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsMax")||
+                    !strcmp(r.key,"geo.nlsFillLimit"))
+                    ?r.val/100.0:r.val;
+    snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%g\"}",ek,v); break; }
+  case 2: snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%d\"}",ek,r.optvals?r.optvals[r.opt]:r.opt); break;
+  case 5: snprintf(b,sizeof(b),"{\"a\":\"track\",\"index\":%d}",r.opt); break;
+  case 7: snprintf(b,sizeof(b),"{\"a\":\"subtrack\",\"index\":%d}",r.opt-r.noff); break;
+  default: return; }
+  int rc=Cmd(b); LogF("CMD %s (%s) rc=%d",b,ek,rc);
+}
+
+// ---- presets ---------------------------------------------------------------
+static std::wstring PresetDir(){
+  wchar_t base[MAX_PATH]; DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
+  std::wstring d;
+  if(n&&n<MAX_PATH) d=std::wstring(base)+L"\\Unplugged\\presets";
+  else { wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+    std::wstring e(exe); size_t p=e.find_last_of(L'\\');
+    d=(p==std::wstring::npos?std::wstring(L"."):e.substr(0,p))+L"\\presets"; }
+  CreateDirectoryW(d.c_str(),nullptr);
+  return d;
+}
+// DEVICE rows describe the display, not a look: SDR nits, static max nits, the
+// black level, convert-to-SDR and the output gamut. They live once in the INI,
+// are never written into a preset (so a preset can be shared without carrying
+// someone else's screen along), and never mark a preset dirty.
+static bool PresetDeviceRow(const Row& r){
+  if(!r.key) return false;
+  return !strcmp(r.key,"hdr.sdrNits") || !strcmp(r.key,"hdr.maxNits") ||
+         !strcmp(r.key,"hdr.blackNits") || !strcmp(r.key,"hdr.convertToSdr") ||
+         !strcmp(r.key,"hdr.outputGamut"); }
+static bool PresetEligible(const Row& r){
+  return r.key&&*r.key&&(r.kind==0||r.kind==1||r.kind==2||r.kind==4)&&
+         strncmp(r.key,"ui.",3)!=0 && !PresetDeviceRow(r);
+}
+static std::wstring PresetNameFromFile(const std::wstring& path){
+  wchar_t b[256]={0}; GetPrivateProfileStringW(L"preset",L"name",L"",b,256,path.c_str());
+  if(*b) return b;
+  size_t p=path.find_last_of(L"\\/"),d=path.find_last_of(L'.');
+  std::wstring s=(p==std::wstring::npos)?path:path.substr(p+1);
+  if(d!=std::wstring::npos&&d>p) s=s.substr(0,d-p-1);
+  return s;
+}
+static std::wstring PresetFilePath(const std::wstring& name,bool create){
+  if(name.empty()||_wcsicmp(name.c_str(),L"Default")==0) return L"";
+  std::wstring dir=PresetDir();
+  WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((dir+L"\\*.ini").c_str(),&fd);
+  if(h!=INVALID_HANDLE_VALUE){
+    do { if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+      std::wstring p=dir+L"\\"+fd.cFileName;
+      if(_wcsicmp(PresetNameFromFile(p).c_str(),name.c_str())==0){ FindClose(h); return p; }
+    } while(FindNextFileW(h,&fd));
+    FindClose(h); }
+  if(!create) return L"";
+  std::wstring base; for(wchar_t c:name){
+    if((c>=L'a'&&c<=L'z')||(c>=L'A'&&c<=L'Z')||(c>=L'0'&&c<=L'9')||c==L' '||c==L'-'||c==L'_') base+=c;
+    else base+=L'_'; }
+  while(!base.empty()&&(base.back()==L' '||base.back()==L'.')) base.pop_back();
+  while(!base.empty()&&(base.front()==L' '||base.front()==L'.')) base.erase(base.begin());
+  if(base.empty()) base=L"Preset";
+  if(base.size()>60) base.resize(60);
+  std::wstring p=dir+L"\\"+base+L".ini";
+  for(int n=2;GetFileAttributesW(p.c_str())!=INVALID_FILE_ATTRIBUTES;++n){
+    wchar_t s[32]; swprintf_s(s,L"_%d",n); p=dir+L"\\"+base+s+L".ini"; }
+  return p;
+}
+static bool PresetExists(const std::wstring& name){
+  if(_wcsicmp(name.c_str(),L"Default")==0) return true;
+  return !PresetFilePath(name,false).empty();
+}
+static std::vector<std::wstring> ListPresets(){
+  std::vector<std::wstring> v; v.push_back(L"Default"); std::wstring dir=PresetDir();
+  WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((dir+L"\\*.ini").c_str(),&fd);
+  if(h!=INVALID_HANDLE_VALUE){
+    do { if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+      std::wstring n=PresetNameFromFile(dir+L"\\"+fd.cFileName);
+      if(n.empty()||_wcsicmp(n.c_str(),L"Default")==0) continue;
+      bool dup=false; for(auto&x:v) if(_wcsicmp(x.c_str(),n.c_str())==0) dup=true;
+      if(!dup) v.push_back(n);
+    } while(FindNextFileW(h,&fd));
+    FindClose(h); }
+  std::sort(v.begin()+1,v.end(),[](const std::wstring&a,const std::wstring&b){
+    return _wcsicmp(a.c_str(),b.c_str())<0; });
+  return v;
+}
+static std::wstring PresetLabel(){
+  return g_activePreset+(g_presetDirty?L"  *":L"");
+}
+static void SetActivePreset(const std::wstring& name,bool dirty){
+  g_activePreset=name; g_presetDirty=dirty; g_presetWarned=false;
+  g_ini["ui.activePreset"]=Narrow(name); g_ini["ui.presetDirty"]=dirty?"True":"False";
+  g_iniDirty=true; SaveIni("preset");
+  if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+40,0,0);
+}
+static void PresetInitFromIni(){
+  std::wstring a=Widen(IniGet("ui.activePreset"));
+  if(a.empty()||(_wcsicmp(a.c_str(),L"Default")!=0&&!PresetExists(a))) a=L"Default";
+  g_activePreset=a; g_presetDirty=IniBool(IniGet("ui.presetDirty")); g_presetWarned=false;
+  LogF("presets: active='%s' dirty=%d",Narrow(a).c_str(),(int)g_presetDirty);
+}
+static void PresetNoteRowChanged(const Row& r){
+  if(g_applyingPreset||!PresetEligible(r)) return;
+  if(_wcsicmp(g_activePreset.c_str(),L"Default")!=0){
+    // Custom presets are live: changes are flushed by a short debounce timer,
+    // so there is no separate Save step. The label shows * only while pending.
+    bool first=!g_presetDirty;
+    g_presetDirty=true;
+    if(first){ g_ini["ui.presetDirty"]="True"; g_iniDirty=true; SaveIni("preset dirty"); }
+    if(AfxGetMainWnd()){
+      AfxGetMainWnd()->PostMessageW(WM_APP+48,0,0);
+      if(first) AfxGetMainWnd()->PostMessageW(WM_APP+40,0,0); }
+    return;
+  }
+  bool wasDirty=g_presetDirty;
+  g_presetDirty=true;
+  g_ini["ui.presetDirty"]="True"; g_iniDirty=true; SaveIni("preset dirty");
+  bool warn=(!_wcsicmp(g_activePreset.c_str(),L"Default")&&!g_presetWarned);
+  if(warn) g_presetWarned=true;
+  if(warn||!wasDirty)
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+38,(WPARAM)(warn?1:0),0);
+}
+static bool WritePresetFile(const std::wstring& name,bool announce){
+  std::wstring path=PresetFilePath(name,true); if(path.empty()) return false;
+  DeleteFileW(path.c_str());
+  WritePrivateProfileStringW(L"preset",L"name",name.c_str(),path.c_str());
+  for(const Row& r:g_rows){
+    if(!PresetEligible(r)) continue;
+    wchar_t val[4096]={0};
+    if(r.kind==0) wcscpy_s(val,r.on?L"1":L"0");
+    else if(r.kind==1) swprintf_s(val,L"%.6g",r.val);
+    else if(r.kind==2) swprintf_s(val,L"%d",r.optvals?r.optvals[r.opt]:r.opt);
+    else if(r.kind==4) wcscpy_s(val,r.file.c_str());
+    WritePrivateProfileStringW(L"values",Widen(r.key).c_str(),val,path.c_str()); }
+  WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
+  if(announce) LogF("preset save '%s' -> %S",Narrow(name).c_str(),path.c_str());
+  return true;
+}
+static bool PresetFlushPending(){
+  if(!g_presetDirty||_wcsicmp(g_activePreset.c_str(),L"Default")==0) return true;
+  if(!WritePresetFile(g_activePreset,false)) return false;
+  g_presetDirty=false; g_ini["ui.presetDirty"]="False"; g_iniDirty=true; SaveIni("preset autosave");
+  LogF("preset autosave '%s'",Narrow(g_activePreset).c_str());
+  if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+40,0,0);
+  return true;
+}
+static bool ApplyPreset(const std::wstring& name){
+  PresetFlushPending();
+  std::wstring path;
+  if(_wcsicmp(name.c_str(),L"Default")!=0){ path=PresetFilePath(name,false); if(path.empty()) return false; }
+  std::vector<Row*> changed;
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!PresetEligible(r)) continue;
+    if(_wcsicmp(name.c_str(),L"Default")==0){
+      if(r.kind==0&&r.on!=r.defOn){ r.on=r.defOn; changed.push_back(&r); }
+      else if(r.kind==1&&r.val!=r.defVal){ r.val=r.defVal; changed.push_back(&r); }
+      else if(r.kind==2&&r.opt!=r.defOpt){ r.opt=r.defOpt; changed.push_back(&r); }
+      else if(r.kind==4&&!r.file.empty()){ r.file.clear(); changed.push_back(&r); }
+      continue; }
+    wchar_t val[4096]={0};
+    GetPrivateProfileStringW(L"values",Widen(r.key).c_str(),L"",val,4096,path.c_str());
+    if(!*val) continue;
+    bool diff=false;
+    if(r.kind==0){ bool on=_wtoi(val)!=0; if(on!=r.on){ r.on=on; diff=true; } }
+    else if(r.kind==1){ double v=wcstod(val,nullptr); if(v<r.mn)v=r.mn; if(v>r.mx)v=r.mx;
+      if(v!=r.val){ r.val=v; diff=true; } }
+    else if(r.kind==2){
+      const int o=_wtoi(val);
+      int idx=o;
+      if(r.optvals){ idx=-1; for(int j=0;j<r.nopts;++j) if(r.optvals[j]==o) idx=j; }
+      if(idx>=0&&idx<r.nopts&&idx!=r.opt){ r.opt=idx; diff=true; } }
+    else if(r.kind==4){ std::wstring f=val; if(f!=r.file){ r.file=f; diff=true; } }
+    if(diff) changed.push_back(&r); }
+  if(!changed.empty()){
+    g_applyingPreset=true;
+    for(Row* r:changed) PushRow(*r);
+    g_applyingPreset=false; }
+  SetActivePreset(name,false);
+  LogF("preset apply '%s' changed=%d",Narrow(name).c_str(),(int)changed.size());
+  return true;
+}
+static bool WritePresetDefaults(const std::wstring& name){
+  std::wstring path=PresetFilePath(name,true); if(path.empty()) return false;
+  DeleteFileW(path.c_str());
+  WritePrivateProfileStringW(L"preset",L"name",name.c_str(),path.c_str());
+  for(const Row& r:g_rows){
+    if(!PresetEligible(r)) continue;
+    wchar_t val[4096]={0};
+    if(r.kind==0) wcscpy_s(val,r.defOn?L"1":L"0");
+    else if(r.kind==1) swprintf_s(val,L"%.6g",r.defVal);
+    else if(r.kind==2) swprintf_s(val,L"%d",r.defOpt);
+    else if(r.kind==4) val[0]=0;
+    WritePrivateProfileStringW(L"values",Widen(r.key).c_str(),val,path.c_str()); }
+  WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
+  return true;
+}
+static bool CreatePresetFrom(const std::wstring& name,const std::wstring& source);
+static bool CreatePresetFromDefault(const std::wstring& name){ return CreatePresetFrom(name,L"Default"); }
+// New can copy from ANY preset, not only Default: a power user who has tuned one
+// wants a variant of it, not a copy of the baseline.
+static bool CreatePresetFrom(const std::wstring& name,const std::wstring& source){
+  if(name.empty()||_wcsicmp(name.c_str(),L"Default")==0||PresetExists(name)) return false;
+  if(PresetExists(source) && _wcsicmp(source.c_str(),L"Default")!=0){
+    std::wstring src=PresetFilePath(source,false); if(src.empty()) return false;
+    PresetFlushPending();
+    std::wstring path=PresetFilePath(name,true); if(path.empty()) return false;
+    DeleteFileW(path.c_str());
+    WritePrivateProfileStringW(L"preset",L"name",name.c_str(),path.c_str());
+    // copy the values verbatim (only preset-eligible keys exist in that file)
+    std::vector<wchar_t> buf(65536,0);
+    GetPrivateProfileStringW(L"values",nullptr,L"",buf.data(),(DWORD)buf.size(),src.c_str());
+    for(const wchar_t* p=buf.data(); *p; p+=wcslen(p)+1){
+      std::vector<wchar_t> v(4096,0);
+      GetPrivateProfileStringW(L"values",p,L"",v.data(),(DWORD)v.size(),src.c_str());
+      WritePrivateProfileStringW(L"values",p,v.data(),path.c_str()); }
+    WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
+    if(!ApplyPreset(name)) return false;
+    LogF("preset created '%s' from '%s'",Narrow(name).c_str(),Narrow(source).c_str());
+    return true;
+  }
+  PresetFlushPending();
+  if(!WritePresetDefaults(name)) return false;
+  if(!ApplyPreset(name)) return false;   // load the new copy (Default values)
+  LogF("preset created from Default '%s'",Narrow(name).c_str());
+  return true;
+}
+static bool DeletePreset(const std::wstring& name){
+  if(_wcsicmp(name.c_str(),L"Default")==0) return false;
+  if(_wcsicmp(name.c_str(),g_activePreset.c_str())!=0) PresetFlushPending();
+  std::wstring path=PresetFilePath(name,false); if(path.empty()) return false;
+  DeleteFileW(path.c_str());
+  LogF("preset delete '%s'",Narrow(name).c_str());
+  if(_wcsicmp(g_activePreset.c_str(),name.c_str())==0) ApplyPreset(L"Default");
+  else if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+40,0,0);
+  return true;
+}
+static bool RenamePreset(const std::wstring& oldName,const std::wstring& newName){
+  if(newName.empty()||_wcsicmp(oldName.c_str(),L"Default")==0||
+     _wcsicmp(newName.c_str(),L"Default")==0||PresetExists(newName)) return false;
+  if(_wcsicmp(oldName.c_str(),g_activePreset.c_str())==0) PresetFlushPending();
+  std::wstring oldPath=PresetFilePath(oldName,false); if(oldPath.empty()) return false;
+  std::wstring newPath=PresetFilePath(newName,true);
+  if(newPath.empty()||!CopyFileW(oldPath.c_str(),newPath.c_str(),FALSE)) return false;
+  WritePrivateProfileStringW(L"preset",L"name",newName.c_str(),newPath.c_str());
+  DeleteFileW(oldPath.c_str());
+  if(_wcsicmp(g_activePreset.c_str(),oldName.c_str())==0) SetActivePreset(newName,g_presetDirty);
+  else if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+40,0,0);
+  LogF("preset rename '%s' -> '%s'",Narrow(oldName).c_str(),Narrow(newName).c_str());
+  return true;
+}
+static void EnableSuperRes(Row& r){
+  // 1.3.0 _enable_superres(): enabling also satisfies the renderer prerequisites
+  // (shader VP resize on, Texture format Auto if it was forced 10/16-bit), and
+  // sends all changed values in ONE apply so the renderer reinitialises once.
+  std::vector<Row*> changed{&r}; SaveRowIni(r);
+  if(Row* vp=FindRow("out.shaderVP")) if(!vp->on){ vp->on=true; SaveRowIni(*vp); changed.push_back(vp); }
+  if(Row* tex=FindRow("out.texFormat")) if(tex->opt!=0&&tex->opt!=1){ tex->opt=0; SaveRowIni(*tex); changed.push_back(tex); }
+  std::string sets;
+  for(Row* row:changed){ const char*ek=EngineKey(row->key); char v[64];
+    if(row->kind==0&&!strcmp(row->key,"out.superRes")) snprintf(v,sizeof(v),"%d",row->on?4:0);
+    else if(row->kind==0) snprintf(v,sizeof(v),"%s",row->on?"true":"false");
+    else if(row->kind==2) snprintf(v,sizeof(v),"%d",row->optvals?row->optvals[row->opt]:row->opt);
+    else snprintf(v,sizeof(v),"%g",row->val);
+    if(!sets.empty()) sets+=';'; sets+=ek; sets+='='; sets+=v; }
+  std::string j=std::string("{\"a\":\"set\",\"sets\":\"")+sets+"\"}";
+  int rc=Cmd(j.c_str()); LogF("CMD superres + prerequisites (%d rows) rc=%d",(int)changed.size(),rc);
+}
+struct Grp{ const wchar_t* glyph; const wchar_t* label; COLORREF tint; int gpx; };
+static Grp groups[]={
+  {L"\x25B6",L"PLAYBACK",RGB(0x8A,0x7C,0xD8),25},
+  {L"\x2B21",L"SOURCE",RGB(0x5B,0x8F,0xD0),30},
+  {L"\x25D1",L"HDR",RGB(0xC8,0xA0,0x30),30},
+  {L"\x2726",L"ZION",RGB(0xC8,0x70,0x40),30},
+  {L"\x25A3",L"OUTPUT",RGB(0x4C,0xAF,0x78),30},
+  {L"\x2261",L"SYSTEM",RGB(0x90,0x90,0x90),30},
+};
+
+class CUiWnd : public CWnd {
+public:
+  static const wchar_t* ClassName(){ static bool reg=false; if(!reg){ WNDCLASSW wc={};
+      wc.lpfnWndProc=::DefWindowProcW; wc.hInstance=AfxGetInstanceHandle();
+      wc.lpszClassName=L"UnpluggedUiPane"; wc.hCursor=::LoadCursor(nullptr,IDC_ARROW); wc.hbrBackground=nullptr;
+      AfxRegisterClass(&wc); reg=true; } return L"UnpluggedUiPane"; }
+  BOOL CreateUi(CWnd* p,UINT id){ return Create(ClassName(),L"",WS_CHILD|WS_CLIPCHILDREN,CRect(0,0,10,10),p,id); }
+  virtual bool HandAt(CPoint){ return false; }   // interactive area -> hand cursor
+protected:
+  // MA_ACTIVATE: the frame is the only top-level window in the process now, so a
+  // click anywhere - video or chrome - activates the one window that owns the
+  // keyboard. There is no second window to hand activation to or from.
+  afx_msg LRESULT OnMouseActivateMsg(WPARAM,LPARAM){ return MA_ACTIVATE; }
+  afx_msg BOOL OnEraseBkgnd(CDC*){ return TRUE; }
+  afx_msg BOOL OnSetCursor(CWnd* pWnd,UINT hit,UINT msg){
+    if(hit==HTCLIENT){ CPoint p; ::GetCursorPos(&p); ScreenToClient(&p);
+      // Always resolve the cursor here. Relying on CWnd's fallback left the last
+      // hand/busy cursor in place when the pointer moved from a button to a blank
+      // part of the same pane.
+      ::SetCursor(::LoadCursor(nullptr,HandAt(p)?IDC_HAND:IDC_ARROW));
+      return TRUE; }
+    return CWnd::OnSetCursor(pWnd,hit,msg); }
+  template<class T> void Dbg(CDC* dc,CRect rc,void(T::*body)(CDC*,CRect)){
+    CDC mem; CBitmap bmp; mem.CreateCompatibleDC(dc);
+    bmp.CreateCompatibleBitmap(dc,rc.Width(),rc.Height());
+    CBitmap* ob=mem.SelectObject(&bmp); mem.SetBkMode(TRANSPARENT);
+    (static_cast<T*>(this)->*body)(&mem,CRect(0,0,rc.Width(),rc.Height()));
+    dc->BitBlt(rc.left,rc.top,rc.Width(),rc.Height(),&mem,0,0,SRCCOPY); mem.SelectObject(ob); }
+  void DrawSlider(CDC* dc,CRect cr,double f,bool hot){ if(f<0)f=0; if(f>1)f=1; int cy=cr.CenterPoint().y;
+    RR(dc,CRect(cr.left,cy-Px(4),cr.right,cy+Px(4)),Px(2),TEXT);
+    int x=cr.left+(int)(f*cr.Width());
+    if(x>cr.left+Px(2)) RR(dc,CRect(cr.left,cy-Px(4),x,cy+Px(4)),Px(2),ACCENT);
+    RR(dc,CRect(x-Px(6),cy-Px(8),x+Px(6),cy+Px(8)),Px(2),hot?ACCENT2:ACCENT2); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CUiWnd,CWnd) ON_MESSAGE(WM_MOUSEACTIVATE,&CUiWnd::OnMouseActivateMsg)
+  ON_WM_ERASEBKGND() ON_WM_SETCURSOR() END_MESSAGE_MAP()
+
+// The live panel is a fixed column of rows; at large display scaling (300 %)
+// they no longer fit, and before this it simply drew until the window ended and
+// the rest was unreachable. Wheel-scrolling with a position bar, same idea as the
+// settings rail, so every value stays readable at any DPI.
+class CStatusRail : public CUiWnd {
+public:
+  int  m_scroll=0;      // design px scrolled up
+  int  m_contentH=0;    // content height measured by the last paint
+  int  Top() const { CRect rc; GetClientRect(rc); return Px(44)+Px(8); }
+  void ClampScroll(){
+    CRect rc; GetClientRect(rc);
+    const int view=max(0, rc.Height()-Top());
+    const int maxs=max(0, m_contentH-view);
+    if(m_scroll>maxs) m_scroll=maxs;
+    if(m_scroll<0) m_scroll=0; }
+  BOOL OnMouseWheel(UINT,short d,CPoint){ m_scroll-=(d>0?1:-1)*Px(40); ClampScroll();
+    LogF("status rail scroll=%d contentH=%d",m_scroll,m_contentH);
+    Invalidate(FALSE); return TRUE; }
+  struct KV{ wchar_t k[48]; wchar_t v[96]; bool sect; };
+  KV rows[64]; int n=0;
+  void S_(const wchar_t* s){ if(n<64){ rows[n].sect=true; wcscpy_s(rows[n].k,s); rows[n].v[0]=0; n++; } }
+  void A(const wchar_t* k,const wchar_t* v){ if(n>=64)return; rows[n].sect=false; wcscpy_s(rows[n].k,k); wcscpy_s(rows[n].v,v); n++; }
+  void AF(const wchar_t* k,const wchar_t* fmt,...){ if(n>=64)return; rows[n].sect=false; wcscpy_s(rows[n].k,k);
+    va_list a; va_start(a,fmt); _vsnwprintf_s(rows[n].v,96,_TRUNCATE,fmt,a); va_end(a); n++; }
+  void Refresh(const char* st){
+    KV prev[64]; int pn=n; memcpy(prev,rows,sizeof(rows)); n=0;
+    const char* M=Sect(st,"media"),*C=Sect(st,"cfg"),*H=Sect(st,"hdr"),*R=Sect(st,"render"),*D=Sect(st,"dl");
+    double w=0,hh=0,fps=0,tf=0,dovi=0,hdrf=0,cll=0,fall=0,mmax=0,mmin=0,scP=0,scA=0,sdrN=0,conv=0,curve=0,
+           draw=0,drop=0,skip=0,recv=0,lag=0,delv=0,dsk=0,gate=0,qd=0,ren=0,refUs=0,pos=0;
+    char subtype[32]="",state[32]="";
+    JNumAt(M,"w",w); JNumAt(M,"h",hh); JNumAt(M,"fps",fps); JNumAt(M,"tf",tf); JNumAt(M,"dovi",dovi); JNumAt(M,"hdr",hdrf);
+    JStrAt(M,"subtype",subtype,sizeof(subtype));
+    JNumAt(C,"cll",cll); JNumAt(C,"fall",fall); JNumAt(C,"mmax",mmax); JNumAt(C,"mmin",mmin);
+    JNumAt(C,"scPeak",scP); JNumAt(C,"scAvg",scA); JNumAt(C,"sdrNits",sdrN); JNumAt(C,"convSdr",conv);
+    JNumAt(H,"curve",curve);
+    JNumAt(R,"draw",draw); JNumAt(R,"drop",drop); JNumAt(R,"skip",skip); JNumAt(R,"recv",recv); JNumAt(R,"lagMs",lag);
+    JNumAt(D,"delv",delv); JNumAt(D,"skip",dsk); JNumAt(D,"gate",gate); JNumAt(D,"qdrop",qd); JNumAt(D,"reneg",ren); JNumAt(D,"refUs",refUs);
+    JNum(st,"pos",pos);
+    // What the app is drawing ON. Nothing asks the user for a screen size: the
+    // host window is the screen (full-screen app), so this row is the surface all
+    // aspect decisions use — the thing to check when a projector reports oddly.
+    double dw=0,dh=0;
+    if(const char* DP=Sect(st,"display")){ JNumAt(DP,"w",dw); JNumAt(DP,"h",dh); }
+    { const char* stt=strstr(st,"\"state\":\""); if(stt){ stt+=9; int i=0; while(stt[i]&&stt[i]!='"'&&i<31){state[i]=stt[i];i++;} state[i]=0; } }
+    S_(L"VIDEO SOURCE");
+    AF(L"RESOLUTION",L"%.0f \x00D7 %.0f",w,hh);
+    if(dw>0&&dh>0){
+      // Screen aspect, to one decimal, so "is it seeing my 16:9 screen?" is a
+      // glance rather than a calculation.
+      AF(L"DISPLAY",L"%.0f \x00D7 %.0f \x00B7 %.2f:1",dw,dh,dw/dh);
+    }
+    A(L"PIXEL FORMAT", strstr(subtype,"P010")?L"YCbCr 4:2:0 \x00B7 10-bit": strstr(subtype,"P210")?L"YCbCr 4:2:2 \x00B7 10-bit": subtype[0]?L"":L"\x2014");
+    A(L"COLORSPACE", dovi?L"Dolby Vision":L"BT.2020");
+    A(L"TRANSFER (EOTF)", dovi?L"Dolby Vision": ((int)tf==15?L"PQ (HDR10)": (int)tf==16?L"HLG":L"BT.1886 (Gamma 2.4)"));
+    AF(L"SOURCE FPS",L"%.3f fps",fps);
+    A(L"HDR FORMAT", dovi?L"Dolby Vision": ((int)tf==15||hdrf)?L"HDR10 / PQ": ((int)tf==16?L"HLG":L"SDR"));
+    AF(L"BITRATE",L"\x2248 %.3f Gbps", w*hh*2.0*8*fps/1e9);
+    AF(L"MAXCLL", cll?L"%.0f nits":L"\x2014", cll);
+    AF(L"MAXFALL", fall?L"%.0f nits":L"\x2014", fall);
+    AF(L"MASTERING MAX", mmax?L"%.0f nits":L"\x2014", mmax);
+    if(mmin>=1) AF(L"MASTERING MIN",L"%.4f nits",mmin/10000.0); else A(L"MASTERING MIN", mmin?L"<0.0001 nits":L"\x2014");
+    S_(L"TONE MAPPING");
+    A(L"ALGORITHM", (int)curve==7?L"Unplugged (Hable)": (int)curve==8?L"GT7 (Polyphony)": (int)curve==10?L"GT7 Adapt": (int)curve==3?L"Hable (Filmic)":L"Auto");
+    AF(L"FRAME PEAK", scP>0?L"%d nits":L"\x2014", PqToNits(scP));
+    AF(L"APL (AVG)", scA>0?L"%d nits":L"\x2014", PqToNits(scA));
+    if(sdrN>0){ wchar_t tb[48]; swprintf_s(tb,L"%.0f nits%s",sdrN,conv?L" (SDR)":L""); A(L"TARGET PEAK",tb); } else A(L"TARGET PEAK",L"\x2014");
+    // What NLS would have to do to fill THIS title, next to the user's budget:
+    // the number "Fill limit" should be set against (a 2.39 film on a 16:9 screen
+    // needs ~36 %). Without it the row can only be tuned by trial and error.
+    if(const char* N=Sect(st,"nls")){
+      double nOn=0,nNeed=0,nLim=0,nFill=0,nWarp=0,nCrop=0;
+      JNumAt(N,"on",nOn); JNumAt(N,"need",nNeed); JNumAt(N,"limit",nLim);
+      JNumAt(N,"filling",nFill); JNumAt(N,"warp",nWarp); JNumAt(N,"crop",nCrop);
+      if(nOn!=0){
+        S_(L"NON-LINEAR STRETCH");
+        AF(L"FILL COST",L"%d %% total",(int)nNeed);
+        AF(L"FILL LIMIT",L"%d %%",(int)nLim);
+        A(L"FILLING", nFill!=0?L"yes":L"no");
+        // The split, spelled out: this is what "Fill limit" actually bought.
+        AF(L"WARP / CROP",L"%d %% / %d %%",(int)nWarp,(int)nCrop);
+      } }
+    S_(L"PERFORMANCE");
+    AF(L"DISPLAY FPS",L"%.2f fps",draw);
+    AF(L"DROPPED FRAMES",L"%.0f",drop);
+    AF(L"DELAYED FRAMES",L"%.0f",skip);
+    { wchar_t ub[32]; int i=0; for(;state[i]&&i<31;++i) ub[i]=towupper((unsigned char)state[i]); ub[i]=0; A(L"STATE",ub); }
+    S_(L"RENDER CHAIN");
+    AF(L"RENDERER RECV",L"%.0f",recv); AF(L"DELIVERED",L"%.0f",delv); AF(L"SKIPPED",L"%.0f",dsk);
+    AF(L"GATE DROPPED",L"%.0f",gate); AF(L"QUEUE DROP",L"%.0f",qd); AF(L"RENEGOTIATIONS",L"%.0f",ren);
+    AF(L"PRESENT LAG",L"%.0f ms",lag);
+    AF(L"STREAM TIME", refUs>0?L"%.0f s":L"%.0f s", refUs>0?refUs/1e6:pos/1e7);
+    if(pn!=n||memcmp(prev,rows,sizeof(rows))!=0) Invalidate(FALSE);
+  }
+protected:
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CStatusRail::Body); }
+  void Body(CDC* dc,CRect rc){ RR(dc,rc,Px(10),PANEL);
+    TxtW(dc,CRect(Px(16),Px(6),rc.right,Px(36)),L"Live",RGB(0xF2,0xF2,0xF2),13,true);
+    FillR(dc,CRect(0,Px(42),rc.right,Px(44)),ACCENT);
+    const int top=Px(44)+Px(8);
+    int y=top-m_scroll;
+    // Everything below the header, clipped: a part-scrolled row must not paint
+    // over the "Live" title or the accent rule.
+    int saved=dc->SaveDC();
+    dc->IntersectClipRect(0,Px(44),rc.right,rc.bottom);
+    for(int i=0;i<n;++i){
+      if(rows[i].sect){ TxtW(dc,CRect(Px(14),y,rc.right-Px(14),y+Px(26)),rows[i].k,ACCENT,12,true); y+=Px(26)+Px(8); }
+      else { TxtW(dc,CRect(Px(14),y,rc.right-Px(14),y+Px(16)),rows[i].k,KEYC,12,false,DT_LEFT|DT_TOP);
+             TxtW(dc,CRect(Px(14),y+Px(16),rc.right-Px(14),y+Px(34)),rows[i].v,
+                  wcscmp(rows[i].v,L"\x2014")==0?DIMC:VALC,13,false,DT_LEFT|DT_TOP); y+=Px(36); } }
+    dc->RestoreDC(saved);
+    m_contentH=max(0, y-(top-m_scroll));
+    if(m_scroll>0 || m_contentH>rc.Height()-top){ ClampScroll(); }
+    const int view=max(1, rc.Height()-top);
+    if(m_contentH>view){
+      // Position bar: without it a scrollable panel is indistinguishable from a
+      // truncated one (which is exactly how this was reported).
+      const int trackH=view, barH=max(Px(24), view*view/m_contentH);
+      const int barY=Px(44)+(m_contentH>view ? (trackH-barH)*m_scroll/(m_contentH-view) : 0);
+      FillR(dc,CRect(rc.right-Px(4),barY,rc.right-Px(2),barY+barH),RGB(0x6a,0x6a,0x70)); } }
+  DECLARE_MESSAGE_MAP()
+};
+
+static std::wstring g_sourceUrl;
+// ---- CONTEXT HELP (ui/help_store.py + ui/help_card.py) ----------------------
+static std::wstring TrimW(std::wstring s){
+  size_t a=s.find_first_not_of(L" \t\r\n"),b=s.find_last_not_of(L" \t\r\n");
+  return a==std::wstring::npos?L"":s.substr(a,b-a+1); }
+static std::wstring CollapseW(std::wstring s){
+  std::wstring o; bool sp=false; for(wchar_t c:s){ if(c==L' '||c==L'\t'||c==L'\r'||c==L'\n'){
+      if(!o.empty()) sp=true; } else { if(sp){o+=L' ';sp=false;} o+=c; } } return o; }
+static std::wstring HelpHead(std::wstring s){
+  size_t p=s.find(L" ("); if(p!=std::wstring::npos) s=s.substr(0,p);
+  p=s.find(L" \x2014"); if(p!=std::wstring::npos) s=s.substr(0,p);
+  s=CollapseW(s); for(auto&c:s) c=(wchar_t)towupper(c); return s; }
+static std::wstring StripMd(std::wstring s){
+  auto rep=[&](const wchar_t* a,const wchar_t* b){ size_t p=0;
+    while((p=s.find(a,p))!=std::wstring::npos){ s.replace(p,wcslen(a),b); p+=wcslen(b); } };
+  rep(L"**",L""); rep(L"`",L""); rep(L"*",L""); return CollapseW(s); }
+static const wchar_t* HelpTab(const std::wstring& h){
+  static const wchar_t* tabs[]={L"PLAYBACK",L"SOURCE",L"HDR",L"ZION",L"OUTPUT",L"SYSTEM"};
+  for(auto t:tabs){ size_t n=wcslen(t);
+    if(h==t||(h.size()>n&&h.compare(0,n,t)==0&&h[n]==L' ')) return t; }
+  return nullptr; }
+static std::wstring HelpFile(){
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?L".":d.substr(0,p);
+  const std::wstring c[]={d+L"\\docs\\settings-guide.md",d+L"\\_internal\\docs\\settings-guide.md",
+    L"C:\\code\\unplugged-mpc-hc\\docs\\settings-guide.md"};
+  for(const auto&x:c) if(GetFileAttributesW(x.c_str())!=INVALID_FILE_ATTRIBUTES) return x;
+  return L""; }
+static int MeasureBlockH(const std::wstring& s,int px,bool bold,int width){
+  if(s.empty()) return 0;
+  HDC dc=GetDC(nullptr); HFONT f=MkFont(px,bold); HFONT of=(HFONT)SelectObject(dc,f);
+  RECT r={0,0,width,0}; int h=DrawTextW(dc,s.c_str(),(int)s.size(),&r,DT_LEFT|DT_WORDBREAK|DT_CALCRECT);
+  SelectObject(dc,of); DeleteObject(f); ReleaseDC(nullptr,dc); return h; }
+struct HelpRec{ std::wstring range,dflt,help; };
+class HelpStoreC {
+  std::map<std::wstring,HelpRec> m;
+  static std::wstring Key(const std::wstring& tab,const std::wstring& sec,const std::wstring& label){
+    return tab+L"\x1f"+sec+L"\x1f"+label; }
+public:
+  bool Load(){
+    std::wstring file=HelpFile(); if(file.empty()){ LogF("help: settings-guide.md not found"); return false; }
+    std::ifstream in(file.c_str(),std::ios::binary); std::string raw; std::wstring tab,sec;
+    while(std::getline(in,raw)){ std::wstring s=Widen(raw); std::wstring t=TrimW(s);
+      if(t.rfind(L"## ",0)==0&&t.rfind(L"### ",0)!=0){ std::wstring h=HelpHead(t.substr(3));
+        const wchar_t* tt=HelpTab(h); if(tt) tab=tt; else tab.clear(); sec.clear(); continue; }
+      if(t.rfind(L"### ",0)==0){ if(!tab.empty()) sec=HelpHead(t.substr(4)); continue; }
+      if(tab.empty()||t.empty()||t[0]!=L'|') continue;
+      size_t b=t.find(L"**"); if(b==std::wstring::npos) continue; size_t e=t.find(L"**",b+2);
+      if(e==std::wstring::npos) continue; std::wstring label=CollapseW(t.substr(b+2,e-b-2));
+      if(label.empty()||label==L"Setting"||label==L"Row") continue;
+      std::vector<std::wstring> cells; size_t p=0;
+      while(p<t.size()){ size_t q=t.find(L'|',p); if(q==std::wstring::npos) break;
+        std::wstring c=TrimW(t.substr(p,q-p)); if(!c.empty()) cells.push_back(c); p=q+1; }
+      if(cells.size()<2) continue;
+      HelpRec rec; if(cells.size()>=4){ rec.range=StripMd(cells[1]); rec.dflt=StripMd(cells[2]); rec.help=StripMd(cells.back()); }
+      else if(cells.size()==3){ rec.dflt=StripMd(cells[1]); rec.help=StripMd(cells[2]); }
+      else rec.help=StripMd(cells[1]);
+      std::wstring k=Key(tab,sec,label); if(m.find(k)==m.end()) m[k]=rec;
+    }
+    LogF("help: %d guide entries from %S",(int)m.size(),file.c_str()); return !m.empty(); }
+  const HelpRec* Lookup(const std::wstring& tab,const std::wstring& section,const std::wstring& label) const {
+    std::wstring lab=CollapseW(label); auto it=m.find(Key(tab,section,lab)); if(it!=m.end()) return &it->second;
+    it=m.find(Key(tab,L"",lab)); if(it!=m.end()) return &it->second;
+    const HelpRec* found=nullptr; int n=0;
+    for(const auto&kv:m){ size_t a=kv.first.rfind(L"\x1f"); if(a==std::wstring::npos) continue;
+      if(kv.first.compare(0,tab.size(),tab)==0&&kv.first.substr(a+1)==lab){ found=&kv.second; ++n; } }
+    return n==1?found:nullptr; }
+};
+class CHelpCard : public CUiWnd {
+  HelpStoreC store_; bool loaded_=false;
+  std::wstring title_,meta_,body_,lastShown_,shownTitle_,shownMeta_,shownBody_;
+  int bodyH_=0;
+public:
+  BOOL CreateCard(CWnd* owner){
+    BOOL ok=CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|
+                     WS_EX_LAYERED|WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,
+                     CRect(0,0,Px(368),Px(160)),owner,0);
+    if(ok){ ::SetLayeredWindowAttributes(m_hWnd,0,220,LWA_ALPHA); ApplyDwmRound(m_hWnd); }
+    return ok; }
+  void HideCard(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void Preload(){ if(!loaded_){ store_.Load(); loaded_=true; } }
+  void ShowFor(const wchar_t* tab,const Row& r,CRect rowScreen){
+    if(!loaded_){ store_.Load(); loaded_=true; }
+    title_=r.label; meta_.clear(); body_.clear();
+    if(r.section){ title_+=L"  \x00B7  "; title_+=r.section; }
+    const HelpRec* rec=store_.Lookup(tab,r.section?r.section:L"",r.label);
+    if(rec){ if(!rec->range.empty()) meta_=rec->range; if(!rec->dflt.empty()){
+        if(!meta_.empty()) meta_+=L"  \x00B7  "; meta_+=L"default "; meta_+=rec->dflt; }
+      body_=rec->help; }
+    if(body_.empty()) body_=L"No help text in settings-guide.md for this row.";
+    if(title_!=lastShown_){ lastShown_=title_; LogF("help show '%S'",title_.c_str()); }
+    { wchar_t v[64]; const wchar_t* cur=L"";
+      if(r.kind==0) cur=r.on?L"ON":L"OFF";
+      else if(r.kind==1){ swprintf_s(v,L"%.4g",r.val); cur=v; }
+      else if(r.kind==2&&r.opts&&r.nopts>0) cur=r.opts[r.opt];
+      else if(!r.names.empty()) cur=r.names[r.opt].c_str();
+      if(*cur){ if(!meta_.empty()) meta_+=L"  \x00B7  "; meta_+=L"now "; meta_+=cur; } }
+    if(IsWindowVisible()&&title_==shownTitle_&&meta_==shownMeta_&&body_==shownBody_) return;
+    shownTitle_=title_; shownMeta_=meta_; shownBody_=body_;
+    int w=Px(368),inner=w-Px(28);
+    int th=MeasureBlockH(title_,15,true,inner),mh=MeasureBlockH(meta_,12,false,inner);
+    bodyH_=MeasureBlockH(body_,13,false,inner);
+    int h=Px(10)+th+Px(4)+mh+Px(4)+bodyH_+Px(12);
+    MONITORINFO mi={sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(m_hWnd,MONITOR_DEFAULTTONEAREST),&mi);
+    int maxh=mi.rcWork.bottom-mi.rcWork.top-Px(40); if(h>maxh)h=maxh;
+    int x=rowScreen.left-w-Px(12),y=rowScreen.top;
+    if(x<mi.rcWork.left+Px(8)) x=rowScreen.right+Px(12);
+    if(y+h>mi.rcWork.bottom-Px(8)) y=mi.rcWork.bottom-Px(8)-h;
+    if(y<mi.rcWork.top+Px(8)) y=mi.rcWork.top+Px(8);
+    MoveWindow(x,y,w,h); Invalidate(FALSE); ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd); }
+protected:
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CHelpCard::Body); }
+  void Body(CDC* dc,CRect rc){
+    CardAA(dc,rc,RGB(10,10,12),RGB(100,100,100),Px(8));
+    int x=Px(14),w=rc.Width()-Px(28),y=Px(10);
+    int th=MeasureBlockH(title_,15,true,w); TxtW(dc,CRect(x,y,rc.right-Px(14),y+th),title_.c_str(),TEXT,15,true,DT_LEFT|DT_TOP|DT_WORDBREAK); y+=th+Px(4);
+    int mh=MeasureBlockH(meta_,12,false,w); if(mh){ TxtW(dc,CRect(x,y,rc.right-Px(14),y+mh),meta_.c_str(),MID,12,false,DT_LEFT|DT_TOP|DT_WORDBREAK); y+=mh+Px(4); }
+    TxtW(dc,CRect(x,y,rc.right-Px(14),y+bodyH_),body_.c_str(),TEXT,13,false,DT_LEFT|DT_TOP|DT_WORDBREAK);
+  }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CHelpCard,CUiWnd) ON_WM_PAINT() END_MESSAGE_MAP()
+
+// Preset picker + manager. The top-right "Preset" control opens this card under
+// the strip; choosing a row applies it immediately. Default is the virtual
+// compiled-default preset and can never be renamed/deleted/overwritten.
+class CPresetCard : public CUiWnd {
+  std::vector<std::wstring> names_;
+  int sel_=0,msel_=-1,hov_=-1,mode_=0,listOff_=0; // mode 0 list,1 new,2 rename,3 delete-confirm
+  bool warn_=false;
+  std::wstring pending_,err_;
+  std::wstring src_;      // new preset's source (Default when empty)
+  CEdit* edit_=nullptr; HBRUSH editBrush_=nullptr;
+  CRect listR,newR,applyR,renameR,delR,closeR,okR,cancelR;
+public:
+  ~CPresetCard(){ if(edit_){ if(edit_->GetSafeHwnd()) edit_->DestroyWindow(); delete edit_; } if(editBrush_) DeleteObject(editBrush_); }
+  BOOL CreateCard(CWnd* owner){
+    BOOL ok=CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",
+                     WS_POPUP,CRect(0,0,Px(360),Px(260)),owner,0);
+    if(ok){ ApplyDwmRound(m_hWnd); editBrush_=CreateSolidBrush(RGB(38,38,42));
+      edit_=new CEdit(); edit_->Create(WS_CHILD|WS_BORDER|ES_AUTOHSCROLL,CRect(0,0,10,10),this,1300);
+      HFONT f=MkFont(13,false); if(f) edit_->SendMessage(WM_SETFONT,(WPARAM)f,TRUE);
+      edit_->ShowWindow(SW_HIDE); }
+    return ok; }
+  void HideCard(){ ShowWindow(SW_HIDE); if(edit_) edit_->ShowWindow(SW_HIDE); }
+  // Losing activation closes it at once when the click DOES land on an activating
+  // window (the video surface, another app). A child (the name edit) keeps the card
+  // active, so this never fires while typing.
+  afx_msg void OnKillFocus(CWnd* next){ if(next && GetSafeHwnd() && ::GetAncestor(next->GetSafeHwnd(),GA_ROOT)==m_hWnd) return;
+    if(IsWindowVisible()){ LogF("preset picker closed (focus lost)"); HideCard(); } }
+  void Show(){ warn_=false; mode_=0; msel_=-1; pending_.clear(); err_.clear(); Refresh(); Place();
+    ShowWindow(SW_SHOW); SetActiveWindow(); ::SetForegroundWindow(m_hWnd);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    LogF("preset card open (warn=0, active='%s', count=%d)",Narrow(g_activePreset).c_str(),(int)names_.size()); }
+  void ShowWarning(){ warn_=true; mode_=0; msel_=-1; pending_.clear(); err_.clear(); Refresh(); Place();
+    ShowWindow(SW_SHOW); SetActiveWindow(); ::SetForegroundWindow(m_hWnd);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    LogF("preset card open (warn=1, active='%s')",Narrow(g_activePreset).c_str()); }
+  bool HandAt(CPoint p) override {
+    if(closeR.PtInRect(p)||okR.PtInRect(p)||cancelR.PtInRect(p)) return true;
+    if(mode_==0) return RowAt(p)>=0||newR.PtInRect(p)||applyR.PtInRect(p)||
+                       renameR.PtInRect(p)||delR.PtInRect(p);
+    return false; }
+  void LoadNames(){
+    names_=ListPresets(); sel_=0;
+    for(size_t i=0;i<names_.size();++i)
+      if(_wcsicmp(names_[i].c_str(),g_activePreset.c_str())==0) sel_=(int)i;
+  }
+  void Refresh(){
+    LoadNames();
+    if(msel_<0||msel_>=(int)names_.size()) msel_=sel_;
+    int vis=VisibleRows(); if(sel_<listOff_) listOff_=sel_; if(sel_>=listOff_+vis) listOff_=sel_-vis+1;
+    if(listOff_<0) listOff_=0; if(listOff_>(int)names_.size()-vis) listOff_=max(0,(int)names_.size()-vis);
+  }
+private:
+  int VisibleRows() const { return max(1,(listR.Height()/Px(34))); }
+  std::wstring TargetName() const {
+    if(msel_>=0&&msel_<(int)names_.size()) return names_[msel_];
+    return g_activePreset; }
+  int RowAt(CPoint p) const {
+    if(!listR.PtInRect(p)) return -1;
+    int i=(p.y-listR.top)/Px(34)+listOff_;
+    return (i>=0&&i<(int)names_.size())?i:-1; }
+  void Place(){
+    LoadNames();
+    CRect pr; if(GetOwner()) GetOwner()->GetWindowRect(pr);
+    int w=Px(360),h;
+    if(mode_==0){ int rows=min(6,max(1,(int)names_.size())); h=Px(160)+rows*Px(34); }
+    else if(mode_==1) h=Px(216); else if(mode_==2) h=Px(176);
+    else h=Px(232);
+    int x=pr.right-w-Px(16),y=pr.top+Px(52);
+    MONITORINFO mi={sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(m_hWnd,MONITOR_DEFAULTTONEAREST),&mi);
+    if(x<mi.rcWork.left+Px(8)) x=mi.rcWork.left+Px(8);
+    if(y+h>mi.rcWork.bottom-Px(8)) y=mi.rcWork.bottom-Px(8)-h;
+    if(y<mi.rcWork.top+Px(8)) y=mi.rcWork.top+Px(8);
+    MoveWindow(x,y,w,h); ApplyDwmRound(m_hWnd); Layout(); Refresh(); }
+  void Layout(){
+    if(!GetSafeHwnd()) return; CRect rc; GetClientRect(rc);
+    closeR=CRect(rc.right-Px(36),Px(10),rc.right-Px(10),Px(36));
+    int by=rc.bottom-Px(50),bw=(rc.Width()-Px(32)-Px(18))/4;
+    newR=CRect(Px(16),by,Px(16)+bw,by+Px(32));
+    applyR=CRect(newR.right+Px(6),by,newR.right+Px(6)+bw,by+Px(32));
+    renameR=CRect(applyR.right+Px(6),by,applyR.right+Px(6)+bw,by+Px(32));
+    delR=CRect(renameR.right+Px(6),by,renameR.right+Px(6)+bw,by+Px(32));
+    listR=CRect(Px(16),Px(92),rc.right-Px(16),by-Px(12));
+    okR=CRect(Px(16),by,Px(16)+Px(96),by+Px(32));
+    cancelR=CRect(okR.right+Px(6),by,okR.right+Px(6)+Px(96),by+Px(32));
+    if(edit_){
+      bool on=(mode_==1||mode_==2);
+      edit_->MoveWindow(Px(16),mode_==1?Px(124):Px(84),rc.Width()-Px(32),Px(30));
+      edit_->ShowWindow(on?SW_SHOW:SW_HIDE);
+      if(on){ edit_->SetFocus(); } } }
+  void BeginInput(int mode,const std::wstring& initial){
+    mode_=mode; pending_=initial; err_.clear();
+    if(mode==1) src_=g_activePreset;    // default source: whatever they are using
+    if(edit_){ edit_->SetWindowTextW(initial.c_str()); edit_->ShowWindow(SW_SHOW);
+      edit_->SetFocus(); edit_->SetSel(0,-1); }
+    Place(); Invalidate(FALSE); }
+  void CancelInput(){ mode_=0; err_.clear(); if(edit_) edit_->ShowWindow(SW_HIDE);
+    Place(); }
+  void CommitInput(){
+    if(!edit_) return; CString cs; edit_->GetWindowText(cs);
+    std::wstring n(cs.GetString()); size_t a=n.find_first_not_of(L" \t\r\n"),b=n.find_last_not_of(L" \t\r\n");
+    n=(a==std::wstring::npos)?L"":n.substr(a,b-a+1);
+    if(n.empty()){ err_=L"Enter a preset name."; Invalidate(FALSE); return; }
+    bool ok=false;
+    if(mode_==1){
+      ok=CreatePresetFrom(n,src_.empty()?L"Default":src_);
+      if(ok){ warn_=false; mode_=0; if(edit_) edit_->ShowWindow(SW_HIDE);
+        LogF("preset card close (new)"); HideCard(); return; } }
+    else if(mode_==2) ok=RenamePreset(pending_,n);
+    if(!ok){ err_=L"That name is already used or is reserved."; Invalidate(FALSE); return; }
+    warn_=false; mode_=0; if(edit_) edit_->ShowWindow(SW_HIDE);
+    Place(); }
+  void Btn(CDC* dc,CRect r,const wchar_t* t,bool en,bool hv,bool on=false){
+    bool lit=hv||on;
+    RR(dc,r,Px(6),en?(lit?ACCENT:RGB(44,44,48)):RGB(26,26,28));
+    StrokeR(dc,r,Px(6),en?(lit?ACCENT2:RGB(70,70,74)):RGB(40,40,42));
+    TxtW(dc,r,t,en?(lit?RGB(255,255,255):RGB(0xE0,0xE0,0xE0)):RGB(0x55,0x55,0x55),
+        12,en&&lit,DT_CENTER|DT_VCENTER); }
+protected:
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc); dc->FillSolidRect(rc,RGB(16,16,18)); return TRUE; }
+  afx_msg HBRUSH OnCtlColor(CDC* dc,CWnd* w,UINT type){ if(type==CTLCOLOR_EDIT){
+      dc->SetTextColor(RGB(0xE0,0xE0,0xE0)); dc->SetBkColor(RGB(38,38,42)); return editBrush_; }
+    return CUiWnd::OnCtlColor(dc,w,type); }
+  BOOL PreTranslateMessage(MSG* m) override {
+    if((mode_==1||mode_==2)&&m->message==WM_KEYDOWN){
+      if(m->wParam==VK_RETURN){ CommitInput(); return TRUE; }
+      if(m->wParam==VK_ESCAPE){ CancelInput(); return TRUE; } }
+    return CWnd::PreTranslateMessage(m); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CPresetCard::Body); }
+  void Body(CDC* dc,CRect rc){
+    CardAA(dc,rc,RGB(16,16,18),RGB(100,100,100),Px(8));
+    TxtW(dc,CRect(Px(16),Px(14),rc.right-Px(48),Px(42)),warn_?L"Create a preset":L"Presets",
+         RGB(255,255,255),17,true,DT_LEFT|DT_VCENTER);
+    RR(dc,closeR,Px(5),hov_==100?RGB(60,60,64):RGB(30,30,32));
+    TxtW(dc,closeR,L"\x2715",hov_==100?RGB(255,255,255):MID,13,false,DT_CENTER|DT_VCENTER);
+    int top=Px(48);
+    if(warn_){ TxtW(dc,CRect(Px(16),top,rc.right-Px(16),top+Px(32)),
+        L"Default is read-only. Create a preset to save changes.",
+        ACCENT2,12,false,DT_LEFT|DT_VCENTER); top=Px(82); }
+    if(mode_==0){
+      CRect lr=listR; RR(dc,lr,Px(6),RGB(22,22,24)); int rowH=Px(34),vis=VisibleRows();
+      int saved=dc->SaveDC(); dc->IntersectClipRect(lr);
+      for(int k=0;k<vis;++k){ int i=listOff_+k; if(i>=(int)names_.size()) break;
+        CRect r(lr.left+1,lr.top+k*rowH,lr.right-1,lr.top+(k+1)*rowH);
+        bool act=_wcsicmp(names_[i].c_str(),g_activePreset.c_str())==0;
+        bool selected=(i==msel_);
+        if(selected||hov_==i) FillR(dc,r,RGB(40,40,44));
+        if(act) FillR(dc,CRect(r.left,r.top,r.left+Px(3),r.bottom),ACCENT);
+        std::wstring n=names_[i]+(act&&g_presetDirty?L"  *":L"");
+        TxtW(dc,CRect(r.left+Px(12),r.top,r.right-Px(12),r.bottom),
+             n.c_str(),selected?TEXT:(act?ACCENT2:(hov_==i?TEXT:RGB(0xCC,0xCC,0xCC))),
+             13,act,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
+      dc->RestoreDC(saved);
+      if(names_.empty()) TxtW(dc,listR,L"No presets",MID,12,false,DT_CENTER|DT_VCENTER);
+      std::wstring target=TargetName();
+      bool custom=_wcsicmp(target.c_str(),L"Default")!=0;
+      Btn(dc,newR,L"New\x2026",true,hov_==101);
+      Btn(dc,applyR,L"Apply",msel_>=0,hov_==102);
+      Btn(dc,renameR,L"Rename\x2026",custom,hov_==103);
+      Btn(dc,delR,L"Delete",custom,hov_==104);
+    } else if(mode_==1||mode_==2){
+      // Compact: one heading line (which also carries any error), the source
+      // chip, the name field, the buttons. The old layout spread three fields
+      // over a 288 px card and left the copy line as plain text nobody noticed.
+      const wchar_t* head = err_.empty() ? (mode_==1?L"New preset":L"Rename preset") : err_.c_str();
+      TxtW(dc,CRect(Px(16),Px(52),rc.right-Px(16),Px(76)),head,
+           err_.empty()?RGB(0xCC,0xCC,0xCC):ACCENT2,12,false,DT_LEFT|DT_VCENTER);
+      if(mode_==1){
+        CRect sr(Px(16),Px(84),rc.right-Px(16),Px(116));
+        RR(dc,sr,Px(6),hov_==107?RGB(48,28,20):RGB(30,30,33));
+        StrokeR(dc,sr,Px(6),hov_==107?ACCENT2:RGB(70,70,74));
+        TxtW(dc,CRect(sr.left+Px(10),sr.top,sr.right-Px(24),sr.bottom),
+             (L"Copy from: "+(src_.empty()?std::wstring(L"Default"):src_)).c_str(),
+             hov_==107?ACCENT2:RGB(0xE0,0xE0,0xE0),12,false,DT_LEFT|DT_VCENTER);
+        TxtW(dc,CRect(sr.right-Px(20),sr.top,sr.right-Px(8),sr.bottom),
+             L"\x25BE",hov_==107?ACCENT2:MID,10,false,DT_LEFT|DT_VCENTER); }
+      Btn(dc,okR,L"OK",true,hov_==105);
+      Btn(dc,cancelR,L"Cancel",true,hov_==106);
+    } else {
+      std::wstring msg=L"Delete \x201C"+pending_+L"\x201D? This cannot be undone.";
+      TxtW(dc,CRect(Px(16),Px(118),rc.right-Px(16),Px(180)),msg.c_str(),
+           RGB(0xCC,0xCC,0xCC),13,false,DT_LEFT|DT_TOP|DT_WORDBREAK);
+      Btn(dc,okR,L"Delete",true,hov_==105);
+      Btn(dc,cancelR,L"Cancel",true,hov_==106);
+    }
+    if(!warn_&&mode_==0){
+      bool custom=_wcsicmp(g_activePreset.c_str(),L"Default")!=0;
+      const wchar_t* hint=custom?L"Changes save automatically. Select a preset, then Apply."
+                                :L"Select a preset, then Apply.";
+      TxtW(dc,CRect(Px(16),Px(54),rc.right-Px(16),Px(88)),hint,
+        MID,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
+  }
+  void OnMouseMove(UINT,CPoint p){ int h=-1; CRect rc; GetClientRect(rc);
+    if(mode_==0){
+      int i=RowAt(p); if(i>=0) h=i;
+      else if(newR.PtInRect(p)) h=101; else if(applyR.PtInRect(p)) h=102;
+      else if(renameR.PtInRect(p)) h=103; else if(delR.PtInRect(p)) h=104;
+    } else if(okR.PtInRect(p)) h=105; else if(cancelR.PtInRect(p)) h=106;
+    if(mode_==1){ CRect rc; GetClientRect(rc);
+      if(CRect(Px(16),Px(84),rc.right-Px(16),Px(116)).PtInRect(p)) h=107; }
+    if(closeR.PtInRect(p)) h=100;
+    if(h!=hov_){ hov_=h; Invalidate(FALSE); } }
+  void OnLButtonDown(UINT,CPoint p){
+    if(closeR.PtInRect(p)){ HideCard(); return; }
+    if(mode_==0){
+      int i=RowAt(p);
+      if(i>=0){ msel_=i; Invalidate(FALSE); return; }
+      std::wstring target=TargetName();
+      bool custom=_wcsicmp(target.c_str(),L"Default")!=0;
+      if(newR.PtInRect(p)){
+        std::wstring base=L"Preset"; int n=1;
+        while(PresetExists(base+L" "+std::to_wstring(n))) ++n;
+        BeginInput(1,base+L" "+std::to_wstring(n)); return; }
+      if(applyR.PtInRect(p)&&msel_>=0){
+        if(ApplyPreset(names_[msel_])){ warn_=false;
+          LogF("preset card close (apply '%s')",Narrow(names_[msel_]).c_str());
+          HideCard(); }
+        return; }
+      if(renameR.PtInRect(p)&&custom){ BeginInput(2,target); return; }
+      if(delR.PtInRect(p)&&custom){ mode_=3; pending_=target; Place(); return; }
+    } else if(mode_==1||mode_==2){
+      if(okR.PtInRect(p)){ CommitInput(); return; }
+      if(cancelR.PtInRect(p)){ CancelInput(); return; }
+      if(mode_==1){
+        CRect rc; GetClientRect(rc);
+        CRect sr(Px(16),Px(84),rc.right-Px(16),Px(116));   // the "Copy from" chip
+        if(sr.PtInRect(p)){
+          auto v=ListPresets(); if(v.empty()) v.push_back(L"Default");
+          std::wstring cur=src_.empty()?std::wstring(L"Default"):src_;
+          int at=0; for(int i=0;i<(int)v.size();++i) if(_wcsicmp(v[i].c_str(),cur.c_str())==0) at=i;
+          src_=v[(at+1)%(int)v.size()];
+          LogF("preset card: copy from -> '%s'",Narrow(src_).c_str());
+          Invalidate(FALSE); return; } }
+    } else {
+      if(okR.PtInRect(p)){ DeletePreset(pending_); warn_=false; mode_=0; Place(); return; }
+      if(cancelR.PtInRect(p)){ mode_=0; Place(); return; }
+    } }
+  BOOL OnMouseWheel(UINT,short d,CPoint){ if(mode_!=0) return TRUE;
+    int vis=VisibleRows(),maxs=max(0,(int)names_.size()-vis);
+    listOff_+=(d<0?1:-1); if(listOff_<0)listOff_=0; if(listOff_>maxs)listOff_=maxs;
+    Invalidate(FALSE); return TRUE; }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CPresetCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_MOUSEWHEEL() ON_WM_ERASEBKGND() ON_WM_CTLCOLOR() ON_WM_KILLFOCUS() END_MESSAGE_MAP()
+
+static std::wstring g_toastText;      // one-shot message for the shared toast (WM_APP+51)
+static void UiActivity();   // defined with the chrome idle helpers; panes feed it
+class CSettingsRail : public CUiWnd {
+  int m_group=3,m_drag=-1,m_hover=-1,m_focus=-1; bool m_kb=false;
+  int m_lastHelp=-1;                    // last row the card described (persistent card)
+  std::vector<std::wstring> m_open; CHelpCard* m_help=nullptr;
+  bool m_skip=false; const wchar_t* m_hitSec=nullptr;
+public:
+  void BindHelp(CHelpCard* h){ m_help=h; }
+  bool KeyFocused() const { return m_kb; }
+  void ClearKeyFocus(){ m_kb=false; m_focus=-1; m_lastHelp=-1; if(m_help)m_help->HideCard(); }
+  int FocusActual(){ int buf[NROWS]; int nv=Vis(buf);
+    return (m_focus>=0&&m_focus<nv)?buf[m_focus]:-1; }
+  void MoveFocus(int d){ int buf[NROWS]; int nv=Vis(buf); if(nv<=0)return;
+    if(m_focus<0) m_focus=d>0?0:nv-1; else m_focus=max(0,min(nv-1,m_focus+d));
+    m_kb=true; ShowHelp(m_focus); Invalidate(FALSE); }
+  bool StepRow(Row& r,int d){ if(r.kind!=1)return false;
+    double v=r.val+d*r.step; v=floor(v/r.step+0.5)*r.step;
+    if(v<r.mn)v=r.mn; if(v>r.mx)v=r.mx; if(v==r.val)return true;
+    r.val=v; LogF("slider step '%S' -> %g",r.label,r.val); PushRow(r); ShowHelp(m_focus); Invalidate(FALSE); return true; }
+  bool Key(UINT vk){ if(!m_kb)return false;
+    // Up/Down are NOT handled here. They are global navigation: Up is the
+    // full-chrome toggle 1.3.0 users press, Down is volume during playback.
+    // Stepping sliders from the rail used to claim both, so after any click in
+    // this pane Up moved a focus ring nobody could see and the chrome never
+    // went away (observed: four VK_UP presses logged with no ui: line, then the
+    // fifth toggled once m_focus walked out of range). Left/Right still move
+    // the row focus.
+    switch(vk){
+    case VK_LEFT: MoveFocus(-1); return true;
+    case VK_RIGHT:MoveFocus(1); return true; }
+    return false; }
+  BOOL OnMouseWheel(UINT,short z,CPoint sp){ CPoint p=sp; ScreenToClient(&p);
+    int kind,idx; int li=Hit(p,kind,idx);
+    if(li>=0&&kind==0&&g_rows[idx].kind==1){
+      if(RowLocked(g_rows[idx])){ RefuseLocked(); return TRUE; }
+      m_focus=li; m_kb=true;
+      StepRow(g_rows[idx],z>0?1:-1); return TRUE; }
+    return FALSE; }
+  void ShowHelp(int li){ if(!m_help) return;
+    if(!g_helpBanner){ m_help->HideCard(); return; }
+    int buf[NROWS]; int nv=Vis(buf);
+    // With the banner setting ON, an invalid/clear hover keeps the last card.
+    if(li<0||li>=nv) return;
+    m_lastHelp=buf[li];
+    const Row&r=g_rows[buf[li]]; int y=RowY(buf[li]); CRect wr; GetWindowRect(&wr);
+    m_help->ShowFor(groups[m_group].label,r,CRect(wr.left,wr.top+y,wr.right,wr.top+y+RowH())); }
+  // Keep the card on screen when the pointer is not on a row. If nothing has
+  // been shown yet, fall back to the first actually visible row (sections that
+  // are collapsed do not count).
+  void ShowRememberedHelp(){
+    if(!m_help) return;
+    if(!g_helpBanner){ m_help->HideCard(); return; }
+    int buf[NROWS]; int nv=Vis(buf);
+    if(m_lastHelp>=0) for(int i=0;i<nv;++i)
+      if(buf[i]==m_lastHelp){ ShowHelp(i); return; }
+    bool multi=NSec(buf,nv)>1; const wchar_t* last=nullptr; bool skip=false;
+    for(int i=0;i<nv;++i){ const Row&r=g_rows[buf[i]];
+      if(r.section!=last){ last=r.section; skip=multi&&!Open(last); }
+      if(!skip){ ShowHelp(i); return; } }
+    m_help->HideCard(); }
+  void SetGroup(int g){ if(m_group!=g){m_group=g;m_open.clear();m_focus=-1;m_kb=false;m_lastHelp=-1;
+    ShowRememberedHelp(); Invalidate(FALSE);} }
+  bool HandAt(CPoint p) override {
+    if(HitTab(p)>=0) return true; int k,i; int h=Hit(p,k,i);
+    return h>=0||h==-2; }
+  int Vis(int o[NROWS]){ int c=0; const int cv=CurCurve();
+    for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i]; if(r.grp!=m_group) continue;
+      if(r.kind==6&&(!r.label||!*r.label)) continue;      // unused SOURCE port slot
+      if(r.dev&&!g_showInternals) continue;                 // hidden dev row (still pushed)
+      if(r.curves&&!(r.curves&CMBIT(cv))) continue;         // curve-conditional row, not for this curve
+      o[c++]=i; } return c; }
+  int NSec(int o[NROWS],int nv){ const wchar_t*l=nullptr;int c=0; for(int i=0;i<nv;++i){ if(g_rows[o[i]].section!=l){c++;l=g_rows[o[i]].section;} } return c; }
+  bool Open(const wchar_t*s){ return m_open.size()==1&&m_open[0]==s; }
+  void Toggle(const wchar_t*s){
+    // 1.3.0 accordion: at most ONE open parent per tab. Empty means every
+    // section is collapsed, which is also the default on launch and tab switch.
+    if(Open(s)) m_open.clear();
+    else { m_open.clear(); m_open.push_back(s); }
+    Invalidate(FALSE); }
+  CRect SliderR(int y,CRect rc) const { return CRect(Px(234),y+RowH()*2/5,Px(366),y+RowH()*2/5+RowH()/5); }
+protected:
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CSettingsRail::Body); }
+  void Body(CDC* dc,CRect rc){ RR(dc,rc,Px(10),PANEL);
+    for(int i=0;i<6;++i){ int gt=i*Px(ICON_STEP); bool act=(i==m_group);
+      if(act){ FillR(dc,CRect(0,gt,Px(RAIL_W),gt+Px(ICON_H)),ACTIVE_BG); FillR(dc,CRect(0,gt,Px(3),gt+Px(ICON_H)),ACCENT); }
+      // ICONS ARE DRAWN INTO A SQUARE, AND FROM ONE FACE.
+      // TxtG creates the font with width 0, so GDI never scaled these
+      // non-uniformly - the "stretched / unnatural" look was the GLYPHS, not the
+      // rect: these characters come from the UI font, which does not contain all of
+      // them (U+2726 and U+25D1 are commonly missing), so GDI silently substituted
+      // a different face per character - different width, weight and baseline in one
+      // column. One symbol face for all six fixes that, and a square box keeps the
+      // centring independent of the rail's width.
+      const int icBox=Px(32); const int icX=(Px(RAIL_W)-icBox)/2;
+      TxtG(dc,CRect(icX,gt+Px(6),icX+icBox,gt+Px(6)+icBox),groups[i].glyph,groups[i].tint,
+           groups[i].gpx,FW_SEMIBOLD,0.0f,DT_CENTER|DT_VCENTER,L"Segoe UI Symbol");
+      TxtG(dc,CRect(0,gt+Px(38),Px(RAIL_W),gt+Px(58)),groups[i].label,act?TEXT:MID,12,FW_SEMIBOLD,1.0f,DT_CENTER|DT_VCENTER,g_fontFam); }
+    int cx0=Px(RAIL_W); int buf[NROWS]; int nv=Vis(buf);
+    wchar_t cat[200]=L""; const wchar_t* last=nullptr;
+    for(int i=0;i<nv;++i){ const wchar_t*s=g_rows[buf[i]].section; if(!s)continue; if(s!=last){ if(cat[0])wcscat_s(cat,L"  \x00B7  "); wcscat_s(cat,s); last=s; } }
+    TxtW(dc,CRect(cx0+Px(PAD),Px(8),rc.right-Px(PAD),Px(8)+Px(CAT_H)),cat,MID,12);
+    int y=Px(60); bool multi=NSec(buf,nv)>1; bool skip=false; last=nullptr;
+    for(int i=0;i<nv&&y<rc.bottom;++i){ const Row& r=g_rows[buf[i]];
+      if(r.section!=last){ bool open=!multi||Open(r.section);
+        TxtG(dc,CRect(cx0+Px(PAD),y,cx0+Px(PAD+18),y+Px(SECT_H)),open?L"\x25BC":L"\x25B6",ACCENT,12,FW_BOLD,1.5f,DT_LEFT|DT_VCENTER,g_fontFam);
+        TxtG(dc,CRect(cx0+Px(PAD+18),y,rc.right-Px(PAD),y+Px(SECT_H)),r.section,ACCENT,12,FW_BOLD,1.5f,DT_LEFT|DT_VCENTER,g_fontFam);
+        y+=Px(SECT_H); last=r.section; skip=multi&&!open; }
+      if(skip) continue;
+      if(i==m_hover) RR(dc,CRect(cx0+2,y,rc.right-2,y+RowH()),Px(6),PANEL2);
+      bool wide=(r.kind==5||r.kind==7);
+      // Dropdowns get their own, wider control column: the value area used to be
+      // the same 150 px as every other control MINUS two chevrons, which left ~76 px
+      // and rendered "Unplugged" as "Unp…" and "BT.709 (standard)" as "BT.…"
+      // (reported at 3840x2160). The label column gives that space up instead —
+      // a label ellipsizes gracefully, a value cannot.
+      const int ctlW = (r.kind==2) ? Px(210) : Px(CONTROL_W);
+      int labW = wide? Px(104) : (r.kind==1?Px(RAIL_W+150-8):(Px(RIGHT_W)-ctlW));
+      if(r.kind!=6) TxtW(dc,CRect(cx0+Px(PAD+6),y,cx0+Px(PAD+6)+labW,y+RowH()),r.label,TEXT,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      int cright=rc.right;
+      if(r.kind==0){ int w=Px(46),h=Px(22); CRect sw(cright-Px(PAD)-w,y+(RowH()-h)/2,cright-Px(PAD),y+(RowH()-h)/2+h);
+        FillR(dc,sw,r.on?ACCENT:OFF_BG); HBRUSH hb=CreateSolidBrush(r.on?ACCENT2:BORDER); ::FrameRect(dc->GetSafeHdc(),&sw,hb); DeleteObject(hb);
+        TxtW(dc,sw,r.on?L"ON":L"OFF",r.on?RGB(0,0,0):MID,13,false,DT_CENTER|DT_VCENTER); }
+      else if(r.kind==1){ CRect cr=SliderR(y,rc); DrawSlider(dc,cr,(r.val-r.mn)/(r.mx-r.mn),i==m_hover);
+        wchar_t a[16],b2[16]; swprintf_s(a,L"%.0f",r.mn); swprintf_s(b2,L"%.0f",r.mx);
+        TxtW(dc,CRect(cr.left,cr.bottom+Px(3),cr.left+Px(60),cr.bottom+Px(19)),a,MID,13);
+        TxtW(dc,CRect(cr.right-Px(60),cr.bottom+Px(3),cr.right,cr.bottom+Px(19)),b2,MID,13,false,DT_RIGHT);
+        wchar_t v[32]; swprintf_s(v,L"%.4g",r.val);
+        TxtW(dc,CRect(cright-Px(58),y,cright-Px(PAD),y+RowH()),v,TEXT,13,false,DT_RIGHT|DT_VCENTER); }
+      else if(r.kind==6){ // SOURCE port: radio, friendly name, live signal badge
+        if(r.on) RR(dc,CRect(cx0+2,y,rc.right-2,y+RowH()),Px(6),ACTIVE_BG);
+        TxtW(dc,CRect(cx0+Px(6),y,cx0+Px(24),y+RowH()),L"\x25CF",r.on?ACCENT:MID,13,false,DT_CENTER|DT_VCENTER,g_fontFam);
+        TxtW(dc,CRect(cx0+Px(28),y,cx0+Px(238),y+RowH()),r.label,r.on?TEXT:MID,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+        COLORREF sc=r.locked>0?(r.dr>0?RGB(0x4C,0xAF,0x50):TEXT):LO;
+        TxtW(dc,CRect(rc.right-Px(120),y,rc.right-Px(8),y+RowH()),r.text.c_str(),sc,12,false,DT_RIGHT|DT_VCENTER|DT_END_ELLIPSIS); }
+      else if(r.kind==3){ // ACTION: right-aligned CTA (s3shell_panel.py:1840)
+        const wchar_t* cta=L"";
+        if(!strcmp(r.key,"zion.reset")||!strcmp(r.key,"sys.resetRenderer")) cta=L"Reset";
+        else if(!strcmp(r.key,"__capFrame")) cta=L"Save\x2026";
+        else if(!strcmp(r.key,"__report"))   cta=L"Report\x2026";
+        if(*cta) TxtW(dc,CRect(cright-CONTROL_W,y,cright-Px(PAD),y+RowH()),cta,ACCENT2,13,false,DT_RIGHT|DT_VCENTER); }
+      else if(r.kind==4){ // FILE: basename on the right, full path remains in r.file
+        std::wstring name=r.file.empty()?L"Set\x2026":r.file;
+        if(!r.file.empty()){ size_t p=name.find_last_of(L"\\/"); if(p!=std::wstring::npos) name=name.substr(p+1); }
+        TxtW(dc,CRect(cright-CONTROL_W,y,cright-Px(PAD),y+RowH()),name.c_str(),r.file.empty()?LO:TEXT,13,false,DT_RIGHT|DT_VCENTER|DT_END_ELLIPSIS); }
+      else { bool w5=(r.kind==5||r.kind==7);
+        int left=w5? cx0+Px(6)+Px(104)+Px(4) : cright-ctlW; int right=cright-Px(PAD);
+        const wchar_t* cur=L"\x2014";
+        if(r.kind==2&&r.opts&&r.nopts>0) cur=r.opts[r.opt];
+        else if(!r.names.empty()) cur=r.names[r.opt].c_str();
+        TxtW(dc,CRect(left,y,left+Px(16),y+RowH()),L"\x2039",ACCENT2,13,false,DT_LEFT|DT_VCENTER,g_fontFam);
+        TxtW(dc,CRect(right-Px(16),y,right,y+RowH()),L"\x203A",ACCENT2,13,false,DT_RIGHT|DT_VCENTER,g_fontFam);
+        // Left-aligned inside the (now wider) value area: reading order beats
+        // centring when the string is long enough to ellipsize.
+        TxtW(dc,CRect(left+Px(18),y,right-Px(18),y+RowH()),cur,TEXT,13,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
+      y+=RowH(); } }
+  int Hit(CPoint p,int& kind,int& idx){ int buf[NROWS]; int nv=Vis(buf); int y=Px(60);
+    bool multi=NSec(buf,nv)>1; bool skip=false; const wchar_t* last=nullptr;
+    for(int i=0;i<nv;++i){ const Row& r=g_rows[buf[i]];
+      if(r.section!=last){ if(p.y>=y&&p.y<y+Px(SECT_H)){ kind=9; m_hitSec=r.section; return -2; }
+        y+=Px(SECT_H); last=r.section; skip=multi&&!Open(r.section); }
+      if(skip) continue;
+      if(p.y>=y&&p.y<y+RowH()){ kind=0; idx=buf[i]; return i; }
+      y+=RowH(); }
+    return -1; }
+  int HitTab(CPoint p){ if(p.x>Px(RAIL_W))return -1; int i=p.y/Px(ICON_STEP); return (i>=0&&i<6)?i:-1; }
+  int RowY(int ri){ int buf[NROWS]; int nv=Vis(buf); int y=Px(60); bool multi=NSec(buf,nv)>1; bool skip=false; const wchar_t* last=nullptr;
+    for(int i=0;i<nv;++i){ const Row& r=g_rows[buf[i]];
+      if(r.section!=last){ y+=Px(SECT_H); last=r.section; skip=multi&&!Open(r.section); }
+      if(skip) continue; if(buf[i]==ri) return y; y+=RowH(); }
+    return y; }
+  // Default is the compiled baseline: it may not be edited (device rows excepted,
+// they are the display, not a look). Refusing the change — rather than applying
+// and warning — is what makes "Default" mean something, and it sends the user to
+// the presets, which save automatically.
+  bool RowLocked(const Row& r){
+    return _wcsicmp(g_activePreset.c_str(),L"Default")==0 && !PresetDeviceRow(r); }
+  void RefuseLocked(){
+    g_toastText = L"Default is read-only — switch to a preset (or create one) to change this";
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0);
+    LogF("settings: change refused (Default is read-only)"); }
+  void OnLButtonDown(UINT f,CPoint p){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+52,0,0); int t=HitTab(p); if(t>=0){ SetGroup(t); return; }
+    int kind,idx; int li=Hit(p,kind,idx);
+    if(li==-2){ m_focus=-1; m_kb=false; m_lastHelp=-1; Toggle(m_hitSec);
+      ShowRememberedHelp(); return; }
+    if(li<0) return;
+    m_focus=li; m_kb=true; ShowHelp(li);
+    Row& r=g_rows[idx]; CRect rc; GetClientRect(rc);
+    if(RowLocked(r)){ RefuseLocked(); return; }   // Default: taste rows are read-only
+    if(r.kind==0){ r.on=!r.on;
+      if(!strcmp(r.key,"out.superRes")&&r.on){ EnableSuperRes(r); }
+      else if(IsPassthroughRow(r)){
+        // 1.3.0 _set(): enabling either passthrough clears the other, then BOTH
+        // rows are applied so no stale copy-mode flag survives in the renderer.
+        if(r.on){ SaveRowIni(r);
+          for(auto&o:g_rows) if(IsPassthroughRow(o)&&&o!=&r&&o.on){ o.on=false; SaveRowIni(o); } }
+        for(auto&o:g_rows) if(IsPassthroughRow(o)) PushRow(o);
+      } else PushRow(r); }
+    else if(r.kind==6){ if(!r.payload.empty()&&AfxGetMainWnd()){ g_sourceUrl=r.payload;
+      AfxGetMainWnd()->PostMessageW(WM_APP+21,0,0); } }
+    else if(r.kind==3){ if(AfxGetMainWnd()){
+      if(!strcmp(r.key,"zion.reset")) AfxGetMainWnd()->PostMessageW(WM_APP+11,0,0);
+      else if(!strcmp(r.key,"sys.resetRenderer")) AfxGetMainWnd()->PostMessageW(WM_APP+12,0,0);
+      else if(!strcmp(r.key,"__capFrame")) AfxGetMainWnd()->PostMessageW(WM_APP+14,0,0);
+    else if(!strcmp(r.key,"__report"))   LogF("report a problem clicked (not wired)");
+      else if(!strcmp(r.key,"src.rescan")) AfxGetMainWnd()->PostMessageW(WM_APP+19,0,0);
+      else if(!strcmp(r.key,"src.rename")) AfxGetMainWnd()->PostMessageW(WM_APP+20,0,0);
+      else if(!strcmp(r.key,"src.setup")) AfxGetMainWnd()->PostMessageW(WM_APP+16,0,0); } }
+    else if(r.kind==4){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+15,0,0); }
+    else if(r.kind==2){ if(r.nopts>1){r.opt=(r.opt+1)%r.nopts; PushRow(r);} }
+    else if(r.kind==5||r.kind==7){ int c=(int)r.names.size(); if(c>1){r.opt=(r.opt+1)%c; PushRow(r);} }
+    else {
+      // CLICK-TO-SET on the track, then drag to fine-tune — every kind-1 row, so
+      // all sliders behave the same (a 25..400 nits slider can be clicked near 100
+      // instead of wheel-stepping to it). The hit area is the track plus a generous
+      // vertical margin; clicking the LABEL or the value readout must NOT jump the
+      // slider to an end, which is what "whole row = drag" used to do.
+      CRect tr=SliderR(RowY(idx),rc);
+      CRect hit(tr.left-Px(8),tr.top-Px(10),tr.right+Px(8),tr.bottom+Px(10));
+      if(hit.PtInRect(p)){
+        m_drag=idx; SetFloat(r,p.x,tr); PushRow(r); SetCapture();
+      } else { m_drag=-1; }
+    }
+    if(r.kind==0) ShowHelp(m_focus);   // banner toggle takes effect on this very click
+    Invalidate(FALSE); }
+  void OnMouseMove(UINT f,CPoint p){ UiActivity(); int k,i; int li=Hit(p,k,i); m_hover=(li>=0&&k==0)?li:-1;
+    if(m_hover>=0) ShowHelp(m_hover);
+    else if(m_kb&&m_focus>=0) ShowHelp(m_focus);
+    else ShowRememberedHelp();   // setting ON: keep the last/full card on screen
+    // 1.3.0 _drag_slider(): apply on every move, not just on release. SetFloat
+    // already quantises to the row's step, so slow drags send one push per real
+    // increment and fast drags coalesce naturally to the mouse-event rate.
+    if(m_drag>=0&&(f&MK_LBUTTON)){ CRect rc; GetClientRect(rc);
+      if(RowLocked(g_rows[m_drag])){ ReleaseCapture(); m_drag=-1; RefuseLocked(); return; }
+      SetFloat(g_rows[m_drag],p.x,SliderR(RowY(m_drag),rc)); PushRow(g_rows[m_drag]); }
+    Invalidate(FALSE); }
+  void OnLButtonUp(UINT f,CPoint p){ if(m_drag>=0){ ReleaseCapture(); m_drag=-1; } }
+  void SetFloat(Row& r,int x,CRect cr){ double f=(double)(x-cr.left)/cr.Width(); if(f<0)f=0;if(f>1)f=1;
+    double v=r.mn+f*(r.mx-r.mn); v=floor(v/r.step+0.5)*r.step; r.val=v; }
+  DECLARE_MESSAGE_MAP()
+};
+
+struct Chap{ double t=0; std::wstring name; };
+// Many remuxes carry literal titles "Chapter 01", "Chapter 02"... LAV exposes
+// them verbatim. Treat those as unnamed so the UI does not print
+// "Chapter 3 of 8 · Chapter 03".
+static bool GenericChapterName(const std::wstring& n){
+  std::wstring s; for(wchar_t c:n) if(!iswspace((wint_t)c)) s+=(wchar_t)towlower(c);
+  if(s.compare(0,7,L"chapter")!=0) return false;
+  std::wstring rest=s.substr(7);
+  if(rest.empty()) return true;
+  size_t i=0;
+  while(i<rest.size()&&(rest[i]==L'-'||rest[i]==L'_'||rest[i]==L'.'||rest[i]==L'#')) ++i;
+  if(i>=rest.size()) return false;
+  for(;i<rest.size();++i) if(!iswdigit((wint_t)rest[i])) return false;
+  return true; }
+// Small top-level hover card for the seek bar: chapter name + time. No activation,
+// so it can appear over the video while the bar has focus.
+class CChapterTip : public CUiWnd {
+public:
+  std::wstring text; int w=0,h=0;
+  BOOL CreateTip(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|
+                    WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  void Where(CPoint screen,int& x,int& y){
+    x=screen.x-w/2; y=screen.y-h-Px(14);
+    HMONITOR mon=MonitorFromPoint(screen,MONITOR_DEFAULTTONEAREST); MONITORINFO mi={sizeof(mi)};
+    if(GetMonitorInfo(mon,&mi)){
+      if(x<mi.rcWork.left+Px(4)) x=mi.rcWork.left+Px(4);
+      if(x+w>mi.rcWork.right-Px(4)) x=mi.rcWork.right-Px(4)-w;
+      if(y<mi.rcWork.top+Px(4)) y=screen.y+Px(18); } }
+  void ShowAt(const std::wstring& t,CPoint screen){
+    if(!GetSafeHwnd()) return;
+    bool remeasure=(t!=text);
+    if(remeasure){ text=t; w=TextW(t.c_str(),12,false)+Px(24); h=Px(30); }
+    int x,y; Where(screen,x,y); MoveWindow(x,y,w,h);
+    if(remeasure){ SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd); }
+    if(!IsWindowVisible()){ ShowWindow(SW_SHOWNOACTIVATE);
+      SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); }
+    Invalidate(FALSE); }
+  void Hide(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(14,14,14),RGB(100,100,100),Px(6));
+    TxtW(&dc,rc,text.c_str(),RGB(0xE0,0xE0,0xE0),12,false,DT_CENTER|DT_VCENTER|DT_END_ELLIPSIS); }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CChapterTip,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// One hover tooltip for ordinary chrome buttons (transport has its own because
+// it also owns the timeline/chapter tip). Created by CMainFrame; hidden everywhere
+// else so it can float over the video.
+static CChapterTip* g_uiTip=nullptr;
+static void UiTipShow(const std::wstring& s,CPoint screen){
+  if(!g_uiTip||s.empty()) return; g_uiTip->ShowAt(s,screen); }
+static void UiTipHide(){ if(g_uiTip) g_uiTip->Hide(); }
+
+// Last time the pointer did anything over the chrome. The bars-only chrome
+// hides itself after an idle period (the usual case is: seek, then stop
+// touching anything) and every pane has to feed this, because the top strip and
+// the transport bar live in the overlay window and their mouse messages never
+// reach the frame.
+static ULONGLONG g_uiActivity=0;
+// ---- pointer truth -----------------------------------------------------------
+// The app's ENTIRE knowledge of the pointer is one sample of the desktop cursor
+// every 100 ms (CMainFrame::PointerSample). Messages do not remember anything:
+// they only make the next sample happen sooner (UiActivity). That is the fix for
+// this whole class of bug. Before, "the pointer moved" was inferred from a
+// message arriving at a particular window, and there are four candidates (frame,
+// host, MPCVR's video child through the message drain, and each pane). Whenever
+// the pointer sat on the surface whose moves did not reach the chosen window, the
+// app carried on believing the pointer was somewhere else: the edge gesture never
+// fired and the cursor stayed hidden ("no mouse, had to kill it from the taskbar").
+// A sample cannot be lost, coalesced or swallowed — the worst case is one tick of
+// latency, and the next tick re-derives the truth from the desktop.
+static POINT g_ptrPt{}; static bool g_ptrValid=false;
+// Cursor visibility is owned in ONE place, and it is a DERIVED value re-asserted
+// on every sample (see PointerSample). Never a counter balanced by paired calls
+// from different windows: that is how it got stuck hidden.
+static bool g_cursorHidden=false;
+static void CursorShow(){
+  if(!g_cursorHidden) return;
+  for(int i=0;i<16 && ::ShowCursor(TRUE)<0;++i){}
+  g_cursorHidden=false;
+  ::SetCursor(::LoadCursor(nullptr,IDC_ARROW));
+  LogF("cursor shown (activity)");
+}
+static void CursorHide(){
+  if(g_cursorHidden) return;
+  for(int i=0;i<16 && ::ShowCursor(FALSE)>=0;++i){}
+  g_cursorHidden=true;
+  LogF("cursor hidden (idle during playback)");
+}
+// ---- chrome idle deadline ---------------------------------------------------
+// The chrome hides because ONE timer expired, not because a poll noticed that a
+// timestamp was old. Activity RESETS that timer (coalesced: a mouse move storm
+// re-arms it at most every 200 ms), the timer handler is the only thing that
+// hides. State that used to be smeared across ShowWindow, the overlay region, a
+// poll comparison and an idle timestamp now has a single owner.
+static HWND g_chromeWnd=0;                    // the frame that owns the timer
+static bool g_chromeTimerOn=false;
+static bool g_chromeTimerArmed=false;
+static ULONGLONG g_chromeArmedAt=0;
+const  UINT_PTR TID_CHROME=11;
+const  UINT     CHROME_IDLE_MS=4000;
+const  UINT_PTR TID_POINTER=13;               // the pointer sampler
+const  UINT     POINTER_MS=100;
+static void ChromeTimerArm(UINT ms){
+  if(!g_chromeWnd) return;
+  ::KillTimer(g_chromeWnd,TID_CHROME); g_chromeTimerArmed=true;
+  g_chromeArmedAt=GetTickCount64(); ::SetTimer(g_chromeWnd,TID_CHROME,ms,nullptr); }
+static void ChromeTimerStop(){
+  if(g_chromeWnd && g_chromeTimerArmed) ::KillTimer(g_chromeWnd,TID_CHROME);
+  g_chromeTimerArmed=false; g_chromeTimerOn=false; }
+static void UiActivity(){
+  const ULONGLONG now=GetTickCount64();
+  g_uiActivity=now; CursorShow();
+  if(g_chromeTimerOn && now-g_chromeArmedAt>=200) ChromeTimerArm(CHROME_IDLE_MS); }
+static ULONGLONG UiIdleMs(){ return g_uiActivity?GetTickCount64()-g_uiActivity:0; }
+// True when the top window under this SCREEN point belongs to this process. The
+// sampler needs it because geometry alone cannot tell "the pointer is over our
+// picture" from "another app is on top of our picture": without it, moving the
+// mouse across a browser that covers a backgrounded player would pop our chrome.
+static bool PointIsOurs(POINT p){
+  HWND w=::WindowFromPoint(p); DWORD pid=0;
+  if(w) ::GetWindowThreadProcessId(w,&pid);
+  return pid==::GetCurrentProcessId(); }
+
+// Hover details for a library title (year/genre, duration/bitrate, HDR/gamut,
+// HD audio). Top-level and non-activating so it can float over the media pane.
+struct TipLine{ std::wstring text; COLORREF color; };
+class CMediaTip : public CUiWnd {
+public:
+  std::wstring title; std::vector<TipLine> lines; int w=0,h=0;
+  BOOL CreateTip(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|
+                    WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  void ShowFacts(const std::wstring& t,const std::vector<TipLine>& ls,CPoint screen){
+    title=t; lines=ls;
+    int maxw=TextW(t.c_str(),13,true);
+    for(auto&l:lines) maxw=max(maxw,TextW(l.text.c_str(),11,false));
+    w=max(Px(340),maxw+Px(32));
+    h=Px(14)+Px(20)+(int)lines.size()*Px(18)+Px(10);
+    int x=screen.x+Px(18), y=screen.y+Px(18);
+    HMONITOR mon=MonitorFromPoint(screen,MONITOR_DEFAULTTONEAREST); MONITORINFO mi={sizeof(mi)};
+    if(GetMonitorInfo(mon,&mi)){
+      if(x+w>mi.rcWork.right-Px(4)) x=screen.x-w-Px(14);
+      if(y+h>mi.rcWork.bottom-Px(4)) y=screen.y-h-Px(14);
+      if(x<mi.rcWork.left+Px(4)) x=mi.rcWork.left+Px(4);
+      if(y<mi.rcWork.top+Px(4)) y=mi.rcWork.top+Px(4); }
+    MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    Invalidate(FALSE); UpdateWindow(); }
+  void Hide(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(&dc,CRect(Px(16),Px(12),rc.right-Px(16),Px(32)),title.c_str(),
+         RGB(0xF0,0xF0,0xF0),13,true,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    int y=Px(38);
+    for(auto&l:lines){ TxtW(&dc,CRect(Px(16),y,rc.right-Px(16),y+Px(18)),l.text.c_str(),
+        l.color,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); y+=Px(18); } }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CMediaTip,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+class CTransportBar : public CUiWnd {
+  bool dragging=false,voldrag=false,vpMode=true; double pos=0,dur=0; int vol=100; bool muted=false,paused=false,dim=false;
+  bool media=false;             // a file is playing: the Stop button is live
+  int hovBtn=0;
+  std::vector<Chap> chaps; CChapterTip tip; bool tracking=false;
+public:
+  // A seek/volume drag holds the pointer down without moving it; the chrome must
+  // not vanish under a drag. Used by the idle auto-hide.
+  bool Busy() const { return dragging||voldrag; }
+  struct Ctl{ CRect prev,rew,pause,ff,next,stop,nls; };
+  bool nlsOn=false;     // state shown by the NLS toggle (engine/preset driven)
+  void SetNls(bool on){ if(nlsOn!=on){ nlsOn=on; Invalidate(FALSE); } }
+  void Controls(CRect rc,Ctl& c) const {
+    CRect rr,vp,mp; ModeRects(rc,rr,vp,mp);
+    int cy=rc.CenterPoint().y,sp=Px(10),x=mp.right+sp;
+    auto step=[&](CRect& r){ r=CRect(x,cy-Px(14),x+Px(28),cy+Px(14)); x+=Px(28)+Px(6); };
+    step(c.prev); step(c.rew); step(c.pause); step(c.ff); step(c.next);
+    c.stop=CRect(x,cy-Px(14),x+Px(28),cy+Px(14));
+    // NLS lives in the RIGHT cluster between the time label and the mute button:
+    // the left side already carries the mode buttons and the whole transport
+    // group (reported as overloaded). Mirrors Geo()'s layout exactly — including
+    // the reserved 28 px slot, which is what keeps it off the duration text.
+    {
+      const int sp2=Px(10);
+      const int posx=c.stop.right+sp2;
+      const int sl=posx+Px(42)+sp2;
+      const int reserve=Px(42)+sp2+Px(28)+sp2+Px(28)+sp2+Px(90)+sp2+Px(36);
+      const int sr=rc.right-Px(16)-reserve;
+      const int nlsx=sr+sp2+Px(42)+sp2;
+      c.nls=CRect(nlsx,cy-Px(14),nlsx+Px(28),cy+Px(14));
+    }
+  }
+  int ButtonAt(CPoint p) const {
+    CRect rc; GetClientRect(rc); Ctl c; Controls(rc,c);
+    CRect rr,vp,mp; ModeRects(rc,rr,vp,mp);
+    if(rr.PtInRect(p)) return 1; if(vp.PtInRect(p)) return 2; if(mp.PtInRect(p)) return 3;
+    if(c.prev.PtInRect(p)) return 4; if(c.rew.PtInRect(p)) return 5;
+    if(c.pause.PtInRect(p)) return 6; if(c.ff.PtInRect(p)) return 7;
+    if(c.next.PtInRect(p)) return 8; if(c.stop.PtInRect(p)) return 9;
+    if(c.nls.PtInRect(p)) return 12;
+    int posx,sl,sr,durx,mux,vox,vlx; Geo(rc,posx,sl,sr,durx,mux,vox,vlx);
+    int cy=rc.CenterPoint().y;
+    if(CRect(mux,cy-Px(14),mux+Px(28),cy+Px(14)).PtInRect(p)) return 10;
+    if(p.x>=vox&&p.x<=vox+Px(90)&&abs(p.y-cy)<Px(10)) return 11;
+    return 0; }
+  std::wstring ButtonTip(int id) const {
+    switch(id){
+      case 1: return vpMode?L"Restart capture":L"Restart capture (video processor only)";
+      case 2: return L"Switch to Video Processor";
+      case 3: return L"Switch to Media Player";
+      case 4: return media?L"Previous item":L"Previous item (playback only)";
+      case 5: return media?L"Fast backward 30 s":L"Fast backward (playback only)";
+      case 6: return paused?L"Play":L"Pause";
+      case 7: return media?L"Fast forward 30 s":L"Fast forward (playback only)";
+      case 8: return media?L"Next item":L"Next item (playback only)";
+      case 9: return media?L"Stop and return to library":L"Stop (no file playing)";
+      case 10:return muted?L"Unmute":L"Mute";
+      case 11:{ wchar_t b[32]; swprintf_s(b,L"Volume %d%%",vol); return b; }
+      case 12:return nlsOn?L"Non-linear stretch: on":L"Non-linear stretch: off";
+      default:return L""; }
+  }
+  bool HandAt(CPoint p) override {
+    int id=ButtonAt(p);
+    // In capture mode only the four allowed actions show a hand: a control that
+    // does nothing must not advertise itself as clickable.
+    if(id!=0){ if(vpMode && !(id==1||id==2||id==3||id==12)) return false; return true; }
+    if(vpMode) return false;
+    CRect rc; GetClientRect(rc); int posx,sl,sr,durx,mux,vox,vlx; Geo(rc,posx,sl,sr,durx,mux,vox,vlx);
+    int cy=rc.CenterPoint().y;
+    return dur>0&&p.x>=sl-Px(6)&&p.x<=sr+Px(6)&&abs(p.y-cy)<=Px(16); }
+  void SetState(double p,double d,int v,bool mu,bool pz,bool dm){ dur=d;muted=mu;paused=pz;dim=dm;
+    if(!IsWindowVisible()) tip.Hide();
+    if(!dragging)pos=p; if(!voldrag)vol=v; Invalidate(FALSE); }
+  void SetAppMode(bool vp){ if(vpMode!=vp){vpMode=vp;Invalidate(FALSE);} }
+  void SetChaps(const std::vector<Chap>& c){ chaps=c; }
+  void SetMedia(bool m){ if(media!=m){ media=m; Invalidate(FALSE); } }
+  void HideOverlay(){ tip.Hide(); tracking=false; }
+  void ModeRects(CRect rc,CRect& rr,CRect& vp,CRect& mp) const {
+    int cy=rc.CenterPoint().y,sp=Px(10),x=Px(16);
+    int rw=max(Px(74),TextW(L"\x27F3  Restart",12,false)+2*Px(20));
+    rr=CRect(x,cy-Px(17),x+rw,cy+Px(17));
+    vp=CRect(rr.right+sp,cy-Px(17),rr.right+sp+Px(34),cy+Px(17));
+    mp=CRect(vp.right+sp,cy-Px(17),vp.right+sp+Px(34),cy+Px(17));
+  }
+  void Geo(CRect rc,int& posx,int& sl,int& sr,int& durx,int& mux,int& vox,int& vlx) const {
+    Ctl c; Controls(rc,c); int sp=Px(10);
+    posx=c.stop.right+sp; sl=posx+Px(42)+sp;
+    // Right cluster, left to right: [NLS 28][gap][mute 28][gap][volume 90][gap][36].
+    // NLS's slot is reserved here too, or it lands on the time label (that happened).
+    int reserve=Px(42)+sp+Px(28)+sp+Px(28)+sp+Px(90)+sp+Px(36);
+    sr=rc.right-Px(16)-reserve; durx=sr+sp;
+    mux=durx+Px(42)+sp+Px(28)+sp; vox=mux+Px(28)+sp; vlx=vox+Px(90)+sp; }
+protected:
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CTransportBar::Body); }
+  static void FmtT(double s,wchar_t* o,int n){ int t=(int)s; if(t<0)t=0;
+    if(t/3600) swprintf_s(o,n,L"%d:%02d:%02d",t/3600,t/60%60,t%60); else swprintf_s(o,n,L"%d:%02d",t/60,t%60); }
+  void DrawPause(CDC* dc,CRect b){ int cy=b.CenterPoint().y; COLORREF c=vpMode?LO:RGB(0xE0,0xE0,0xE0);
+    if(paused){ CPoint t[3]={{b.left+Px(9),cy-Px(8)},{b.left+Px(9),cy+Px(8)},{b.left+Px(23),cy}};
+      CPen pn(PS_NULL,0,RGB(0,0,0)); CBrush br(c); CPen* op=dc->SelectObject(&pn); CBrush* ob=dc->SelectObject(&br);
+      dc->Polygon(t,3); dc->SelectObject(op); dc->SelectObject(ob); }
+    else { dc->FillSolidRect(CRect(b.left+Px(8),cy-Px(8),b.left+Px(13),cy+Px(8)),c);
+           dc->FillSolidRect(CRect(b.left+Px(17),cy-Px(8),b.left+Px(22),cy+Px(8)),c); } }
+  void IconBtn(CDC* dc,CRect b,const wchar_t* glyph,int id,bool en){
+    if(hovBtn==id&&en) RR(dc,b,Px(8),RGB(44,44,48));
+    TxtW(dc,b,glyph,en?(hovBtn==id?TEXT:RGB(0xE0,0xE0,0xE0)):LO,15,false,
+         DT_CENTER|DT_VCENTER,L"Segoe UI Symbol"); }
+  void DrawSpk(CDC* dc,CRect b){ int cy=b.CenterPoint().y; COLORREF c=(dim||vpMode)?LO:RGB(0xE0,0xE0,0xE0); int x=b.left+Px(5);
+    // Speaker = driver box + a cone that WIDENS to the right. The old triangle had
+    // its wide edge on the left and its point on the right, which reads as a play
+    // arrow rather than a speaker (reported as "the mute icon is wrong").
+    dc->FillSolidRect(CRect(x,cy-Px(4),x+Px(6),cy+Px(4)),c);
+    CPoint t[4]={{x+Px(6),cy-Px(4)},{x+Px(14),cy-Px(9)},{x+Px(14),cy+Px(9)},{x+Px(6),cy+Px(4)}};
+    CPen pn(PS_NULL,0,RGB(0,0,0)); CBrush br(c); CPen* op=dc->SelectObject(&pn); CBrush* ob=dc->SelectObject(&br);
+    dc->Polygon(t,4); dc->SelectObject(op); dc->SelectObject(ob);
+    if(muted){ // standard slash through the cone, not an X over the whole button
+      CPen xp(PS_SOLID,Px(2),RGB(0xE0,0xE0,0xE0)); CPen* o2=dc->SelectObject(&xp);
+      dc->MoveTo(x+Px(2),cy-Px(8)); dc->LineTo(x+Px(20),cy+Px(8));
+      dc->SelectObject(o2); } }
+  void Body(CDC* dc,CRect rc){ RR(dc,rc,Px(10),PANEL); int cy=rc.CenterPoint().y;   // floating, r10
+    int posx,sl,sr,durx,mux,vox,vlx; Geo(rc,posx,sl,sr,durx,mux,vox,vlx);
+    CRect restartR,vpR,mpR; ModeRects(rc,restartR,vpR,mpR);
+    // control_bar.py: Restart, then the two compact mode buttons. Restart is a
+    // capture tool and stays visible but disabled in media-player mode.
+    RR(dc,restartR,Px(12),vpMode?RGB(30,30,30):RGB(20,20,22)); StrokeR(dc,restartR,Px(12),BORDER);
+    TxtW(dc,restartR,L"\x27F3  Restart",vpMode?TEXT:LO,12,false,DT_CENTER|DT_VCENTER);
+    RR(dc,vpR,Px(10),vpMode?ACCENT:RGB(30,30,30)); StrokeR(dc,vpR,Px(10),vpMode?ACCENT2:BORDER);
+    TxtW(dc,vpR,L"\U0001F4E1",vpMode?TEXT:MID,15,false,DT_CENTER|DT_VCENTER,g_fontFam);
+    RR(dc,mpR,Px(10),!vpMode?ACCENT:RGB(30,30,30)); StrokeR(dc,mpR,Px(10),!vpMode?ACCENT2:BORDER);
+    TxtW(dc,mpR,L"\U0001F3AC",!vpMode?TEXT:MID,15,false,DT_CENTER|DT_VCENTER,g_fontFam);
+    Ctl c; Controls(rc,c);
+    IconBtn(dc,c.prev,L"\x23EE",4,media&&!vpMode);
+    IconBtn(dc,c.rew, L"\x23EA",5,media&&dur>0&&!vpMode);
+    if(hovBtn==6&&!vpMode) RR(dc,c.pause,Px(8),RGB(44,44,48));
+    DrawPause(dc,c.pause);   // DrawPause dims itself in capture mode
+    IconBtn(dc,c.ff,  L"\x23E9",7,media&&dur>0&&!vpMode);
+    IconBtn(dc,c.next,L"\x23ED",8,media&&!vpMode);
+    if(hovBtn==9&&media&&!vpMode) RR(dc,c.stop,Px(8),RGB(44,44,48));
+    RR(dc,c.stop,Px(10),(media&&!vpMode)?RGB(30,30,30):RGB(20,20,22));
+    StrokeR(dc,c.stop,Px(10),(media&&!vpMode)?BORDER:RGB(28,28,30));
+    { int ss=Px(10); CPoint pc=c.stop.CenterPoint();
+      dc->FillSolidRect(CRect(pc.x-ss/2,pc.y-ss/2,pc.x+ss/2,pc.y+ss/2),
+                        (media&&!vpMode)?RGB(230,230,230):LO); }
+    wchar_t pt[32]; FmtT(pos,pt,32); TxtW(dc,CRect(posx,cy-Px(12),posx+Px(42),cy+Px(12)),pt,TIME,11,false,DT_LEFT|DT_VCENTER);
+    // NLS toggle: accent-filled while on, like the other state toggles in the app.
+    {
+      RR(dc,c.nls,Px(8),nlsOn?ACCENT:(hovBtn==12?RGB(44,44,48):RGB(26,26,28)));
+      StrokeR(dc,c.nls,Px(8),nlsOn?ACCENT2:(hovBtn==12?ACCENT2:RGB(40,40,42)));
+      TxtW(dc,c.nls,L"\x21D4",nlsOn?RGB(0,0,0):(media?TEXT:MID),15,false,
+           DT_CENTER|DT_VCENTER,L"Segoe UI Symbol");
+    }
+    int gy=cy-Px(2); RR(dc,CRect(sl,gy,sr,gy+Px(4)),Px(2),GROOVE);
+    if(dur>0){
+      // current chapter segment tinted, then every chapter start as a tick
+      int cur=-1; for(size_t i=0;i<chaps.size();++i) if(chaps[i].t<=pos) cur=(int)i;
+      if(cur>=0){ int a=sl+(int)(chaps[cur].t/dur*(sr-sl));
+        int b=(cur+1<(int)chaps.size())?sl+(int)(chaps[cur+1].t/dur*(sr-sl)):sr;
+        if(b>a) FillR(dc,CRect(a,gy,b,gy+Px(4)),RGB(66,46,34)); }
+      for(auto&c:chaps){ int cx=sl+(int)(c.t/dur*(sr-sl));
+        FillR(dc,CRect(cx,gy-Px(4),cx+Px(2),gy+Px(8)),RGB(235,235,235)); }
+      if(pos>=0&&pos<=dur){ int tx=sl+(int)(pos/dur*(sr-sl));
+        RR(dc,CRect(sl,gy,tx,gy+Px(4)),Px(2),ACCENT);
+        CBrush b(RGB(255,255,255)); CBrush* ob=dc->SelectObject(&b); CPen pn; pn.CreatePen(PS_NULL,0,RGB(0,0,0)); CPen* op=dc->SelectObject(&pn);
+        dc->Ellipse(tx-Px(7),gy-Px(5),tx+Px(7),gy+Px(9)); dc->SelectObject(ob); dc->SelectObject(op); } }
+    wchar_t dt[32]; if(dur>0)FmtT(dur,dt,32); else wcscpy_s(dt,L"--:--");
+    TxtW(dc,CRect(durx,cy-Px(12),durx+Px(42),cy+Px(12)),dt,TIME,11,false,DT_RIGHT|DT_VCENTER);
+    DrawSpk(dc,CRect(mux,cy-Px(14),mux+Px(28),cy+Px(14)));  // dim handled by flag
+    int vy=cy-Px(1); RR(dc,CRect(vox,vy,vox+Px(90),vy+Px(3)),Px(1),GROOVE);
+    int vx=vox+(int)(vol/100.0*Px(90)); RR(dc,CRect(vox,vy,vx,vy+Px(3)),Px(1),RGB(90,90,92));
+    CBrush b2(RGB(255,255,255)); CBrush* ob2=dc->SelectObject(&b2); CPen p2; p2.CreatePen(PS_NULL,0,RGB(0,0,0)); CPen* op2=dc->SelectObject(&p2);
+    dc->Ellipse(vx-Px(5),vy-Px(4),vx+Px(5),vy+Px(7)); dc->SelectObject(ob2); dc->SelectObject(op2);
+    wchar_t vt[16]; swprintf_s(vt,L"%d%%",vol); TxtW(dc,CRect(vlx,cy-Px(12),vlx+Px(36),cy+Px(12)),vt,TIME,11,false,DT_LEFT|DT_VCENTER); }
+  void OnLButtonDown(UINT f,CPoint p){ UiActivity(); if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+52,0,0); CRect rc; GetClientRect(rc); int cy=rc.CenterPoint().y;
+    int posx,sl,sr,durx,mux,vox,vlx; Geo(rc,posx,sl,sr,durx,mux,vox,vlx);
+    CRect restartR,vpR,mpR; ModeRects(rc,restartR,vpR,mpR);
+    if(restartR.PtInRect(p)){ if(vpMode&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+7,0,0);
+      else LogF("restart ignored in media player mode"); return; }
+    if(vpR.PtInRect(p)){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+9,0,0); return; }
+    if(mpR.PtInRect(p)){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+8,0,0); return; }
+    if(vpMode){
+      // CAPTURE MODE allows exactly four actions: Restart (handled above), the two
+      // mode switches (above), and the NLS toggle. Everything else — play/pause,
+      // prev/next, ff/rew, stop, seek, mute, volume — has no meaning on a live
+      // graph, and "play" was what froze the app when clicked here.
+      if(ButtonAt(p)==12){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+53,0,0); }
+      else LogF("vp: transport/seek/audio clicks disabled");
+      return; }
+    Ctl c; Controls(rc,c);
+    if(c.prev.PtInRect(p)){ if(media&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+41,0,0);
+      else LogF("previous item ignored (no file)"); return; }
+    if(c.rew.PtInRect(p)){ if(media&&dur>0&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+43,0,0);
+      else LogF("fast backward ignored"); return; }
+    if(c.pause.PtInRect(p)){ Cmd(paused?"{\"a\":\"play\"}":"{\"a\":\"pause\"}"); LogF("CMD pause-toggle paused=%d",(int)paused); return; }
+    if(c.ff.PtInRect(p)){ if(media&&dur>0&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+44,0,0);
+      else LogF("fast forward ignored"); return; }
+    if(c.next.PtInRect(p)){ if(media&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+42,0,0);
+      else LogF("next item ignored (no file)"); return; }
+    if(c.stop.PtInRect(p)){ if(media&&AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+31,0,0);
+      else LogF("stop button ignored (no file)"); return; }
+    if(ButtonAt(p)==12){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+53,0,0); return; }
+    if(CRect(mux,cy-Px(14),mux+Px(28),cy+Px(14)).PtInRect(p)){ Cmd(muted?"{\"a\":\"mute\",\"on\":0}":"{\"a\":\"mute\",\"on\":1}"); return; }
+    if(p.x>=sl-Px(6)&&p.x<=sr+Px(6)&&abs(p.y-cy)<Px(12)){ dragging=true; SetCapture();
+      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+45,0,0); Preview(p.x,sl,sr); return; }
+    if(p.x>=vox&&p.x<=vox+Px(90)&&abs(p.y-cy)<Px(10)){ voldrag=true; SetCapture(); SetVol(p.x,vox); return; } }
+  void OnMouseMove(UINT f,CPoint p){ UiActivity(); CRect rc; GetClientRect(rc); int cy=rc.CenterPoint().y;
+    int posx,sl,sr,durx,mux,vox,vlx; Geo(rc,posx,sl,sr,durx,mux,vox,vlx);
+    if(dragging)Preview(p.x,sl,sr); if(voldrag)SetVol(p.x,vox);
+    int bid=ButtonAt(p);
+    if(bid!=hovBtn){ hovBtn=bid; Invalidate(FALSE); }
+    if(bid){
+      if(!tip.GetSafeHwnd()&&AfxGetMainWnd()) tip.CreateTip(AfxGetMainWnd());
+      CPoint sp=p; ClientToScreen(&sp); tip.ShowAt(ButtonTip(bid),sp);
+      tracking=false; return; }
+    bool inTl=dur>0&&p.x>=sl-Px(6)&&p.x<=sr+Px(6)&&abs(p.y-cy)<=Px(16);
+    if(inTl){
+      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+45,0,0);
+      if(!tip.GetSafeHwnd()&&AfxGetMainWnd()) tip.CreateTip(AfxGetMainWnd());
+      double fr=(double)(p.x-sl)/(sr-sl); if(fr<0)fr=0; if(fr>1)fr=1;
+      double t=fr*dur; wchar_t tb[64]; FmtT(t,tb,64); std::wstring s=tb;
+      int ci=-1; for(size_t i=0;i<chaps.size();++i) if(chaps[i].t<=t+0.001) ci=(int)i;
+      if(ci>=0){ wchar_t cb[64];
+        swprintf(cb,64,L"   \x00B7   Chapter %d of %d",ci+1,(int)chaps.size()); s+=cb;
+        if(!chaps[ci].name.empty()&&!GenericChapterName(chaps[ci].name))
+          s+=L"  \x00B7  "+chaps[ci].name; }
+      CPoint sp=p; ClientToScreen(&sp); tip.ShowAt(s,sp);
+      if(!tracking){ TRACKMOUSEEVENT tme={sizeof(tme)}; tme.dwFlags=TME_LEAVE;
+        tme.hwndTrack=m_hWnd; TrackMouseEvent(&tme); tracking=true; } }
+    else { tip.Hide(); tracking=false; } }
+  afx_msg void OnMouseLeave(){ tip.Hide(); tracking=false; if(hovBtn){ hovBtn=0; Invalidate(FALSE); } }
+  void OnLButtonUp(UINT f,CPoint p){ if(dragging){ ReleaseCapture(); Commit(); dragging=false; }
+    if(voldrag){ ReleaseCapture(); char b[64]; snprintf(b,sizeof(b),"{\"a\":\"volume\",\"percent\":%d}",vol); Cmd(b); LogF("CMD %s",b); voldrag=false; } }
+  void Preview(int x,int l,int r){ if(dur<=0)return; double fr=(double)(x-l)/(r-l); if(fr<0)fr=0;if(fr>1)fr=1; pos=fr*dur; Invalidate(FALSE); }
+  void Commit(){ if(dur<=0)return; char b[128]; snprintf(b,sizeof(b),"{\"a\":\"seek\",\"pos\":%lld}",(long long)(pos*1e7)); Cmd(b);
+    g_seekWant=pos; g_seekT=GetTickCount64(); LogF("seek commit=%.2f",pos); }
+  void SetVol(int x,int vox){ double fr=(double)(x-vox)/Px(90); if(fr<0)fr=0;if(fr>1)fr=1; vol=(int)(fr*100); Invalidate(FALSE); }
+  DECLARE_MESSAGE_MAP()
+};
+
+// ConfirmDialog, ported from ui/confirm_dialog.py -- but NON-MODAL.
+// 1.3.0 shows it with setModal(True)+exec(); that is exactly what must NOT be
+// copied here: a nested message loop plus a disabled frame deadlocked the app
+// (the 300 ms BringUiTop heal re-stacks the chrome on top of the dialog). The
+// card is a child pane of the frame instead, so it is part of the z-order the
+// heal maintains and the app keeps responding while it is up.
+// Geometry is Qt's CONTENT-SIZED card, not a fixed 480x210: the QDialog is
+// 480x210 with a transparent background and the card centred inside it at its
+// own size hint, so only the card is ever visible. Alpha values from the Qt
+// stylesheet are composited over the #0e0e0e card below.
+static void MeasText(const wchar_t* s,int px,bool bold,int& w,int& h){
+  HDC dc=GetDC(nullptr); HFONT f=MkFont(px,bold); HFONT of=(HFONT)SelectObject(dc,f);
+  TEXTMETRICW tm; GetTextMetricsW(dc,&tm); w=0; h=0;
+  // GetTextExtentPoint32 treats embedded newlines as one line, which made every
+  // multi-line confirm message one line too short and clipped the last line.
+  const wchar_t* p=s;
+  while(p&&*p){ const wchar_t* e=wcschr(p,L'\n'); int n=e?(int)(e-p):(int)wcslen(p);
+    SIZE sz={0,0}; if(n) GetTextExtentPoint32W(dc,p,n,&sz);
+    if(sz.cx>w) w=sz.cx; h+=tm.tmHeight; if(!e) break; p=e+1; }
+  SelectObject(dc,of); DeleteObject(f); ReleaseDC(nullptr,dc); }
+static int BtnW(const wchar_t* s,int px,bool bold,int minw,int pad){
+  int w=0,h=0; MeasText(s,px,bold,w,h); return max(minw,w+2*pad);
+}
+
+class CConfirmCard : public CUiWnd {
+public:
+  wchar_t title[128]=L"Close Unplugged", msg[256]=L"Are you sure you want to exit?", oklbl[32]=L"Yes";
+  wchar_t nextLabel[160]=L"";
+  int hov=0, action=0, msgH=0; CRect cancelR,okR;
+  bool HandAt(CPoint p) override { return cancelR.PtInRect(p)||okR.PtInRect(p); }
+  void Compute(int& outW,int& outH){
+    int tW,tH,mW,mH,cW,cH,oW,oH;
+    MeasText(title,16,true,tW,tH); MeasText(msg,13,false,mW,mH); msgH=mH;
+    MeasText(L"Cancel",13,false,cW,cH); MeasText(oklbl,13,true,oW,oH);
+    if(cW<Px(100)) cW=Px(100); if(oW<Px(100)) oW=Px(100);      // QPushButton min-width 100
+    cW+=2*Px(36); oW+=2*Px(36);       // confirm_dialog.py: padding 9px 36px per side
+    int btnH=max(cH,oH)+2*Px(9);    // label height + padding, NOT message height
+    int rowW=cW+Px(10)+oW;          // btn_row spacing 10
+    int inner=max(max(tW,mW),rowW);
+    outW=Px(72)+inner;              // layout margins 36 left/right
+    outH=Px(56)+tH+Px(14)+mH+Px(14)+btnH;   // margins 28 top/bottom + spacing 14 twice
+    int x0=(outW-rowW)/2, y0=outH-Px(28)-btnH;
+    cancelR=CRect(x0,y0,x0+cW,y0+btnH);
+    okR=CRect(x0+cW+Px(10),y0,x0+cW+Px(10)+oW,y0+btnH); }
+  // As a CHILD of the frame the card was a sibling of the library pane and had to
+  // win a z-order fight to be seen - the first X click lost it, so only the second
+  // click (after the 300 ms heal had raised it) showed anything. 1.3.0's dialog is a
+  // separate frameless always-on-top window (FramelessWindowHint +
+  // WindowStaysOnTopHint), so it is one here: no sibling can cover it. Still
+  // NON-MODAL - no EnableWindow, no nested message loop.
+  BOOL CreateCard(CWnd* owner){
+    // WS_EX_NOACTIVATE was the reason the buttons here did not work: when another
+    // application owns the foreground, the first press is spent ACTIVATING the app, a
+    // NOACTIVATE window refuses it, and the press is swallowed - the card is visible
+    // and its buttons are dead ("the mode change dialog does not accept input").
+    // Let the click activate the card (topmost, owned by the frame); activation is
+    // handed back to the frame when the card closes.
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,
+                    CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,Px(300),Px(170)),owner,0); }
+  void Place(){ if(!GetSafeHwnd())return; int cw,ch; Compute(cw,ch);
+    CRect pr; GetOwner()->GetWindowRect(pr);            // screen coords: it is top-level now
+    int x=pr.left+(pr.Width()-cw)/2, y=pr.top+(pr.Height()-ch)/2;
+    MoveWindow(x,y,cw,ch);
+    // DWM rounds the composited window; an HRGN edge is aliased and produced the
+    // jagged corners + opaque rectangles behind them.
+    SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    Invalidate(FALSE); }
+  // Always RAISE, never toggle. The old toggle made a second X click dismiss the
+  // card, so pressing X twice looked like "the close button does nothing" (log
+  // 2026-10-25 20:20:59 shown / 20:21:01 hidden). Only Cancel, Esc and Yes change it.
+  void Show(){ Place(); ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    // Two independent reasons it could still be invisible, so close both:
+    //  - z-order: something else got raised over it (the library pane).
+    //  - no paint: a WS_CHILD with no class background shows whatever was already
+    //    in those pixels until WM_PAINT runs, so "visible=1" and a correct rect
+    //    still looked like the panel underneath. Force the paint synchronously.
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    CRect rc; GetClientRect(rc); RECT sr; GetWindowRect(&sr);
+    // topmost-as-child is meaningless now that this window is top-level, so report
+    // what actually matters: is it shown, and is it above the frame in z-order.
+    CWnd* own=GetOwner();
+    int above = own ? (int)(::GetWindow(own->m_hWnd,GW_HWNDPREV)==m_hWnd) : -1;   // 1 = directly over the frame
+    LogF("confirm shown %dx%d screen(%d,%d) vis=%d above_frame=%d",rc.Width(),rc.Height(),
+         sr.left,sr.top,(int)IsWindowVisible(),above); }
+  void Dismiss(){ if(IsWindowVisible()){ ShowWindow(SW_HIDE); LogF("confirm dismissed");
+      if(action==5){ CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+30,0,0); }
+      else if(CWnd* fr=AfxGetMainWnd()) fr->SetForegroundWindow(); } }   // keyboard returns to the frame
+  void ShowClose(){ action=0; wcscpy_s(title,L"Close Unplugged");
+    wcscpy_s(msg,L"Are you sure you want to exit?"); wcscpy_s(oklbl,L"Yes"); Show(); }
+  void ShowZionReset(){ action=1; wcscpy_s(title,L"Reset Zion grade?");
+    wcscpy_s(msg,L"Every row on the Zion tab returns to its default value.\n\nYour current grade will be overwritten.");
+    wcscpy_s(oklbl,L"Reset"); Show(); }
+  void ShowRendererReset(){ action=2; wcscpy_s(title,L"Reset renderer settings?");
+    wcscpy_s(msg,L"The renderer's stored settings are deleted and the next graph starts\nfrom compiled defaults. Your rail settings are then re-applied, so this\nundoes registry state, not your configuration.");
+    wcscpy_s(oklbl,L"Reset"); Show(); }
+  void ShowSetup(){ action=3; wcscpy_s(title,L"Run first-time setup?");
+    wcscpy_s(msg,L"The app will restart and open the setup wizard.\n\nPlayback will be stopped if you proceed.");
+    wcscpy_s(oklbl,L"Restart and set up"); Show(); }
+  void ShowInputSwitch(const wchar_t* t,const wchar_t* m){ action=4;
+    wcscpy_s(title,t); wcscpy_s(msg,m); wcscpy_s(oklbl,L"Restart and continue"); Show(); }
+  // "Up next" countdown card (5 s, user choice). Cancel/Esc aborts, Play now skips it.
+  void ShowNext(const wchar_t* item){ action=5; wcscpy_s(title,L"Up next");
+    wcsncpy_s(nextLabel,item,_TRUNCATE); wcscpy_s(oklbl,L"Play now");
+    swprintf_s(msg,L"%s\n\nPlaying in 5 s...",nextLabel); Show(); }
+  void SetNextCountdown(int sec){ if(action!=5) return;
+    swprintf_s(msg,L"%s\n\nPlaying in %d s...",nextLabel,sec); Invalidate(FALSE); }
+  void HideCard(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void Accept(){ LogF("confirm accepted action=%d",action);
+    if(action==5){ HideCard(); CWnd* fr=GetParentFrame();
+      if(fr) fr->PostMessageW(WM_APP+29,0,0); return; }
+    Dismiss();
+    UINT msg=WM_APP+5;
+    if(action==1) msg=WM_APP+10; else if(action==2) msg=WM_APP+13;
+    else if(action==3) msg=WM_APP+17; else if(action==4) msg=WM_APP+18;
+    CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(msg,0,0); }
+protected:
+  // The pane class returns TRUE from WM_ERASEBKGND (no erase) so the UI panes never
+  // flicker - but for a top-level window that means the pixels stay whatever was
+  // behind it until WM_PAINT runs, which is how a "visible" card looked transparent.
+  // Fill the card colour here so the window is opaque the instant it appears.
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc); dc->FillSolidRect(rc,RGB(14,14,14));
+    return TRUE; }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CConfirmCard::Body); }
+  void Body(CDC* dc,CRect rc){
+    // GDI RoundRect/CreateRoundRectRgn take the ELLIPSE DIAMETER; Qt border-radius
+    // is a RADIUS. The region is r16 (diameter 32), so the fill must use 32 too --
+    // filling at 16 (r8) made the corners poke into the clip and get sheared off.
+    CardAA(dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(dc,CRect(Px(36),Px(28),rc.right-Px(36),Px(28)+Px(22)),title,RGB(255,255,255),16,true,DT_CENTER|DT_VCENTER);
+    TxtW(dc,CRect(Px(36),cancelR.top-Px(14)-msgH,rc.right-Px(36),cancelR.top-Px(14)),msg,
+         RGB(0x99,0x99,0x99),13,false,DT_CENTER|DT_WORDBREAK);
+    // Cancel: rgba(40,40,40,180) over #0e0e0e -> 32; hover rgba(60,60,60,220) -> 54
+    RR(dc,cancelR,Px(12), hov==1?RGB(54,54,54):RGB(32,32,32));    // radius 6 => diameter 12
+    CPen cp(PS_SOLID,1,RGB(54,54,54)); CPen* cop=dc->SelectObject(&cp);      // 1px rgba(255,255,255,25)
+    HBRUSH nb2=(HBRUSH)GetStockObject(NULL_BRUSH); HBRUSH cob=(HBRUSH)dc->SelectObject(nb2);
+    dc->RoundRect(cancelR,CPoint(Px(12),Px(12))); dc->SelectObject(cop); dc->SelectObject(cob);
+    TxtW(dc,cancelR,L"Cancel",hov==1?RGB(255,255,255):RGB(0xaa,0xaa,0xaa),13,false,DT_CENTER|DT_VCENTER);
+    // Confirm: rgba(232,85,31,180) over #0e0e0e -> 168,64,26; hover rgba(232,85,31,240) -> 219,81,30
+    RR(dc,okR,Px(12), hov==2?RGB(219,81,30):RGB(168,64,26));      // radius 6 => diameter 12
+    CPen kp(PS_SOLID,1,RGB(223,82,30)); CPen* kop=dc->SelectObject(&kp);     // 1px rgba(232,85,31,220)
+    HBRUSH nb3=(HBRUSH)GetStockObject(NULL_BRUSH); HBRUSH kob=(HBRUSH)dc->SelectObject(nb3);
+    dc->RoundRect(okR,CPoint(Px(12),Px(12))); dc->SelectObject(kop); dc->SelectObject(kob);
+    TxtW(dc,okR,oklbl,RGB(255,255,255),13,true,DT_CENTER|DT_VCENTER); }
+  void OnMouseMove(UINT f,CPoint p){
+    int hv=okR.PtInRect(p)?2:cancelR.PtInRect(p)?1:0; if(hv!=hov){hov=hv;Invalidate(FALSE);} }
+  void OnLButtonDown(UINT f,CPoint p){
+    if(okR.PtInRect(p)){ LogF("confirm YES clicked"); Accept(); }
+    else if(cancelR.PtInRect(p)){ LogF("confirm CANCEL clicked"); Dismiss(); } }
+  DECLARE_MESSAGE_MAP()
+};
+
+
+// Shared first-run / Rename-input card (FirstRunDialog + InputConfigDialog).
+struct DlPort { std::wstring url; int locked=0,dr=0; };
+static const wchar_t* DrLabel(int dr){ switch(dr){ case 1:return L"HDR PQ"; case 2:return L"HDR HLG"; case 3:return L"Dolby Vision"; default:return L"SDR"; } }
+static void PollDecklinkPorts(std::vector<DlPort>& out);
+static std::wstring g_setupMode,g_setupUrl;
+class CSetupCard : public CUiWnd {
+  std::map<std::wstring,std::wstring>* labels_=nullptr;
+  std::wstring* activeUrl_=nullptr;
+  bool rename_=false; int step_=1,scroll_=0;
+  std::vector<DlPort> ports_; std::vector<std::wstring> names_;
+  std::vector<CEdit*> edits_;
+  std::wstring selected_,original_;
+  CRect vpR,mpR,mpAltR,backR,startR,cancelR,rescanR;
+  HBRUSH editBrush_=CreateSolidBrush(RGB(50,50,50));
+public:
+  ~CSetupCard(){ DestroyInputs(); if(editBrush_) DeleteObject(editBrush_); }
+  void Bind(std::map<std::wstring,std::wstring>* labels,std::wstring* active){ labels_=labels; activeUrl_=active; }
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,
+                    CRect(0,0,860,560),owner,0); }
+  void Place(){
+    int w=rename_?800:860,h=rename_?480:560; CRect pr; GetOwner()->GetWindowRect(pr);
+    int x=pr.left+(pr.Width()-w)/2,y=pr.top+(pr.Height()-h)/2;
+    MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd); Layout(); }
+  void ShowFirstRun(){ rename_=false; step_=1; DestroyInputs(); Place(); Present(); }
+  void ShowRename(){ rename_=true; step_=2; original_=activeUrl_?*activeUrl_:L""; Scan(); Place(); Present(); }
+  void Present(){ ShowWindow(SW_SHOW); SetActiveWindow(); ::SetForegroundWindow(m_hWnd);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd); }
+  void HideCard(){ ShowWindow(SW_HIDE); DestroyInputs(); }
+  std::wstring Label(const std::wstring& url){
+    if(labels_){ auto it=labels_->find(url); if(it!=labels_->end()&&!it->second.empty()) return it->second; }
+    std::wstring c=url; if(c.find(L"decklink://")==0) c=c.substr(11);
+    size_t at=c.rfind(L'@'); if(at!=std::wstring::npos){ wchar_t b[32]; swprintf_s(b,L"HDMI %d",_wtoi(c.c_str()+at+1)+1); return b; }
+    return c; }
+  void DestroyInputs(){ for(auto*e:edits_){ if(e&&e->GetSafeHwnd()) e->DestroyWindow(); delete e; } edits_.clear(); }
+  void Scan(){
+    ports_.clear(); PollDecklinkPorts(ports_); names_.clear();
+    for(const auto&p:ports_) names_.push_back(Label(p.url));
+    if(activeUrl_){ selected_=*activeUrl_; }
+    bool found=false; for(const auto&p:ports_) if(p.url==selected_) found=true;
+    if(!found){ selected_.clear();
+      for(const auto&p:ports_) if(p.locked>0){ selected_=p.url; break; }
+      if(selected_.empty()&&!ports_.empty()) selected_=ports_[0].url; }
+    BuildInputs(); }
+  void BuildInputs(){
+    DestroyInputs();
+    for(size_t i=0;i<ports_.size();++i){ CEdit*e=new CEdit();
+      e->Create(WS_CHILD|WS_BORDER|ES_AUTOHSCROLL,CRect(0,0,10,10),this,1100+(UINT)i);
+      HFONT f=MkFont(13,false); if(f) e->SendMessage(WM_SETFONT,(WPARAM)f,TRUE);
+      e->SetWindowTextW(names_[i].c_str()); e->ShowWindow(SW_HIDE); edits_.push_back(e); }
+    Layout(); }
+  void ReadNames(){
+    for(size_t i=0;i<edits_.size()&&i<names_.size();++i){ CString s; edits_[i]->GetWindowText(s);
+      std::wstring v(s.GetString()); size_t a=v.find_first_not_of(L" \t\r\n"),b=v.find_last_not_of(L" \t\r\n");
+      names_[i]=(a==std::wstring::npos)?L"":v.substr(a,b-a+1); } }
+  void SaveNames(){
+    ReadNames(); if(!labels_) return;
+    for(size_t i=0;i<ports_.size()&&i<names_.size();++i){
+      if(names_[i].empty()) labels_->erase(ports_[i].url); else (*labels_)[ports_[i].url]=names_[i]; } }
+  void Complete(const wchar_t* mode,const std::wstring& url){
+    g_setupMode=mode; g_setupUrl=url;
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+22,0,0); HideCard(); }
+  void SaveClose(){
+    SaveNames(); g_setupUrl=selected_;
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+23,0,0); HideCard(); }
+  void Cancel(){ if(activeUrl_) *activeUrl_=original_; HideCard(); }
+  void Select(const std::wstring& url){ selected_=url; if(activeUrl_) *activeUrl_=url; Invalidate(FALSE); }
+  void Layout(){
+    if(!GetSafeHwnd()) return; CRect rc; GetClientRect(rc);
+    int bottom=rc.bottom-Px(64),rowH=Px(56),gap=Px(4),top=Px(132);
+    for(size_t i=0;i<edits_.size();++i){ int y=top+((int)i-scroll_)*(rowH+gap);
+      bool vis=(y>=top-Px(4)&&y+rowH<=bottom);
+      // Keep the editor INSIDE the row: row right = rc.right-28, inner
+      // margin = 12, so the edit's right edge must be rc.right-40, not beyond it.
+      edits_[i]->MoveWindow(Px(424),y+Px(12),rc.right-Px(464),Px(30));
+      edits_[i]->ShowWindow(vis?SW_SHOW:SW_HIDE); }
+  }
+  int VisibleRows() const { CRect rc; GetClientRect(rc); return max(1,(rc.bottom-Px(64)-Px(132))/(Px(56)+Px(4))); }
+protected:
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc); dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  afx_msg HBRUSH OnCtlColor(CDC* dc,CWnd* w,UINT type){ if(type==CTLCOLOR_EDIT){
+      dc->SetTextColor(RGB(0xE0,0xE0,0xE0)); dc->SetBkColor(RGB(50,50,50)); return editBrush_; }
+    return CUiWnd::OnCtlColor(dc,w,type); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CSetupCard::Body); }
+  void Body(CDC* dc,CRect rc){
+    CardAA(dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(dc,CRect(Px(36),Px(22),rc.right-Px(36),Px(54)),
+      rename_?L"Configure Capture Inputs":(step_==1?L"Welcome to unplugged":L"Select Capture Input"),
+      RGB(255,255,255),rename_?17:(step_==1?22:20),true);
+    TxtW(dc,CRect(Px(36),Px(58),rc.right-Px(36),Px(84)),
+      rename_?L"Select the active input and give each port a name for quick switching.":
+      (step_==1?L"How would you like to use unplugged?":L"Choose which HDMI port to capture from and give each one a name."),
+      RGB(0x88,0x88,0x88),13,false);
+    if(step_==1){
+      const wchar_t* vpText=L"\U0001F4E1  Video Processor\n\nCapture live HDR signal\nfrom DeckLink card\nwith tone mapping";
+      const wchar_t* mpText=L"\U0001F3AC  Media Player\n\nPlay local files\nMKV, MP4, BD rips\nwith HDR tone mapping";
+      int tw=0,vh=0,mh=0; MeasText(vpText,14,true,tw,vh); MeasText(mpText,14,true,tw,mh);
+      int gap=Px(16),bw=(rc.Width()-Px(96)-gap)/2,top=Px(150),bh=max(Px(100),max(vh,mh)+2*Px(20));
+      vpR=CRect(Px(48),top,Px(48)+bw,top+bh); mpR=CRect(vpR.right+gap,top,vpR.right+gap+bw,top+bh);
+      RR(dc,vpR,Px(24),RGB(30,30,30)); RR(dc,mpR,Px(24),RGB(30,30,30));
+      { CPen green(PS_SOLID,Px(2),RGB(0x4C,0xAF,0x50)),blue(PS_SOLID,Px(2),RGB(0x29,0xB6,0xF6));
+        CPen* old=dc->SelectObject(&green); HBRUSH nb2=(HBRUSH)GetStockObject(NULL_BRUSH);
+        HBRUSH ob2=(HBRUSH)dc->SelectObject(nb2);
+        dc->RoundRect(vpR,CPoint(Px(24),Px(24)));
+        dc->SelectObject(&blue); dc->RoundRect(mpR,CPoint(Px(24),Px(24)));
+        dc->SelectObject(old); dc->SelectObject(ob2); }
+      TxtBlock(dc,vpR,vpText,RGB(0x4C,0xAF,0x50),14,true);
+      TxtBlock(dc,mpR,mpText,RGB(0x29,0xB6,0xF6),14,true);
+      TxtW(dc,CRect(Px(36),rc.bottom-Px(56),rc.right-Px(36),rc.bottom-Px(28)),
+        L"You can switch modes anytime from the Settings panel.",RGB(0x44,0x44,0x44),11,false,DT_CENTER|DT_VCENTER);
+      return; }
+    // Input page: status + Rescan, then radio / badge / raw URL / name editor rows.
+    const int rw=BtnW(L"\x27F3  Rescan",12,false,Px(96),Px(14));
+    rescanR=CRect(rc.right-Px(36)-rw,Px(34),rc.right-Px(36),Px(62));
+    RR(dc,rescanR,Px(10),RGB(30,30,30)); StrokeR(dc,rescanR,Px(10),RGB(60,60,60));
+    TxtW(dc,rescanR,L"\x27F3  Rescan",RGB(0xAA,0xAA,0xAA),12,false,DT_CENTER|DT_VCENTER);
+    wchar_t status[160];
+    if(ports_.empty()) swprintf_s(status,L"No DeckLink devices found - check drivers and card seating.");
+    else { int locked=0; for(const auto&p:ports_) if(p.locked>0) ++locked;
+      if(locked) swprintf_s(status,L"%d port%s found  \x00B7  %d with signal",
+        (int)ports_.size(),ports_.size()==1?L"":L"s",locked);
+      else swprintf_s(status,L"%d port%s found",(int)ports_.size(),ports_.size()==1?L"":L"s"); }
+    TxtW(dc,CRect(Px(36),Px(88),rc.right-Px(160),Px(110)),status,
+      ports_.empty()?RGB(0xFF,0x98,0x00):RGB(0x4C,0xAF,0x50),12,false);
+    TxtW(dc,CRect(Px(60),Px(108),Px(160),Px(126)),L"Signal",RGB(0x44,0x44,0x44),11,true);
+    TxtW(dc,CRect(Px(174),Px(108),Px(410),Px(126)),L"Port",RGB(0x44,0x44,0x44),11,true);
+    TxtW(dc,CRect(Px(424),Px(108),rc.right-Px(36),Px(126)),L"Your name",RGB(0x44,0x44,0x44),11,true);
+    int rowH=Px(56),gap=Px(4),top=Px(132),bottom=rc.bottom-Px(64);
+    for(size_t i=scroll_;i<ports_.size();++i){ int y=top+((int)i-scroll_)*(rowH+gap);
+      if(y+rowH>bottom) break; const DlPort&p=ports_[i]; bool active=(p.url==selected_);
+      CRect row(Px(28),y,rc.right-Px(28),y+rowH);
+      RR(dc,row,Px(16),active?RGB(60,25,10):RGB(30,30,30));
+      StrokeR(dc,row,Px(16),active?ACCENT:RGB(45,45,45));
+      TxtW(dc,CRect(Px(40),y,Px(64),y+rowH),L"\x25CF",active?ACCENT:MID,13,false,DT_CENTER|DT_VCENTER,g_fontFam);
+      COLORREF sc=p.locked>0?(p.dr>0?RGB(0x4C,0xAF,0x50):TEXT):LO;
+      std::wstring badge=p.locked>0?std::wstring(L"\U0001F512  ")+DrLabel(p.dr):(p.locked<0?L"\x25CB  \x2014":L"\x25CB  No signal");
+      TxtW(dc,CRect(Px(70),y,Px(174),y+rowH),badge.c_str(),sc,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      std::wstring raw=p.url; if(raw.find(L"decklink://")==0) raw=raw.substr(11);
+      TxtW(dc,CRect(Px(174),y,Px(418),y+rowH),raw.c_str(),LO,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
+    backR=CRect(Px(36),rc.bottom-Px(52),Px(36)+BtnW(L"Back",12,false,Px(80),Px(20)),rc.bottom-Px(16));
+    if(rename_){
+      startR=CRect(rc.right-Px(36)-BtnW(L"Save & Close",13,true,Px(160),Px(24)),rc.bottom-Px(52),rc.right-Px(36),rc.bottom-Px(16));
+      cancelR=CRect(startR.left-Px(10)-BtnW(L"Cancel",12,false,Px(110),Px(18)),rc.bottom-Px(52),startR.left-Px(10),rc.bottom-Px(16));
+      RR(dc,cancelR,Px(12),RGB(14,14,14)); StrokeR(dc,cancelR,Px(12),RGB(60,60,60));
+      TxtW(dc,cancelR,L"Cancel",RGB(0x88,0x88,0x88),12,false,DT_CENTER|DT_VCENTER);
+      RR(dc,startR,Px(12),ACCENT); StrokeR(dc,startR,Px(12),ACCENT2);
+      TxtW(dc,startR,L"Save & Close",RGB(0xFF,0xFF,0xFF),13,true,DT_CENTER|DT_VCENTER);
+    } else {
+      const int sw=BtnW(L"\x25B6  Start Capture",13,true,Px(160),Px(28));
+      startR=CRect(rc.right-Px(36)-sw,rc.bottom-Px(52),rc.right-Px(36),rc.bottom-Px(16));
+      RR(dc,backR,Px(12),RGB(14,14,14)); StrokeR(dc,backR,Px(12),RGB(60,60,60));
+      TxtW(dc,backR,L"Back",RGB(0x88,0x88,0x88),12,false,DT_CENTER|DT_VCENTER);
+      mpAltR=CRect(Px(36),rc.bottom-Px(52),Px(36)+BtnW(L"\U0001F3AC  Use Media Player instead",12,false,Px(180),Px(20)),rc.bottom-Px(16));
+      RR(dc,mpAltR,Px(12),RGB(14,14,14)); StrokeR(dc,mpAltR,Px(12),RGB(60,60,60));
+      TxtW(dc,mpAltR,L"\U0001F3AC  Use Media Player instead",RGB(0x88,0x88,0x88),12,false,DT_CENTER|DT_VCENTER);
+      RR(dc,startR,Px(12),RGB(0x4C,0xAF,0x50)); StrokeR(dc,startR,Px(12),RGB(0x70,0xC8,0x70));
+      TxtW(dc,startR,L"\x25B6  Start Capture",RGB(0xFF,0xFF,0xFF),13,true,DT_CENTER|DT_VCENTER);
+    }
+  }
+  void OnLButtonDown(UINT,CPoint p){
+    if(step_==1){ if(vpR.PtInRect(p)){ step_=2; Scan(); Invalidate(FALSE); }
+      else if(mpR.PtInRect(p)) Complete(L"media_player",L""); return; }
+    if(rescanR.PtInRect(p)){ Scan(); return; }
+    if(rename_){ if(cancelR.PtInRect(p)){ Cancel(); return; }
+      if(startR.PtInRect(p)){ SaveClose(); return; } }
+    else { if(backR.PtInRect(p)){ step_=1; DestroyInputs(); Invalidate(FALSE); return; }
+      if(startR.PtInRect(p)){ SaveNames(); Complete(L"video_processor",selected_); return; }
+      if(mpAltR.PtInRect(p)){ Complete(L"media_player",L""); return; } }
+    int rowH=Px(56),gap=Px(4),top=Px(132),bottom=0; CRect rc; GetClientRect(rc); bottom=rc.bottom-Px(64);
+    for(size_t i=scroll_;i<ports_.size();++i){ int y=top+((int)i-scroll_)*(rowH+gap);
+      if(y+rowH>bottom) break; if(p.y>=y&&p.y<y+rowH){ Select(ports_[i].url); return; } }
+  }
+  BOOL OnMouseWheel(UINT,short z,CPoint){ if(step_!=2) return TRUE; int total=(int)ports_.size(),vis=VisibleRows();
+    if(total<=vis) return TRUE; scroll_+=(z<0?1:-1); if(scroll_<0)scroll_=0;
+    int maxs=total-vis; if(scroll_>maxs)scroll_=maxs; Layout(); Invalidate(FALSE); return TRUE; }
+  void OnKeyDown(UINT vk,UINT,UINT){ if(vk==VK_ESCAPE){ if(rename_) Cancel(); else HideCard(); } }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CSetupCard,CUiWnd)
+  ON_WM_PAINT() ON_WM_LBUTTONDOWN() ON_WM_MOUSEWHEEL() ON_WM_KEYDOWN()
+  ON_WM_ERASEBKGND() ON_WM_CTLCOLOR()
+END_MESSAGE_MAP()
+
+// Top strip = the 1.3.0 StatusBar (status_bar.py): state/device left; version,
+// "Report a problem", Preset, then minimize "–" and close "✕" (hover = DANGER).
+// Close asks the 1.3.0 confirm ("Close Unplugged" / "Are you sure you want to
+// exit?"); minimize minimizes. There is no windowed mode (1.3.0 is always
+// fullscreen); "out" is minimize/restore.
+// status_bar.py, exactly: fixed height 44, background PANEL_BG rgba(14,14,16,235),
+// margins (14,0,8,0) spacing 8. LEFT: "Unplugged <version>" then "Report a problem".
+// RIGHT: "Preset" + name, 6px, then the 28x28 – and ✕. There is deliberately NO
+// state/device text here (update_process_state is a no-op in 1.3.0) - the earlier
+// version of this strip had the whole order inverted, which is what looked squashed.
+class CTopStrip : public CUiWnd {
+  int m_hov=0; bool tipTrack=false;             // 1 min 2 close 3 report 4 preset 5 info 6 settings
+public:
+  wchar_t state[64]=L"Stopped", device[64]=L""; // kept for PollStats; not drawn here
+  std::wstring preset=L"\x2014"; bool infoOn=false,settingsOn=false;
+  // True while the active preset has changes that are not in a preset file.
+  // Drawn, not spoken: the picker card must never open by itself. It used to
+  // (WM_APP+38 -> ShowWarning), and because that call also takes foreground it
+  // interrupted whatever dial the user was adjusting — first change on Default
+  // popped the panel over the settings rail mid-drag.
+  bool presetDirty=false;
+  static const COLORREF LO12=RGB(0x5a,0x5a,0x5a), HI=RGB(0xF2,0xF2,0xF2);
+  CRect CloseR(CRect rc) const { int y=(rc.Height()-Px(28))/2;
+    return CRect(rc.right-Px(8)-Px(28),y,rc.right-Px(8),y+Px(28)); }
+  CRect MinR(CRect rc) const { CRect c=CloseR(rc); return CRect(c.left-Px(28),c.top,c.left,c.bottom); }
+  CRect VerR(CRect rc) const { return CRect(Px(14),0,Px(14)+Px(160),rc.bottom); }
+  // "Report a problem" is a kind==3 action row in the System tab now, not a strip
+  // button: it was never wired here (the handler only logged), and a support action
+  // does not belong in the title strip. Info keeps the slot Report used to occupy,
+  // so the strip's rhythm is unchanged.
+  CRect InfoR(CRect rc) const { int x=Px(14)+TextW(L"Unplugged 1.3.1",12,false)+Px(8);
+    int w=TextW(L"Info",12,false)+Px(16);
+    return CRect(x,Px(8),x+w,rc.bottom-Px(8)); }
+  CRect SettingsR(CRect rc) const { CRect p=PresetLblR(rc);
+    int w=TextW(L"Settings",12,false)+Px(16);
+    return CRect(p.left-Px(10)-w,Px(8),p.left-Px(10),rc.bottom-Px(8)); }
+  CRect PresetNameR(CRect rc) const {
+    // Fixed field, not text-width: changing preset names must not shift the
+    // Settings button / Preset label / min / close positions.
+    const int w=Px(180);
+    return CRect(MinR(rc).left-Px(20)-w,0,MinR(rc).left-Px(20),rc.bottom); }
+  CRect PresetLblR(CRect rc) const { int w=TextW(L"Preset",12,false); CRect p=PresetNameR(rc);
+    return CRect(p.left-Px(8)-w,0,p.left-Px(8),rc.bottom); }
+  CRect PresetR(CRect rc) const { CRect l=PresetLblR(rc),n=PresetNameR(rc);
+    return CRect(l.left-Px(6),Px(3),n.right+Px(10),rc.bottom-Px(3)); }
+protected:
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CTopStrip::Body); }
+  void Body(CDC* dc,CRect rc){ FillR(dc,rc,PANEL);
+    TxtW(dc,VerR(rc),L"Unplugged 1.3.1",LO12,12,false,DT_LEFT|DT_VCENTER);
+    CRect ir=InfoR(rc),sr=SettingsR(rc);
+    if(infoOn||m_hov==5) RR(dc,ir,Px(4),m_hov==5?RGB(48,28,20):RGB(31,31,33));
+    TxtW(dc,ir,L"Info",(infoOn||m_hov==5)?ACCENT2:LO12,12,false,DT_CENTER|DT_VCENTER);
+    if(settingsOn||m_hov==6) RR(dc,sr,Px(4),m_hov==6?RGB(48,28,20):RGB(31,31,33));
+    TxtW(dc,sr,L"Settings",(settingsOn||m_hov==6)?ACCENT2:LO12,12,false,DT_CENTER|DT_VCENTER);
+    CRect pv=PresetR(rc);
+    if(m_hov==4) RR(dc,pv,Px(4),RGB(31,31,33));
+    TxtW(dc,PresetLblR(rc),L"Preset",m_hov==4?MID:LO12,12,false,DT_LEFT|DT_VCENTER);
+    TxtW(dc,PresetNameR(rc),preset.c_str(),presetDirty?ACCENT2:HI,13,false,
+         DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    TxtW(dc,CRect(PresetNameR(rc).right,0,PresetNameR(rc).right+Px(14),rc.bottom),
+         L"\x25BE",m_hov==4?HI:MID,10,false,DT_LEFT|DT_VCENTER);
+    CRect mn=MinR(rc),cl=CloseR(rc);
+    if(m_hov==1) RR(dc,mn,Px(3),RGB(31,31,33));
+    TxtW(dc,mn,L"\x2014",m_hov==1?HI:LO12,13,false,DT_CENTER|DT_VCENTER);
+    if(m_hov==2) RR(dc,cl,Px(3),RGB(0xf4,0x43,0x36));      // DANGER hover, close only
+    TxtW(dc,cl,L"\x2715",m_hov==2?RGB(255,255,255):LO12,13,false,DT_CENTER|DT_VCENTER); }
+  bool HandAt(CPoint p) override { CRect rc; GetClientRect(rc);
+    return CloseR(rc).PtInRect(p)||MinR(rc).PtInRect(p)||
+           InfoR(rc).PtInRect(p)||SettingsR(rc).PtInRect(p)||PresetR(rc).PtInRect(p); }
+  void OnMouseMove(UINT f,CPoint p){ UiActivity(); CRect rc; GetClientRect(rc);
+    int hv=CloseR(rc).PtInRect(p)?2:MinR(rc).PtInRect(p)?1:
+             InfoR(rc).PtInRect(p)?5:SettingsR(rc).PtInRect(p)?6:
+             PresetR(rc).PtInRect(p)?4:0;
+    if(hv!=m_hov){ m_hov=hv; Invalidate(FALSE); }
+    static const wchar_t* tip[]={nullptr,L"Minimize",L"Close Unplugged",
+      L"Report a problem",L"Choose preset",L"Show live status",L"Show settings"};
+    const wchar_t* t=(hv==4&&presetDirty)?L"Unsaved changes \x2014 choose or create a preset"
+                                         :((hv>=1&&hv<=6)?tip[hv]:nullptr);
+    if(t){ CPoint sp=p; ClientToScreen(&sp); UiTipShow(t,sp); }
+    else UiTipHide();
+    if(!tipTrack){ TRACKMOUSEEVENT tme={sizeof(tme)}; tme.dwFlags=TME_LEAVE;
+      tme.hwndTrack=m_hWnd; TrackMouseEvent(&tme); tipTrack=true; } }
+  afx_msg void OnMouseLeave(){ tipTrack=false; if(m_hov){m_hov=0;Invalidate(FALSE);} UiTipHide(); }
+  void OnLButtonDown(UINT f,CPoint p){ UiActivity(); if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+52,0,0); CRect rc; GetClientRect(rc); CWnd* fr=GetParentFrame();
+    // ONE line per press on the strip: the point the pane actually received and
+    // which button it hit. "The chrome is non-interactive" then has exactly three
+    // possible answers in the log - no line at all (the press never arrived),
+    // hit=none (geometry: the click landed between buttons), or a named button
+    // (the press arrived and the action is what failed).
+    { const char* hit = CloseR(rc).PtInRect(p)?"close":MinR(rc).PtInRect(p)?"min":
+        InfoR(rc).PtInRect(p)?"info":
+        SettingsR(rc).PtInRect(p)?"settings":PresetR(rc).PtInRect(p)?"preset":"none";
+      LogF("[strip] press at (%d,%d) of %dx%d -> %s",p.x,p.y,rc.Width(),rc.Height(),hit); }
+    if(CloseR(rc).PtInRect(p)){ LogF("close clicked -> raise confirm");
+      if(fr) fr->PostMessageW(WM_APP+4,0,0); }
+    else if(MinR(rc).PtInRect(p)){ LogF("minimize clicked"); if(fr)fr->ShowWindow(SW_SHOWMINIMIZED); }
+    else if(InfoR(rc).PtInRect(p)){ if(fr) fr->PostMessageW(WM_APP+46,0,0); }
+    else if(SettingsR(rc).PtInRect(p)){ if(fr) fr->PostMessageW(WM_APP+47,0,0); }
+    else if(PresetR(rc).PtInRect(p)){ LogF("preset picker clicked");
+      if(fr) fr->PostMessageW(WM_APP+37,0,0); } }
+  DECLARE_MESSAGE_MAP()
+};
+
+BEGIN_MESSAGE_MAP(CStatusRail,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEWHEEL() END_MESSAGE_MAP()
+BEGIN_MESSAGE_MAP(CSettingsRail,CUiWnd) ON_WM_PAINT() ON_WM_LBUTTONDOWN() ON_WM_MOUSEMOVE()
+  ON_WM_LBUTTONUP() ON_WM_MOUSEWHEEL() END_MESSAGE_MAP()
+BEGIN_MESSAGE_MAP(CTransportBar,CUiWnd) ON_WM_PAINT() ON_WM_LBUTTONDOWN() ON_WM_MOUSEMOVE()
+  ON_WM_LBUTTONUP() ON_WM_MOUSELEAVE() END_MESSAGE_MAP()
+BEGIN_MESSAGE_MAP(CTopStrip,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_MOUSELEAVE() END_MESSAGE_MAP()
+BEGIN_MESSAGE_MAP(CConfirmCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// Transient playback feedback (seek/chapter/volume/stop), topmost over the video.
+class CToastCard : public CUiWnd {
+public:
+  std::wstring text; int w=0,h=0;
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|
+                    WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  void ShowText(const std::wstring& t){
+    text=t; w=TextW(t.c_str(),13,false)+Px(36); h=Px(36);
+    CRect pr; GetOwner()->GetWindowRect(pr);
+    int x=pr.left+(pr.Width()-w)/2;
+    int y=pr.bottom-Px(48)-Px(12)-Px(16)-h;
+    MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    Invalidate(FALSE); UpdateWindow(); }
+  void Hide(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(&dc,rc,text.c_str(),RGB(0xF0,0xF0,0xF0),13,false,
+         DT_CENTER|DT_VCENTER|DT_END_ELLIPSIS); }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CToastCard,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// "Now playing" banner: a deliberately larger, decorated card at the TOP of the
+// window (over the video), not squeezed into the 48 px transport strip. Shown on
+// playback start and on seek-bar interaction, then auto-hidden by CMainFrame's
+// timer. Top-level + topmost so the DirectX child can never cover it.
+class CTitlePanel : public CUiWnd {
+public:
+  std::wstring main,meta; int w=0,h=0;
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|
+                    WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  void ShowTitle(const std::wstring& a,const std::wstring& b){
+    bool same=(a==main&&b==meta&&IsWindowVisible());
+    main=a; meta=b;
+    int mw=TextW(a.c_str(),18,true), mm=TextW(b.c_str(),12,false);
+    w=min(Px(1000),max(Px(560),max(mw,mm)+Px(88))); h=Px(92);
+    CRect pr; if(GetOwner()) GetOwner()->GetWindowRect(pr);
+    int x=pr.left+(pr.Width()-w)/2, y=pr.top+Px(56);
+    MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    if(!IsWindowVisible()) ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    if(!same){ Invalidate(FALSE); UpdateWindow(); } }
+  void Hide(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(10,10,12),RGB(110,110,110),Px(10));
+    FillR(&dc,CRect(Px(16),Px(14),Px(20),rc.bottom-Px(14)),ACCENT);
+    TxtW(&dc,CRect(Px(30),Px(10),rc.right-Px(16),Px(26)),L"NOW PLAYING",
+         RGB(0x8A,0x8A,0x90),9,true,DT_LEFT|DT_VCENTER);
+    TxtW(&dc,CRect(Px(30),Px(26),rc.right-Px(16),Px(58)),main.c_str(),
+         RGB(0xF4,0xF4,0xF4),18,true,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    if(!meta.empty()) TxtW(&dc,CRect(Px(30),Px(58),rc.right-Px(16),Px(82)),
+         meta.c_str(),ACCENT2,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(10,10,12)); return TRUE; }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CTitlePanel,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// ---- ACQUIRE OVERLAY (ui/acquire_overlay.py) ---------------------------------
+// 560 wide, card #0e0e0e r16, border 1.5px rgba(100,100,100,180), margins
+// (36,28,36,28), spacing 10; Braille spinner at 80ms; "Attempt n of 10"; on
+// failure the icon goes red and three buttons appear. NON-MODAL by explicit
+// design - the Qt comment records that modality left the parent disabled and the
+// shell accepting no clicks for the rest of the session. Top-level like the
+// confirm card, so no pane can cover it.
+class CAcquireCard : public CUiWnd {
+public:
+  std::wstring label, attempt, title=L"Acquiring signal…";
+  bool failed=false; int frame=0, hov=0;
+  CRect retryR, mediaR, exitR;
+  static const wchar_t* SPIN[10];
+  // WS_EX_NOACTIVATE for the same reason as the confirm card: it must never take
+  // activation (and so never drop the frame's topmost state). Keyboard stays with
+  // the frame, which routes Esc/Enter to whichever card is up.
+  BOOL CreateAcq(CWnd* owner){
+    BOOL ok=CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_COMPOSITED,
+                     CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,Px(380),Px(240)),owner,0);
+    if(ok) ApplyDwmRound(m_hWnd); return ok; }
+  int CardW(){
+    int content=max(TextW(title.c_str(),15,true),
+      TextW(label.c_str(),13,false)+TextW(L"Input:",12,false)+Px(6));
+    if(failed) content=max(content,max(TextW(L"\x21BA  Try Again",13,true),
+      max(TextW(L"\x25A2  Open Media Player",12,false),TextW(L"\x2715  Exit Unplugged",12,false)))+Px(40));
+    return max(Px(360),content+Px(72)); }
+  int CardH(){ return Px(28+16+10+46+10+22+10+20+10+18+28)+(failed?Px(6+38+8+38+8+38):0); }
+  void Place(){ if(!GetSafeHwnd())return; int w=CardW(),h=CardH();
+    CRect pr; GetOwner()->GetWindowRect(pr);
+    MoveWindow(pr.left+(pr.Width()-w)/2,pr.top+(pr.Height()-h)/2,w,h);
+    ApplyDwmRound(m_hWnd); Invalidate(FALSE); }
+  void Start(const std::wstring& lbl){ failed=false; label=lbl; attempt.clear();
+    title=L"Acquiring signal…"; frame=0; Place();
+    ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    SetTimer(9,80,nullptr); LogF("acquire: showing, input='%s'",Narrow(lbl).c_str()); }
+  void Fail(){ if(failed)return; failed=true; KillTimer(9); title=L"No signal detected";
+    Place(); LogF("acquire: FAILED - no signal after retries"); }
+  void Attempt(int n,int total){ wchar_t b[48]; swprintf(b,48,L"Attempt %d of %d",n,total);
+    attempt=b; if(!failed) Invalidate(FALSE); }
+  void Stop(){ KillTimer(9); ShowWindow(SW_HIDE); }
+protected:
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc); dc->FillSolidRect(rc,RGB(14,14,14));
+    return TRUE; }
+  static void Btn(CDC* dc,CRect r,const wchar_t* t,bool accent,int hv){
+    if(accent){ RR(dc,r,Px(12),hv?RGB(219,81,30):RGB(168,64,26));
+      TxtW(dc,r,t,RGB(255,255,255),13,true,DT_CENTER|DT_VCENTER); }
+    else { RR(dc,r,Px(12),hv?RGB(54,54,54):RGB(32,32,32));
+      TxtW(dc,r,t,hv?RGB(255,255,255):RGB(0xaa,0xaa,0xaa),12,false,DT_CENTER|DT_VCENTER); } }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    { Gdiplus::Graphics g(dc.GetSafeHdc()); g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      Gdiplus::RectF r(2.0f,2.0f,(Gdiplus::REAL)rc.Width()-4,(Gdiplus::REAL)rc.Height()-4);
+      Gdiplus::GraphicsPath p; Gdiplus::REAL d=Gdiplus::REAL(Px(16));
+      p.AddArc(r.X,r.Y,d,d,180,90); p.AddArc(r.X+r.Width-d,r.Y,d,d,270,90);
+      p.AddArc(r.X+r.Width-d,r.Y+r.Height-d,d,d,0,90); p.AddArc(r.X,r.Y+r.Height-d,d,d,90,90); p.CloseFigure();
+      Gdiplus::SolidBrush card(Gdiplus::Color(255,14,14,14)); g.FillPath(&card,&p);
+      Gdiplus::Pen bp(Gdiplus::Color(255,100,100,100),Gdiplus::REAL(2.0)); g.DrawPath(&bp,&p); }
+    int y=Px(28); CDC* d2=&dc;
+    TxtW(d2,CRect(Px(36),y,rc.right-Px(36),y+Px(16)),L"VIDEO PROCESSOR",RGB(0xE8,0x55,0x1F),11,true,DT_CENTER|DT_VCENTER);
+    y+=Px(26);
+    TxtW(d2,CRect(Px(36),y,rc.right-Px(36),y+Px(46)),failed?L"\x2715":SPIN[frame%10],
+         failed?RGB(0xf4,0x43,0x36):RGB(0xE8,0x55,0x1F),36,false,DT_CENTER|DT_VCENTER,L"Segoe UI Symbol");
+    y+=Px(56);
+    TxtW(d2,CRect(Px(36),y,rc.right-Px(36),y+Px(22)),title.c_str(),
+         failed?RGB(0xf4,0x43,0x36):RGB(0xe8,0xe8,0xe8),15,true,DT_CENTER|DT_VCENTER); y+=Px(32);
+    { int lw=TextW(L"Input:",12,false), vw=TextW(label.c_str(),13,false), x0=(rc.Width()-(lw+6+vw))/2;
+      TxtW(d2,CRect(x0,y,x0+lw,y+Px(20)),L"Input:",RGB(0x66,0x66,0x66),12,false,DT_LEFT|DT_VCENTER);
+      TxtW(d2,CRect(x0+lw+Px(6),y,x0+lw+Px(6)+vw,y+Px(20)),label.c_str(),RGB(0xcc,0xcc,0xcc),13,false,DT_LEFT|DT_VCENTER); }
+    y+=Px(30);
+    TxtW(d2,CRect(Px(36),y,rc.right-Px(36),y+Px(18)),attempt.c_str(),RGB(0x66,0x66,0x66),12,false,DT_CENTER|DT_VCENTER);
+    y+=Px(18);
+    if(failed){ y+=Px(6); int bw=rc.Width()-Px(72),x0=(rc.Width()-bw)/2;
+      int rw=max(Px(160),TextW(L"\x21BA  Try Again",13,true)+Px(40)); if(rw>bw)rw=bw;
+      retryR=CRect(x0,y,x0+rw,y+Px(38));
+      mediaR=CRect(x0,y+Px(46),x0+bw,y+Px(46)+Px(38));
+      exitR =CRect(x0,y+Px(92),x0+bw,y+Px(92)+Px(38));
+      Btn(&dc,retryR,L"\x21BA  Try Again",true,hov==1);
+      Btn(&dc,mediaR,L"\x25A2  Open Media Player",false,hov==2);
+      Btn(&dc,exitR,L"\x2715  Exit Unplugged",false,hov==3); } }
+  afx_msg void OnTimer(UINT_PTR id){ if(id==9){ frame=(frame+1)%10; CRect rc; GetClientRect(rc);
+      InvalidateRect(rc,FALSE); } CWnd::OnTimer(id); }
+  void OnMouseMove(UINT f,CPoint p){ if(!failed){ if(hov){hov=0;Invalidate(FALSE);} return; }
+    int h=retryR.PtInRect(p)?1:mediaR.PtInRect(p)?2:exitR.PtInRect(p)?3:0;
+    if(h!=hov){ hov=h; Invalidate(FALSE); } }
+  void OnLButtonDown(UINT f,CPoint p){ if(!failed)return; CWnd* fr=GetOwner(); if(!fr)return;
+    if(retryR.PtInRect(p)){ LogF("acquire: Try Again pressed");  fr->PostMessageW(WM_APP+7,0,0); }
+    else if(mediaR.PtInRect(p)){ LogF("acquire: Open Media Player pressed"); fr->PostMessageW(WM_APP+8,0,0); }
+    else if(exitR.PtInRect(p)){ LogF("acquire: Exit pressed");   fr->PostMessageW(WM_APP+5,0,0); } }
+  DECLARE_MESSAGE_MAP()
+};
+const wchar_t* CAcquireCard::SPIN[10]={L"\x280B",L"\x2819",L"\x2839",L"\x2838",L"\x283C",
+                                       L"\x2834",L"\x2826",L"\x2827",L"\x2807",L"\x280F"};
+BEGIN_MESSAGE_MAP(CAcquireCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_TIMER() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// ---- SPLASH -----------------------------------------------------------------
+// The splash is the OWNER'S animation, not something to redraw. 1.3.0 hosts
+// assets/brand/animations/splash-A-release.html (a div + <style> fragment) inside a
+// 520x400 frameless NON-MODAL dialog centred on the main window, dismissed by a plain
+// 5000 ms QTimer that is deliberately "independent of WebEngine loading state", and
+// WebAnimationView rewrites `infinite` -> `forwards` so the 6 s cycle plays ONCE
+// (splash_screen.py:20-21,51-57,73-83; web_animation.py:41-91,125-142). So the native
+// port loads the SAME html through the SAME wrapper page into WebView2 (runtime ships
+// with Windows 11, present on this box) instead of re-implementing the keyframes.
+static const int SPLASH_W=520, SPLASH_H=400, SPLASH_MS=5000;
+
+static std::wstring SplashAssetFile(){
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?std::wstring(L"."):d.substr(0,p);
+  const wchar_t* rel=L"\\assets\\brand\\animations\\splash-A-release.html";
+  std::wstring cands[3]={ d+rel, d+L"\\_internal"+rel,
+    L"C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\assets\\brand\\animations\\splash-A-release.html" };
+  for(const std::wstring& c:cands) if(GetFileAttributesW(c.c_str())!=INVALID_FILE_ATTRIBUTES) return c;
+  return std::wstring(); }
+
+// = re.sub(r'\binfinite\b','forwards',html) from web_animation.py:43 (word boundary).
+static std::string PlayOnce(std::string s){
+  const std::string k="infinite"; size_t p=0;
+  while((p=s.find(k,p))!=std::string::npos){
+    bool lb=(p>0)&&(isalnum((unsigned char)s[p-1])||s[p-1]=='_'); size_t e=p+k.size();
+    bool rb=(e<s.size())&&(isalnum((unsigned char)s[e])||s[e]=='_');
+    if(!lb&&!rb){ s.replace(p,k.size(),"forwards"); p+=9; } else p=e; }
+  return s; }
+
+static std::wstring Widen(const std::string& u){ int n=MultiByteToWideChar(CP_UTF8,0,u.c_str(),(int)u.size(),nullptr,0);
+  std::wstring w(n,0); if(n) MultiByteToWideChar(CP_UTF8,0,u.c_str(),(int)u.size(),&w[0],n); return w; }
+
+// _wrap_fragment() host page, kept literal so the card looks exactly as 1.3.0's.
+static std::wstring SplashPage(const std::wstring& frag){
+  static const wchar_t* HEAD=L"<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<style>\n"
+    L"* { margin: 0; padding: 0; box-sizing: border-box; }\n"
+    L"html, body { width: 100%; height: 100%; background: transparent;\n"
+    L"  display: flex; align-items: center; justify-content: center; overflow: hidden; }\n"
+    L".anim-card { background: #0e0e10; border-radius: 16px;\n"
+    L"  border: 1.5px solid rgba(100,100,100,0.7); overflow: hidden; box-sizing: border-box;\n"
+    L"  display: flex; align-items: center; justify-content: center;\n"
+    L"  width: 100%; height: 100%; padding-bottom: 65px; }\n"
+    L"#stageA, #stageB { min-height: unset !important; height: auto !important;\n"
+    L"  background: transparent !important; }\n"
+    // The card plate, radius and border are drawn by the pane with antialiasing
+    // (an HRGN cannot be), so the page's own chrome is neutralised. The animation
+    // itself - SVG, wordmark, dot, tagline and every keyframe - is untouched.
+    L".anim-card { background: transparent !important; border: none !important;\n"
+    L"  border-radius: 0 !important; }\n</style>\n</head>\n<body>\n"
+    L"<div class=\"anim-card\">\n";
+  return std::wstring(HEAD)+frag+L"\n</div>\n</body>\n</html>"; }
+
+// Explicit COM completion handlers: Microsoft::WRL::Callback<> does not bind to these
+// raw-ABI handler interfaces (the SDK header declares them with the IDL CINTERFACE
+// macros, not as WinRT delegates), and the lambda version produced a cascade of
+// "does not take N arguments" errors. Plain AddRef/Release/Invoke is unambiguous.
+struct CSplashPane;
+struct SplashEnvH : public ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler {
+  CSplashPane* self_; volatile LONG ref_;
+  SplashEnvH(CSplashPane* s):self_(s),ref_(1){}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,void** o) override{
+    if(!o)return E_INVALIDARG; *o=nullptr;
+    if(riid==__uuidof(IUnknown)||
+       riid==__uuidof(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)){ *o=this; InterlockedIncrement((LONG*)&ref_); return S_OK; }
+    return E_NOINTERFACE; }
+  ULONG STDMETHODCALLTYPE AddRef() override{ return (ULONG)InterlockedIncrement((LONG*)&ref_); }
+  ULONG STDMETHODCALLTYPE Release() override{ ULONG n=(ULONG)InterlockedDecrement((LONG*)&ref_); if(!n)delete this; return n; }
+  HRESULT STDMETHODCALLTYPE Invoke(HRESULT,ICoreWebView2Environment*) override; };
+struct SplashCtrlH : public ICoreWebView2CreateCoreWebView2ControllerCompletedHandler {
+  CSplashPane* self_; volatile LONG ref_;
+  SplashCtrlH(CSplashPane* s):self_(s),ref_(1){}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,void** o) override{
+    if(!o)return E_INVALIDARG; *o=nullptr;
+    if(riid==__uuidof(IUnknown)||
+       riid==__uuidof(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler)){ *o=this; InterlockedIncrement((LONG*)&ref_); return S_OK; }
+    return E_NOINTERFACE; }
+  ULONG STDMETHODCALLTYPE AddRef() override{ return (ULONG)InterlockedIncrement((LONG*)&ref_); }
+  ULONG STDMETHODCALLTYPE Release() override{ ULONG n=(ULONG)InterlockedDecrement((LONG*)&ref_); if(!n)delete this; return n; }
+  HRESULT STDMETHODCALLTYPE Invoke(HRESULT,ICoreWebView2Controller*) override; };
+
+// A use-after-free inside third-party COM code must never be able to take the app
+// down. put_Bounds is a POD-only call, so an SEH guard is legal here (no C++ objects
+// to unwind); on fault we drop the pointer and the splash just stops moving.
+static bool SafeBounds(ICoreWebView2Controller* c,RECT b){   // this SDK types bounds as RECT
+  __try{ if(!c) return false; return SUCCEEDED(c->put_Bounds(b)); }
+  __except(EXCEPTION_EXECUTE_HANDLER){ LogF("splash put_bounds FAULTED - ignored"); return false; } }
+
+struct CSplashPane;
+struct SplashNavH : public ICoreWebView2NavigationCompletedEventHandler {
+  CSplashPane* self_; volatile LONG ref_;
+  SplashNavH(CSplashPane* s):self_(s),ref_(1){}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,void** o) override{
+    if(!o)return E_INVALIDARG; *o=nullptr;
+    if(riid==__uuidof(IUnknown)||riid==__uuidof(ICoreWebView2NavigationCompletedEventHandler)){ *o=this; InterlockedIncrement((LONG*)&ref_); return S_OK; }
+    return E_NOINTERFACE; }
+  ULONG STDMETHODCALLTYPE AddRef() override{ return (ULONG)InterlockedIncrement((LONG*)&ref_); }
+  ULONG STDMETHODCALLTYPE Release() override{ ULONG n=(ULONG)InterlockedDecrement((LONG*)&ref_); if(!n)delete this; return n; }
+  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*) override; };
+
+class CSplashPane : public CUiWnd {
+public:
+  ICoreWebView2Controller* m_ctl=nullptr; ICoreWebView2* m_wv=nullptr;
+  BOOL CreateSplash(CWnd* p){ return CreateUi(p,906); }
+  void Place(){ if(!GetSafeHwnd())return; CRect pr; GetParent()->GetClientRect(pr);
+    int w=Px(SPLASH_W),h=Px(SPLASH_H);
+    MoveWindow((pr.Width()-w)/2,(pr.Height()-h)/2,w,h);
+    // NO region: an HRGN edge is never antialiased, so clipping can only ever give a
+    // staircase. The pane stays rectangular and paints a pixel-exact copy of the
+    // wallpaper behind it (invisible against the real one), then draws the rounded
+    // card itself with GDI+ antialiasing. Smooth corners, no clip.
+    SetWindowRgn(nullptr,FALSE);
+    if(m_ctl && !SafeBounds(m_ctl,RECT{0,0,w,h})){
+      LogF("splash controller unusable - releasing it, app keeps running"); m_ctl=nullptr; } }
+  void ShowSplash(){ Place(); ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTop,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    LogF("splash shown %dx%d",Px(SPLASH_W),Px(SPLASH_H)); Init(); }
+  void HideSplash(){ if(IsWindowVisible()){ ShowWindow(SW_HIDE); LogF("splash dismissed (5 s)"); } }
+  void Init(){
+    ::CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);   // S_FALSE / RPC_E_CHANGED_MODE are fine
+    wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH,tmp);
+    std::wstring udf=std::wstring(tmp)+L"unplugged_splash";   // module dir may be read-only
+    // The API AddRefs only once it commits to calling the handler. On a FAILED
+    // return it never will, so the only safe Release() is on the success path --
+    // releasing unconditionally deleted the handler while WebView2 still held the
+    // pointer, and its later Invoke() crashed on freed memory.
+    SplashEnvH* h=new SplashEnvH(this);
+    HRESULT hr=CreateCoreWebView2EnvironmentWithOptions(nullptr,udf.c_str(),nullptr,h);
+    LogF("splash env begin hr=0x%08X",hr);
+    if(FAILED(hr)) h->Release(); }
+  HRESULT OnEnv(HRESULT r,ICoreWebView2Environment* env){
+    if(FAILED(r)||!env){ LogF("splash env FAILED hr=0x%08X",r); return r; }
+    LogF("splash env ok");
+    SplashCtrlH* h=new SplashCtrlH(this);
+    HRESULT hr=env->CreateCoreWebView2Controller(m_hWnd,h);
+    LogF("splash controller requested hr=0x%08X",hr);
+    if(FAILED(hr)) h->Release();
+    return hr; }
+  HRESULT OnCtrl(HRESULT r,ICoreWebView2Controller* c){
+    if(FAILED(r)||!c){ LogF("splash controller FAILED hr=0x%08X",r); return r; }
+    // The Invoke parameter is [in]: valid only for the duration of the callback.
+    // Storing it without AddRef let WebView2 release the controller when Invoke
+    // returned -- refcount 0, controller destroyed. That single mistake produced
+    // BOTH symptoms: the grey non-rendering box (its own surface torn down, so
+    // NavigationCompleted never fired) and the later access violation when
+    // put_Bounds walked the freed vtable. Take our own reference.
+    m_ctl=c; m_ctl->AddRef();
+    CRect rc; GetClientRect(rc);
+    RECT b={0,0,rc.Width(),rc.Height()};
+    if(!SafeBounds(m_ctl,b)){ LogF("splash bounds failed at create"); }
+    // 1.3.0's wrapper paints html/body TRANSPARENT (it relies on a translucent Qt
+    // widget); WebView2's own default surface is GRAY, so the transparent page
+    // showed as a grey box. Set the controller surface to the card colour instead.
+    ICoreWebView2Controller2* c2=nullptr;
+    if(SUCCEEDED(m_ctl->QueryInterface(__uuidof(ICoreWebView2Controller2),(void**)&c2))&&c2){
+      // TRANSPARENT surface: the page's html/body are transparent and only
+      // .anim-card paints #0e0e10 with r16 corners, so an opaque surface here drew
+      // a hard square plate behind the rounded card.
+      COREWEBVIEW2_COLOR bg; bg.A=0; bg.R=0; bg.G=0; bg.B=0;
+      HRESULT hb=c2->put_DefaultBackgroundColor(bg); c2->Release();
+      LogF("splash controller bg hr=0x%08X",hb); }
+    else LogF("splash no ICoreWebView2Controller2 (bg stays grey)");
+    if(FAILED(m_ctl->get_CoreWebView2(&m_wv))||!m_wv){ LogF("splash no core webview"); return S_OK; }
+    ICoreWebView2Settings* st=nullptr;
+    if(SUCCEEDED(m_wv->get_Settings(&st))&&st){
+      st->put_IsScriptEnabled(FALSE);                      // = 1.3.0's JavascriptEnabled False; the
+      st->Release(); }                                     // fragment is pure CSS, it needs no script
+    // Does the document ever actually finish loading? Answer it from the log.
+    EventRegistrationToken tok; SplashNavH* nh=new SplashNavH(this);
+    HRESULT ha=m_wv->add_NavigationCompleted(nh,&tok); nh->Release();
+    LogF("splash nav handler hr=0x%08X",ha);
+    std::wstring f=SplashAssetFile();
+    if(f.empty()){ LogF("splash asset NOT FOUND"); return S_OK; }
+    std::ifstream in(f.c_str(),std::ios::binary);
+    std::string frag((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+    LogF("splash loading '%S' bytes=%d",f.c_str(),(int)frag.size());
+    HRESULT h3=m_wv->NavigateToString(SplashPage(Widen(PlayOnce(frag))).c_str());
+    LogF("splash NavigateToString hr=0x%08X",h3); return S_OK; }
+protected:
+  // Paint the card ourselves with antialiasing, over a pad that shows the REAL
+  // wallpaper behind the pane. A flat pad colour (10,10,10) next to the bright
+  // spark trail (measured 98,84,45 at the corner) made every step of the clip
+  // edge read as a hard notch; matching the background makes the transition
+  // invisible and only the card's own curve remains.
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    dc.FillSolidRect(rc,RGB(10,10,10));
+    RECT hs,ps;
+    if(g_host&&::GetWindowRect(g_host,&hs)&&::GetWindowRect(m_hWnd,&ps)){
+      HBITMAP cv=WallCanvas();
+      if(cv){ HDC m2=CreateCompatibleDC(dc.GetSafeHdc());
+        HBITMAP o2=(HBITMAP)SelectObject(m2,cv);
+        BitBlt(dc.GetSafeHdc(),0,0,rc.Width(),rc.Height(),m2,
+               ps.left-hs.left,ps.top-hs.top,SRCCOPY);        // same pixels, offset
+        SelectObject(m2,o2); DeleteDC(m2); } }
+    Gdiplus::Graphics g(dc.GetSafeHdc());
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    Gdiplus::RectF r(2.0f,2.0f,(Gdiplus::REAL)rc.Width()-4,(Gdiplus::REAL)rc.Height()-4);
+    Gdiplus::GraphicsPath p; Gdiplus::REAL d=Gdiplus::REAL(Px(32));
+    p.AddArc(r.X,r.Y,d,d,180,90); p.AddArc(r.X+r.Width-d,r.Y,d,d,270,90);
+    p.AddArc(r.X+r.Width-d,r.Y+r.Height-d,d,d,0,90); p.AddArc(r.X,r.Y+r.Height-d,d,d,90,90);
+    p.CloseFigure();
+    Gdiplus::SolidBrush card(Gdiplus::Color(255,14,14,16)); g.FillPath(&card,&p);
+    // the card's 1.5px rgba(100,100,100,180) border, drawn here (antialiased) because
+    // the wrapper below makes the page's own card chrome transparent
+    Gdiplus::Pen bp(Gdiplus::Color(255,100,100,100),Gdiplus::REAL(2.0));
+    g.DrawPath(&bp,&p); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CSplashPane,CUiWnd) ON_WM_PAINT() END_MESSAGE_MAP()
+// Defined here so CSplashPane is complete.
+HRESULT SplashEnvH::Invoke(HRESULT r,ICoreWebView2Environment* env){ return self_->OnEnv(r,env); }
+HRESULT SplashCtrlH::Invoke(HRESULT r,ICoreWebView2Controller* c){ return self_->OnCtrl(r,c); }
+HRESULT SplashNavH::Invoke(ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* e){
+  BOOL ok=FALSE; if(e) e->get_IsSuccess(&ok);        // get_HttpStatus lives on ...EventArgs2
+  LogF("splash NavigationCompleted success=%d",(int)ok); return S_OK; }
+
+// ============================ MEDIA LIBRARY =================================
+// The poster grid, ported from ui/media_library_panel.py.
+//
+// It reads the SAME index 1.3.0 builds and keeps in step with the disk:
+//   %LOCALAPPDATA%\Unplugged\library\library.db  (SQLite, WAL)   media/library.py:6,68-70
+//   %LOCALAPPDATA%\Unplugged\library\art\*.jpg   (360x540 posters)
+// so no second scanner, second thumbnail cache and no OMDb client is reinvented
+// here. SQLite comes from winsqlite3.dll (ships with Windows 10+), loaded at
+// runtime, so the project gains no third-party link dependency.
+// If the index is missing or empty the grid falls back to walking the configured
+// media folder for .mkv/.mp4 with artwork.py's sidecar rules, so the screen is
+// never dead just because a scan never ran.
+namespace SQ {
+  typedef void* DB; typedef void* ST;
+  typedef int (*open_v2_t)(const char*,DB*,int,const char*);
+  typedef int (*close_t)(DB);
+  typedef int (*busy_t)(DB,int);
+  typedef int (*prep_t)(DB,const char*,int,ST*,const char**);
+  typedef int (*step_t)(ST);
+  typedef int (*fin_t)(ST);
+  typedef const unsigned char* (*text_t)(ST,int);
+  typedef long long (*i64_t)(ST,int);
+  typedef double (*dbl_t)(ST,int);
+  typedef int (*bind_t)(ST,int,const char*,int,void*);
+  typedef int (*bind_i64_t)(ST,int,long long);
+  typedef int (*bind_dbl_t)(ST,int,double);
+  static HMODULE h=0; static open_v2_t p_open; static close_t p_close; static busy_t p_busy;
+  static prep_t p_prep; static step_t p_step; static fin_t p_fin; static text_t p_text;
+  static i64_t p_i64; static dbl_t p_dbl; static bind_t p_bind;
+  static bind_i64_t p_bind_i64; static bind_dbl_t p_bind_dbl;
+  static const int ROW=100, READWRITE=0x00000002;
+  static bool Load(){
+    if(h) return true;
+    h=LoadLibraryW(L"winsqlite3.dll"); if(!h) return false;
+    p_open=(open_v2_t)GetProcAddress(h,"sqlite3_open_v2");
+    p_close=(close_t)GetProcAddress(h,"sqlite3_close");
+    p_busy=(busy_t)GetProcAddress(h,"sqlite3_busy_timeout");
+    p_prep=(prep_t)GetProcAddress(h,"sqlite3_prepare_v2");
+    p_step=(step_t)GetProcAddress(h,"sqlite3_step");
+    p_fin=(fin_t)GetProcAddress(h,"sqlite3_finalize");
+    p_text=(text_t)GetProcAddress(h,"sqlite3_column_text");
+    p_i64=(i64_t)GetProcAddress(h,"sqlite3_column_int64");
+    p_dbl=(dbl_t)GetProcAddress(h,"sqlite3_column_double");
+    p_bind=(bind_t)GetProcAddress(h,"sqlite3_bind_text");
+    p_bind_i64=(bind_i64_t)GetProcAddress(h,"sqlite3_bind_int64");
+    p_bind_dbl=(bind_dbl_t)GetProcAddress(h,"sqlite3_bind_double");
+    return p_open&&p_close&&p_prep&&p_step&&p_fin&&p_text&&p_i64&&p_bind; }
+}
+
+struct LItem{ std::wstring path,folder,title,epTitle,kind,art,seasonArt,showArt;
+              int year=0,season=0,episode=0; long long size=0;
+              int watched=0,present=1; double lastPos=0,duration=0; long long lastSeen=0;
+  // Item.label, media/library.py:106-110
+  std::wstring label() const { wchar_t b[600];
+    if(kind==L"episode") return epTitle.empty() ? (swprintf(b,600,L"Episode %d",episode),b)
+                                                : (swprintf(b,600,L"%02d. %s",episode,epTitle.c_str()),b);
+    return year ? (swprintf(b,600,L"%s (%d)",title.c_str(),year),b) : title; } };
+// windows.h defines max/min as function macros, which also expand through std::max(),
+// so the library code uses these instead.
+static inline int IMIN(int a,int b){ return a<b?a:b; }
+static inline int IMAX(int a,int b){ return a>b?a:b; }
+static Gdiplus::Color GColor(COLORREF c,int a=255){
+  return Gdiplus::Color(a,GetRValue(c),GetGValue(c),GetBValue(c)); }
+// kind: 0 playable file, 1 show, 2 season, 3 folder  (K_MOVIE/K_SHOW/K_SEASON/K_FOLDER)
+struct Tile{ int kind=0; std::wstring title,sub,art,path,ext,infoLine; long long size=0; int season=0,episode=0;
+             int watched=0; bool avail=true; double lastPos=0,duration=0; int pct=-1;
+             bool contEp=false;   // TV Continue tile: poster resumes, chip opens the series
+             bool epStatus=false; // episode grid: always show the watched timeline (even 0%)
+             int seriesSeasons=0,seriesEps=0; // show cards: chip label + Watched subtitle
+             long long lastSeen=0; };
+// LItem also needs the extension for the caption/info line (library.py:102-103)
+
+// Defined further down; the scanner's OMDb lookup needs them here.
+static std::string ReadTextFile(const std::wstring& p);
+static std::wstring JStr(const std::string& j,const char* key);
+static HWND g_scanNotify=0;      // pane that shows "Updating library..." progress
+
+// ---- name_parse.py port ----------------------------------------------------
+// Same rules as 1.3.0: release junk ends the title, the LAST plausible year
+// wins, SxxEyy/NxNN then season folders then leading episode numbers.
+struct PName{ std::wstring kind=L"movie",title,epTitle; int year=0,season=-1,episode=-1; };
+static std::wstring PLower(std::wstring s){ for(auto&c:s) c=towlower(c); return s; }
+// Display-only title normalisation: a filename like "the.dog.stars.2026.mkv"
+// parses to an all-lowercase title. Only all-lowercase titles are touched, so
+// intentional casing ("iPhone", "SE7EN", "IMAX") and acronyms survive.
+static std::wstring TitleCapWord(std::wstring w){
+  bool start=true;
+  for(size_t i=0;i<w.size();++i){ wchar_t c=w[i];
+    if(iswalpha((wint_t)c)){ if(start){ w[i]=(wchar_t)towupper(c); start=false; } }
+    else if(c==L'-') start=true; }
+  return w; }
+static std::wstring NormTitle(const std::wstring& in){
+  bool letter=false,upper=false;
+  for(wchar_t c:in){ if(iswalpha((wint_t)c)){ letter=true; if(iswupper((wint_t)c)) upper=true; } }
+  if(!letter||upper) return in;
+  static const wchar_t* kSmall[]={L"a",L"an",L"the",L"and",L"but",L"or",L"nor",L"for",
+    L"so",L"yet",L"at",L"by",L"in",L"of",L"on",L"to",L"up",L"as",L"vs",L"via",L"from",L"with"};
+  std::vector<std::wstring> words; std::wstring cur;
+  for(wchar_t c:in){ if(c==L' '){ words.push_back(cur); cur.clear(); } else cur+=c; }
+  words.push_back(cur);
+  int last=-1; for(size_t i=0;i<words.size();++i) if(!words[i].empty()) last=(int)i;
+  for(size_t i=0;i<words.size();++i){ if(words[i].empty()) continue;
+    std::wstring k; for(wchar_t c:words[i]) if(iswalpha((wint_t)c)) k+=(wchar_t)towlower(c);
+    bool smallw=false; for(auto s:kSmall) if(k==s){ smallw=true; break; }
+    if(smallw&&i!=0&&(int)i!=last) continue;
+    words[i]=TitleCapWord(words[i]); }
+  std::wstring out; for(size_t i=0;i<words.size();++i){ if(i) out+=L' '; out+=words[i]; }
+  return out; }
+static std::wstring PLeaf(const std::wstring& p){ size_t k=p.find_last_of(L"\\/"); return k==std::wstring::npos?p:p.substr(k+1); }
+static std::wstring PParent(const std::wstring& p){ size_t k=p.find_last_of(L"\\/");
+  if(k==std::wstring::npos) return L"";
+  if(k==2&&p.size()>2&&p[1]==L':') return p.substr(0,3);
+  return p.substr(0,k); }
+static std::wstring PStem(const std::wstring& p){ std::wstring f=PLeaf(p); size_t d=f.find_last_of(L'.');
+  return d==std::wstring::npos?f:f.substr(0,d); }
+static std::wstring PExtLower(const std::wstring& n){ size_t d=n.find_last_of(L'.');
+  return d==std::wstring::npos?std::wstring():PLower(n.substr(d)); }
+static std::wstring PTidy(std::wstring s){
+  std::wstring o;
+  for(size_t i=0;i<s.size();){ wchar_t c=s[i];
+    if(c==L'['||c==L'{'){ wchar_t close=(c==L'[')?L']':L'}'; size_t j=s.find(close,i+1);
+      i=(j==std::wstring::npos)?s.size():j+1; o+=L' '; }
+    else { o+=c; ++i; } }
+  for(auto&c:o) if(c==L'.'||c==L'_') c=L' ';
+  for(;;){ size_t e=o.find_last_not_of(L" \t\r\n"); if(e==std::wstring::npos){ o.clear(); break; }
+    o.resize(e+1); if(o.back()==L'-'||o.back()==L'(') o.pop_back(); else break; }
+  std::wstring r; for(wchar_t c:o){ if(c==L' '&&!r.empty()&&r.back()==L' ') continue; r+=c; }
+  size_t a=r.find_first_not_of(L" -."), b=r.find_last_not_of(L" -.");
+  return (a==std::wstring::npos)?L"":r.substr(a,b-a+1); }
+static std::wstring PCutJunk(std::wstring s){
+  for(auto&c:s) if(c==L'.'||c==L'_') c=L' ';
+  static const std::wregex re(L"\\b(?:2160p|1080[pi]|720p|576[pi]|480[pi]|4k|uhd|hdr10\\+?|hdr|dv|dovi|"
+    L"dolby\\s?vision|blu-?ray|bdrip|brrip|bdremux|remux|web-?dl|web-?rip|webrip|web|hdtv|dvdrip|dvd|"
+    L"x26[45]|h\\.?26[45]|hevc|avc|xvid|divx|aac|ac3|eac3|dts(?:-hd)?|truehd|atmos|flac|"
+    L"ddp?\\d?\\.?\\d?|10bit|8bit|proper|repack|extended|unrated|remastered|imax|hybrid|multi|"
+    L"dual|subbed|internal)\\b",std::regex::icase);
+  std::wsmatch m; if(std::regex_search(s,m,re)) return s.substr(0,m.position()); return s; }
+static bool PTitleYear(const std::wstring& text,std::wstring& title,int& year){
+  std::wstring head=PCutJunk(text);
+  static const std::wregex yr(L"19[2-9][0-9]|20[0-4][0-9]");
+  int last=-1; std::wstring yy;
+  for(std::wsregex_iterator it(head.begin(),head.end(),yr),end; it!=end; ++it){
+    size_t pos=it->position(), len=it->length();
+    bool lok=(pos==0)||!iswdigit(head[pos-1]);
+    bool rok=(pos+len>=head.size())||!iswdigit(head[pos+len]);
+    if(lok&&rok){ last=(int)pos; yy=(*it)[0].str(); } }
+  if(last>=0){ std::wstring t=PTidy(head.substr(0,last));
+    if(!t.empty()){ title=t; year=_wtoi(yy.c_str()); return true; } }
+  std::wstring t=PTidy(head); if(t.empty()) t=PTidy(text);
+  title=t; year=0; return false; }
+static int PSeasonDir(const std::wstring& n){
+  static const std::wregex re(L"^(?:season|series|staffel|saison|temporada)[ ._-]*(\\d{1,2})$|^s(\\d{1,2})$",
+                              std::regex::icase);
+  std::wsmatch m; if(!std::regex_match(n,m,re)) return -1;
+  return _wtoi(m[1].matched?m[1].str().c_str():m[2].str().c_str()); }
+static std::wstring PShowFromDirs(const std::wstring& parent,const std::wstring& grand,int dirSeason){
+  std::wstring name=(dirSeason>=0)?grand:parent; if(name.empty()) return L"";
+  std::wstring t; int y; PTitleYear(name,t,y); return t; }
+static PName PParse(const std::wstring& path){
+  PName out; std::wstring stem=PStem(path), parent=PLeaf(PParent(path));
+  std::wstring gp=PParent(path), grand=gp.empty()?L"":PLeaf(PParent(gp));
+  int ds=PSeasonDir(parent);
+  static const std::wregex sxx(L"\\bS(\\d{1,2})[ ._-]*E(\\d{1,3})(?:[ ._-]*E?\\d{1,3})*\\b",std::regex::icase);
+  static const std::wregex nxn(L"(^|[^0-9])(\\d{1,2})x(\\d{2,3})([^0-9]|$)");
+  std::wsmatch m; int season=0,ep=0; size_t cutA=0,cutB=0; bool hit=false;
+  if(std::regex_search(stem,m,sxx)){ hit=true; season=_wtoi(m[1].str().c_str()); ep=_wtoi(m[2].str().c_str());
+    cutA=m.position(0); cutB=cutA+m.length(0); }
+  else if(std::regex_search(stem,m,nxn)){ hit=true; season=_wtoi(m[2].str().c_str()); ep=_wtoi(m[3].str().c_str());
+    cutA=m.position(2); cutB=m.position(3)+m.length(3); }
+  if(hit){
+    std::wstring show=PTidy(PCutJunk(stem.substr(0,cutA)));
+    if(!show.empty()){ std::wstring t; int y; PTitleYear(show,t,y); show=t; }
+    std::wstring epT=PTidy(PCutJunk(stem.substr(cutB)));
+    if(show.empty()) show=PShowFromDirs(parent,grand,ds);
+    out.kind=L"episode"; out.title=show.empty()?PTidy(stem):show;
+    out.season=season; out.episode=ep; out.epTitle=epT; return out; }
+  static const std::wregex lead(L"^(?:e|ep|episode)?[ ._-]*(\\d{1,3})(?:\\b|[ ._-])",std::regex::icase);
+  if(ds>=0&&std::regex_search(stem,m,lead)&&m.position(0)==0){
+    std::wstring show=PShowFromDirs(parent,grand,ds);
+    if(!show.empty()){ out.kind=L"episode"; out.title=show; out.season=ds;
+      out.episode=_wtoi(m[1].str().c_str());
+      out.epTitle=PTidy(PCutJunk(stem.substr(m.position(0)+m.length(0)))); return out; } }
+  std::wstring title; int year=0; PTitleYear(stem,title,year);
+  if(year==0&&!parent.empty()){ std::wstring ft; int fy=0; PTitleYear(parent,ft,fy);
+    if(fy!=0&&!ft.empty()){ out.title=ft; out.year=fy; return out; } }
+  out.kind=L"movie"; out.title=title.empty()?PTidy(stem):title; out.year=year; return out; }
+
+struct Lib{
+  SQ::DB db=0; bool ok=false; std::wstring artDir;
+  std::vector<std::wstring> rootsCached;
+  static std::wstring Col(SQ::ST s,int i){ const unsigned char* t=SQ::p_text(s,i);
+    return t? Widen((const char*)t) : std::wstring(); }
+  bool Open(){
+    if(!SQ::Load()){ LogF("library: winsqlite3.dll unavailable"); return false; }
+    wchar_t la[MAX_PATH]; if(!GetEnvironmentVariableW(L"LOCALAPPDATA",la,MAX_PATH)) return false;
+    std::wstring base=std::wstring(la)+L"\\Unplugged\\library";
+    artDir=base+L"\\art";
+    std::wstring dbp=base+L"\\library.db";
+    if(GetFileAttributesW(dbp.c_str())==INVALID_FILE_ATTRIBUTES){ LogF("library: no index at '%S'",dbp.c_str()); return false; }
+    std::string u8=Narrow(dbp);
+    if(SQ::p_open(u8.c_str(),&db,SQ::READWRITE,nullptr)!=0||!db){ db=0; LogF("library: cannot open index"); return false; }
+    if(SQ::p_busy) SQ::p_busy(db,2000);
+    { SQ::ST s=0; if(!SQ::p_prep(db,"ALTER TABLE items ADD COLUMN last_seen REAL DEFAULT 0",-1,&s,nullptr)){
+        SQ::p_step(s); SQ::p_fin(s); }
+      SQ::ST t=0; if(!SQ::p_prep(db,"ALTER TABLE items ADD COLUMN duration REAL DEFAULT 0",-1,&t,nullptr)){
+        SQ::p_step(t); SQ::p_fin(t); }
+      const char* cols[]={"ALTER TABLE items ADD COLUMN probe_json TEXT",
+        "ALTER TABLE items ADD COLUMN probe_key TEXT",
+        "ALTER TABLE items ADD COLUMN genre TEXT",
+        "ALTER TABLE items ADD COLUMN art_checked REAL DEFAULT 0"};
+      for(const char* sql:cols){ SQ::ST s=0;
+        if(!SQ::p_prep(db,sql,-1,&s,nullptr)){ SQ::p_step(s); SQ::p_fin(s); } } }
+    ok=true; LogF("library: index open, %ld present titles",Count()); return true; }
+  long Count(){ SQ::ST s=0; long n=0;
+    if(!ok||SQ::p_prep(db,"SELECT COUNT(*) FROM items WHERE present=1",-1,&s,nullptr)) return 0;
+    if(SQ::p_step(s)==SQ::ROW) n=(long)SQ::p_i64(s,0); SQ::p_fin(s); return n; }
+  std::vector<std::wstring> Roots(){
+    std::vector<std::wstring> v; SQ::ST s=0; if(!ok) return v;
+    if(SQ::p_prep(db,"SELECT path FROM roots ORDER BY path",-1,&s,nullptr)) return v;
+    while(SQ::p_step(s)==SQ::ROW) v.push_back(Col(s,0)); SQ::p_fin(s); return v; }
+  // History deliberately includes present=0 rows: the scanner keeps missing titles
+  // for its purge window, and that window IS the "storage detached" memory.
+  std::vector<LItem> History(){
+    std::vector<LItem> v; SQ::ST s=0; if(!ok) return v;
+    if(SQ::p_prep(db,"SELECT kind,title,year,season,episode,episode_title,path,folder,size,"
+      "art,season_art,show_art,watched,last_pos,present FROM items "
+      "WHERE last_seen>0 ORDER BY last_seen DESC LIMIT 200",-1,&s,nullptr)) return v;
+    while(SQ::p_step(s)==SQ::ROW){ LItem it;
+      it.kind=Col(s,0); it.title=Col(s,1); it.year=(int)SQ::p_i64(s,2);
+      it.season=(int)SQ::p_i64(s,3); it.episode=(int)SQ::p_i64(s,4);
+      it.epTitle=Col(s,5); it.path=Col(s,6); it.folder=Col(s,7); it.size=SQ::p_i64(s,8);
+      it.art=Col(s,9); it.seasonArt=Col(s,10); it.showArt=Col(s,11);
+      it.watched=(int)SQ::p_i64(s,12);
+      it.lastPos=SQ::p_dbl?SQ::p_dbl(s,13):(double)SQ::p_i64(s,13);
+      it.present=(int)SQ::p_i64(s,14); v.push_back(it); }
+    SQ::p_fin(s); LogF("library: history %d rows",(int)v.size()); return v; }
+  bool WriteHistory(const std::wstring& path,double seconds,double duration,bool watched){
+    if(!ok||!SQ::p_bind_dbl||!SQ::p_bind_i64) return false;
+    SQ::ST s=0;
+    if(SQ::p_prep(db,"UPDATE items SET last_pos=?,watched=?,last_seen=?,duration=? WHERE path=?",-1,&s,nullptr)) return false;
+    std::string p8=Narrow(path); long long now=(long long)time(nullptr);
+    SQ::p_bind_dbl(s,1,watched?0.0:seconds);
+    SQ::p_bind_i64(s,2,watched?1:0); SQ::p_bind_i64(s,3,now);
+    SQ::p_bind_dbl(s,4,duration);
+    SQ::p_bind(s,5,p8.c_str(),(int)p8.size(),(void*)-1);
+    int rc=SQ::p_step(s); SQ::p_fin(s);
+    LogF("history write '%s' pos=%.1f dur=%.1f watched=%d rc=%d",
+         Narrow(path).c_str(),seconds,duration,watched?1:0,rc);
+    return rc==SQ::ROW||rc==101;   // SQLITE_ROW/DONE: UPDATE reports DONE on success
+  }
+  // ---- media facts (probe cache + OMDb genre) ------------------------------
+  struct MetaRow{ std::wstring genre; std::string probe; int year=0; double duration=0; };
+  bool MetaFor(const std::wstring& path,MetaRow& m){
+    SQ::ST s=Prep("SELECT genre,probe_json,year,duration FROM items WHERE path=?");
+    if(!s) return false; bool ok=false; BText(s,1,path);
+    if(SQ::p_step(s)==SQ::ROW){ ok=true; m.genre=Col(s,0);
+      m.probe=Narrow(Col(s,1)); m.year=(int)SQ::p_i64(s,2);
+      m.duration=SQ::p_dbl?SQ::p_dbl(s,3):0.0; }
+    SQ::p_fin(s); return ok; }
+  bool SeriesMeta(const std::wstring& show,int season,std::wstring& genre,
+                  std::string& probe,int& year,int& eps){
+    genre.clear(); probe.clear(); year=0; eps=0;
+    std::string sql="SELECT genre,probe_json,present,year FROM items WHERE kind='episode' "
+                    "AND title=? COLLATE NOCASE";
+    if(season>=0) sql+=" AND season=?";
+    SQ::ST s=Prep(sql.c_str()); if(!s) return false;
+    BText(s,1,show);
+    if(season>=0) SQ::p_bind_i64(s,2,season);
+    while(SQ::p_step(s)==SQ::ROW){
+      std::wstring g=Col(s,0); std::wstring p=Col(s,1); int present=(int)SQ::p_i64(s,2);
+      int y=(int)SQ::p_i64(s,3);
+      if(present) ++eps;
+      if(genre.empty()&&!g.empty()) genre=g;
+      if(year==0&&y>0) year=y;
+      if(present&&probe.empty()&&!p.empty()) probe=Narrow(p); }
+    SQ::p_fin(s); return true; }
+  struct ProbeRow{ std::wstring path,key; long long size=0; double mtime=0; };
+  static std::wstring ProbeKey(long long size,double mtime){
+    wchar_t b[64]; swprintf(b,64,L"p4|%lld|%lld",size,(long long)(mtime*1000.0)); return b; }
+  std::vector<ProbeRow> ProbeRows(){
+    std::vector<ProbeRow> v; SQ::ST s=Prep(
+      "SELECT path,size,mtime,COALESCE(probe_key,''),COALESCE(probe_json,'') "
+      "FROM items WHERE present=1");
+    if(!s) return v;
+    while(SQ::p_step(s)==SQ::ROW){
+      ProbeRow r; r.path=Col(s,0); r.size=SQ::p_i64(s,1);
+      r.mtime=SQ::p_dbl?SQ::p_dbl(s,2):0.0; r.key=Col(s,3);
+      std::wstring pj=Col(s,4);
+      // A key without a valid result is NOT probed: empty (failed/migrated write) or
+      // the all-zero record produced when ffprobe's stderr was parsed as JSON.
+      bool bad=pj.empty()||pj.find(L"\"res\":\"0x0\"")!=std::wstring::npos||
+               pj.find(L"\"dur\":0.000")!=std::wstring::npos;
+      if(r.key!=ProbeKey(r.size,r.mtime)||bad) v.push_back(r); }
+    SQ::p_fin(s); return v; }
+  bool SetProbe(const std::wstring& path,const std::string& probe,
+                long long size,double mtime,double duration){
+    SQ::ST s=Prep("UPDATE items SET probe_json=?,probe_key=?,duration=? WHERE path=?");
+    if(!s) return false;
+    std::string p=probe;
+    if(SQ::p_bind) SQ::p_bind(s,1,p.c_str(),(int)p.size(),(void*)-1);
+    BText(s,2,ProbeKey(size,mtime));
+    SQ::p_bind_dbl(s,3,duration); BText(s,4,path);
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  void ArtMap(std::map<std::wstring,std::wstring>& m){
+    SQ::ST s=Prep("SELECT path,COALESCE(art,'') FROM items WHERE present=1"); if(!s) return;
+    while(SQ::p_step(s)==SQ::ROW) m[Col(s,0)]=Col(s,1);
+    SQ::p_fin(s); }
+  void ShowArtMap(std::map<std::wstring,std::wstring>& m){
+    SQ::ST s=Prep("SELECT title,MAX(COALESCE(show_art,'')) FROM items WHERE present=1 "
+                  "AND kind='episode' GROUP BY title COLLATE NOCASE"); if(!s) return;
+    while(SQ::p_step(s)==SQ::ROW) m[PLower(Col(s,0))]=Col(s,1);
+    SQ::p_fin(s); }
+  static bool IsOnlineArt(const std::wstring& p){
+    if(p.empty()||GetFileAttributesW(p.c_str())==INVALID_FILE_ATTRIBUTES) return false;
+    std::wstring leaf=PLower(PLeaf(p));
+    return leaf.rfind(L"omdb_",0)==0||leaf.rfind(L"wiki_",0)==0; }
+  bool SetArtCheckedPkey(const std::wstring& pkey,double now){
+    SQ::ST s=Prep("UPDATE items SET art_checked=? WHERE pkey=?"); if(!s) return false;
+    SQ::p_bind_dbl(s,1,now); BText(s,2,pkey); int rc=SQ::p_step(s); SQ::p_fin(s);
+    return rc==SQ::ROW||rc==101; }
+  bool SetSeriesArtChecked(const std::wstring& show,double now){
+    SQ::ST s=Prep("UPDATE items SET art_checked=? WHERE kind='episode' AND title=? COLLATE NOCASE");
+    if(!s) return false;
+    SQ::p_bind_dbl(s,1,now); BText(s,2,show); int rc=SQ::p_step(s); SQ::p_fin(s);
+    return rc==SQ::ROW||rc==101; }
+  bool SetGenre(const std::wstring& path,const std::wstring& genre){
+    SQ::ST s=Prep("UPDATE items SET genre=? WHERE path=?"); if(!s) return false;
+    BText(s,1,genre); BText(s,2,path); int rc=SQ::p_step(s); SQ::p_fin(s);
+    return rc==SQ::ROW||rc==101; }
+  bool SetSeriesGenre(const std::wstring& show,const std::wstring& genre){
+    SQ::ST s=Prep("UPDATE items SET genre=? WHERE kind='episode' AND title=? COLLATE NOCASE");
+    if(!s) return false;
+    BText(s,1,genre); BText(s,2,show); int rc=SQ::p_step(s); SQ::p_fin(s);
+    return rc==SQ::ROW||rc==101; }
+  // ---- folders (FoldersDialog + set_roots) and the indexer ------------------
+  // The native shell had no way to add a library folder: the header's Folders...
+  // button only logged. This is the 1.3.0 dialog's write path, plus the same scan
+  // (library.py _Sync) for the .mkv/.mp4 extensions it indexes, so a folder added
+  // here actually fills the grid.
+  ~Lib(){ if(db&&SQ::p_close){ SQ::p_close(db); db=0; } }
+  static std::wstring NormKey(const std::wstring& p){
+    wchar_t full[4096]; DWORD n=GetFullPathNameW(p.c_str(),4096,full,nullptr);
+    std::wstring s=(n&&n<4096)?std::wstring(full,n):p;
+    for(auto&c:s){ if(c==L'/') c=L'\\'; c=towlower(c); }
+    while(s.size()>3&&s.back()==L'\\') s.pop_back();
+    return s; }
+  SQ::ST Prep(const char* sql){ SQ::ST s=0; if(!ok||SQ::p_prep(db,sql,-1,&s,nullptr)) return 0; return s; }
+  static void BText(SQ::ST s,int i,const std::wstring& v){ std::string u=Narrow(v);
+    if(SQ::p_bind) SQ::p_bind(s,i,u.c_str(),(int)u.size(),(void*)-1); }
+  bool Exec(const char* sql){ SQ::ST s=Prep(sql); if(!s) return false;
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  std::vector<std::wstring> UnreachableRoots(){ std::vector<std::wstring> v;
+    SQ::ST s=Prep("SELECT path FROM roots WHERE reachable=0 ORDER BY path"); if(!s) return v;
+    while(SQ::p_step(s)==SQ::ROW) v.push_back(Col(s,0)); SQ::p_fin(s); return v; }
+  bool SetRoots(const std::vector<std::wstring>& paths){
+    if(!ok) return false;
+    std::map<std::wstring,std::wstring> want;
+    for(auto p:paths){ size_t a=p.find_first_not_of(L" \t\r\n"),b=p.find_last_not_of(L" \t\r\n");
+      if(a==std::wstring::npos) continue; p=p.substr(a,b-a+1);
+      std::wstring k=NormKey(p); if(k.empty()||want.count(k)) continue; want[k]=p; }
+    std::vector<std::wstring> keys; for(auto&kv:want) keys.push_back(kv.first);
+    std::sort(keys.begin(),keys.end(),[](const std::wstring&a,const std::wstring&b){ return a.size()<b.size(); });
+    std::map<std::wstring,std::wstring> kept;
+    for(auto&k:keys){ bool child=false;
+      for(auto&o:kept){ std::wstring pre=o.first; if(pre.empty()||pre.back()!=L'\\') pre+=L'\\';
+        if(k.size()>pre.size()&&k.compare(0,pre.size(),pre)==0){ child=true; break; } }
+      if(!child) kept[k]=want[k]; }
+    std::vector<std::wstring> have;
+    { SQ::ST s=Prep("SELECT pkey FROM roots"); if(s){ while(SQ::p_step(s)==SQ::ROW) have.push_back(Col(s,0)); SQ::p_fin(s); } }
+    Exec("BEGIN");
+    for(auto&k:have){ if(kept.count(k)) continue;
+      { std::string k8=Narrow(k); SQ::ST s=Prep("DELETE FROM items WHERE root=?");
+        if(s){ SQ::p_bind(s,1,k8.c_str(),(int)k8.size(),(void*)-1); SQ::p_step(s); SQ::p_fin(s); }
+        s=Prep("DELETE FROM roots WHERE pkey=?");
+        if(s){ SQ::p_bind(s,1,k8.c_str(),(int)k8.size(),(void*)-1); SQ::p_step(s); SQ::p_fin(s); } } }
+    for(auto&kv:kept){ SQ::ST s=Prep("INSERT OR REPLACE INTO roots(pkey,path,added_at,reachable) VALUES(?,?,?,1)");
+      if(!s) continue; BText(s,1,kv.first); BText(s,2,kv.second);
+      if(SQ::p_bind_dbl) SQ::p_bind_dbl(s,3,(double)time(nullptr));
+      SQ::p_step(s); SQ::p_fin(s); }
+    Exec("COMMIT"); rootsCached.clear();
+    LogF("library: roots set to %d (was %d)",(int)kept.size(),(int)have.size());
+    return true; }
+  // -- scanner ----------------------------------------------------------------
+  static bool SkipDir(const std::wstring& low){
+    static const wchar_t* names[]={L"system volume information",L"$recycle.bin",L"recycler",L"windows",
+      L"program files",L"program files (x86)",L"programdata",L"appdata",L"extras",L"featurettes",
+      L"behind the scenes",L"deleted scenes",L"trailers",L"sample",L"samples"};
+    for(auto n:names) if(low==n) return true; return false; }
+  static bool SkipVideo(const std::wstring& lowstem){
+    if(lowstem==L"sample") return true;
+    static const wchar_t* suf[]={L"-trailer",L"-sample",L"-featurette",L"-behindthescenes",
+      L"-deleted",L"-interview",L".sample"};
+    for(auto s:suf){ size_t l=wcslen(s);
+      if(lowstem.size()>=l&&lowstem.compare(lowstem.size()-l,l,s)==0) return true; }
+    return false; }
+  static bool IsImageExt(const std::wstring& e){
+    return e==L".jpg"||e==L".jpeg"||e==L".png"||e==L".webp"; }
+  static void ListImages(const std::wstring& dir,std::map<std::wstring,std::wstring>& out){
+    out.clear(); WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((dir+L"\\*").c_str(),&fd);
+    if(h==INVALID_HANDLE_VALUE) return;
+    do{ if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+      std::wstring n=fd.cFileName, e=PExtLower(n);
+      if(IsImageExt(e)) out[PLower(n)]=n;
+    } while(FindNextFileW(h,&fd));
+    FindClose(h); }
+  static std::wstring PickImg(const std::map<std::wstring,std::wstring>& names,
+                              const std::vector<std::wstring>& stems,const std::wstring& dir){
+    const wchar_t* exts[]={L".jpg",L".jpeg",L".png",L".webp"};
+    for(auto&st:stems) for(auto e:exts){ auto it=names.find(st+e);
+      if(it!=names.end()){ std::wstring f=dir; if(!f.empty()&&f.back()!=L'\\') f+=L'\\';
+        f+=it->second; return f; } }
+    return L""; }
+  static bool FolderNamesShow(const std::wstring& folder,const std::wstring& title){
+    std::wstring leaf=PLower(PLeaf(folder)), t=PLower(title);
+    if(t.empty()||leaf.empty()) return false;
+    return leaf.find(t)!=std::wstring::npos || t.find(leaf)!=std::wstring::npos; }
+  void IndexFile(const std::wstring& path,const std::wstring& folder,const std::wstring& rkey,
+                 const std::map<std::wstring,std::wstring>& images,int nVideos,
+                 std::map<std::wstring,std::map<std::wstring,std::wstring>>& imgCache,
+                 std::set<std::wstring>& seen,int& added,int& updated){
+    std::wstring pkey=NormKey(path); seen.insert(pkey);
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&fad)) return;
+    long long size=((long long)fad.nFileSizeHigh<<32)|(long long)fad.nFileSizeLow;
+    double mtime=(double)((((long long)fad.ftLastWriteTime.dwHighDateTime)<<32)|
+                          (long long)fad.ftLastWriteTime.dwLowDateTime)/10000000.0-11644473600.0;
+    PName p=PParse(path);
+    std::wstring oldArt,oldSeason,oldShow; bool exists=false;
+    { SQ::ST q=Prep("SELECT art,season_art,show_art FROM items WHERE pkey=?");
+      if(q){ BText(q,1,pkey); if(SQ::p_step(q)==SQ::ROW){ exists=true;
+        oldArt=Col(q,0); oldSeason=Col(q,1); oldShow=Col(q,2); } SQ::p_fin(q); } }
+    std::wstring stem=PLower(PStem(path));
+    std::wstring art=PickImg(images,{stem+L"-poster",stem+L"-cover",stem,stem+L"-thumb",
+                                     stem+L"-fanart"},folder);
+    if(art.empty()&&p.kind==L"movie"&&nVideos==1)
+      art=PickImg(images,{L"poster",L"folder",L"cover",L"movie",L"show"},folder);
+    std::wstring seasonArt,showArt,showFolder;
+    if(p.kind==L"episode"){
+      int ds=PSeasonDir(PLeaf(folder));
+      showFolder=(p.season>=0&&ds>=0)?PParent(folder):folder;
+      const std::map<std::wstring,std::wstring>* sn=&images;
+      std::wstring sk=NormKey(showFolder);
+      if(sk!=NormKey(folder)){ auto it=imgCache.find(sk);
+        if(it==imgCache.end()){ std::map<std::wstring,std::wstring> im; ListImages(showFolder,im);
+          it=imgCache.insert(std::make_pair(sk,im)).first; }
+        sn=&it->second; }
+      if(FolderNamesShow(showFolder,p.title))
+        showArt=PickImg(*sn,{L"poster",L"folder",L"cover",L"movie",L"show"},showFolder);
+      if(p.season>0){ wchar_t a[32],b[32],c[32],d[32];
+        swprintf(a,32,L"season%02d-poster",p.season); swprintf(b,32,L"season%02d",p.season);
+        swprintf(c,32,L"season%d-poster",p.season); swprintf(d,32,L"season %d",p.season);
+        seasonArt=PickImg(*sn,{a,b,c,d},showFolder);
+        if(seasonArt.empty()&&ds>=0)
+          seasonArt=PickImg(images,{L"poster",L"folder",L"cover",L"movie",L"show"},folder); } }
+    // Online posters are authoritative: a rescan must not replace them with a
+    // sidecar/folder image or an MKV cover.
+    if(IsOnlineArt(oldArt)) art=oldArt; else if(art.empty()) art=oldArt;
+    if(seasonArt.empty()) seasonArt=oldSeason;
+    if(IsOnlineArt(oldShow)) showArt=oldShow; else if(showArt.empty()) showArt=oldShow;
+    int season=p.season>=0?p.season:0, ep=p.episode>=0?p.episode:0;
+    if(!exists){
+      SQ::ST s=Prep("INSERT INTO items(pkey,path,root,folder,size,mtime,kind,title,year,season,"
+        "episode,episode_title,show_folder,art,season_art,show_art,present,added_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)");
+      if(!s) return;
+      BText(s,1,pkey); BText(s,2,path); BText(s,3,rkey); BText(s,4,folder);
+      SQ::p_bind_i64(s,5,size); SQ::p_bind_dbl(s,6,mtime);
+      BText(s,7,p.kind); BText(s,8,p.title); SQ::p_bind_i64(s,9,p.year);
+      SQ::p_bind_i64(s,10,season); SQ::p_bind_i64(s,11,ep); BText(s,12,p.epTitle);
+      BText(s,13,showFolder); BText(s,14,art); BText(s,15,seasonArt); BText(s,16,showArt);
+      SQ::p_bind_dbl(s,17,(double)time(nullptr));
+      SQ::p_step(s); SQ::p_fin(s); ++added;
+    } else {
+      SQ::ST s=Prep("UPDATE items SET path=?,root=?,folder=?,size=?,mtime=?,kind=?,title=?,year=?,"
+        "season=?,episode=?,episode_title=?,show_folder=?,art=?,season_art=?,show_art=?,present=1,"
+        "missing_since=NULL WHERE pkey=?");
+      if(!s) return;
+      BText(s,1,path); BText(s,2,rkey); BText(s,3,folder);
+      SQ::p_bind_i64(s,4,size); SQ::p_bind_dbl(s,5,mtime);
+      BText(s,6,p.kind); BText(s,7,p.title); SQ::p_bind_i64(s,8,p.year);
+      SQ::p_bind_i64(s,9,season); SQ::p_bind_i64(s,10,ep); BText(s,11,p.epTitle);
+      BText(s,12,showFolder); BText(s,13,art); BText(s,14,seasonArt); BText(s,15,showArt);
+      BText(s,16,pkey);
+      SQ::p_step(s); SQ::p_fin(s); ++updated; } }
+  void ScanRoot(const std::wstring& rkey,const std::wstring& rpath,int& added,int& updated,int& missing){
+    DWORD attr=GetFileAttributesW(rpath.c_str());
+    bool reach=(attr!=INVALID_FILE_ATTRIBUTES&&(attr&FILE_ATTRIBUTE_DIRECTORY));
+    { SQ::ST s=Prep("UPDATE roots SET reachable=?,last_sync=? WHERE pkey=?");
+      if(s){ SQ::p_bind_i64(s,1,reach?1:0); SQ::p_bind_dbl(s,2,(double)time(nullptr));
+        BText(s,3,rkey); SQ::p_step(s); SQ::p_fin(s); } }
+    if(!reach){ LogF("library scan: root unavailable '%s' (titles kept)",Narrow(rpath).c_str()); return; }
+    std::set<std::wstring> exist;
+    { SQ::ST s=Prep("SELECT pkey FROM items WHERE root=?"); if(s){ BText(s,1,rkey);
+        while(SQ::p_step(s)==SQ::ROW) exist.insert(Col(s,0)); SQ::p_fin(s); } }
+    std::set<std::wstring> seen;
+    std::map<std::wstring,std::map<std::wstring,std::wstring>> imgCache;
+    std::vector<std::pair<std::wstring,int>> stack; stack.push_back(std::make_pair(rpath,0));
+    Exec("BEGIN");
+    while(!stack.empty()){
+      std::wstring d=stack.back().first; int depth=stack.back().second; stack.pop_back();
+      std::map<std::wstring,std::wstring> images; std::vector<std::wstring> files,dirs;
+      WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((d+L"\\*").c_str(),&fd);
+      if(h==INVALID_HANDLE_VALUE){ LogF("library scan: cannot list '%s'",Narrow(d).c_str()); continue; }
+      do{ std::wstring n=fd.cFileName; if(n==L"."||n==L"..") continue;
+        std::wstring full=d; if(!full.empty()&&full.back()!=L'\\') full+=L'\\'; full+=n;
+        if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){
+          if(depth>=10) continue;
+          std::wstring low=PLower(n);
+          if(low.empty()||low[0]==L'.'||low[0]==L'$'||SkipDir(low)) continue;
+          if(fd.dwFileAttributes&(FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM)) continue;
+          dirs.push_back(full);
+        } else { std::wstring e=PExtLower(n);
+          if(IsImageExt(e)) images[PLower(n)]=n;
+          else if(e==L".mkv"||e==L".mp4"){
+            std::wstring ls=PLower(PStem(n)); if(SkipVideo(ls)) continue;
+            files.push_back(full); } }
+      } while(FindNextFileW(h,&fd));
+      FindClose(h);
+      for(auto&f:files) IndexFile(f,d,rkey,images,(int)files.size(),imgCache,seen,added,updated);
+      for(auto&s:dirs) stack.push_back(std::make_pair(s,depth+1));
+      Exec("COMMIT"); Exec("BEGIN"); }
+    Exec("COMMIT");
+    double now=(double)time(nullptr);
+    for(auto&k:exist){ if(seen.count(k)) continue;
+      SQ::ST s=Prep("UPDATE items SET present=0,missing_since=? WHERE pkey=?");
+      if(s){ SQ::p_bind_dbl(s,1,now); BText(s,2,k); SQ::p_step(s); SQ::p_fin(s); ++missing; } } }
+  void ScanAll(){
+    if(!ok) return;
+    std::vector<std::pair<std::wstring,std::wstring>> roots;
+    { SQ::ST s=Prep("SELECT pkey,path FROM roots ORDER BY path"); if(!s) return;
+      while(SQ::p_step(s)==SQ::ROW) roots.push_back(std::make_pair(Col(s,0),Col(s,1)));
+      SQ::p_fin(s); }
+    int added=0,updated=0,missing=0; DWORD t0=GetTickCount();
+    LogF("library scan: %d root(s)",(int)roots.size());
+    for(auto&r:roots) ScanRoot(r.first,r.second,added,updated,missing);
+    Exec("DELETE FROM items WHERE root NOT IN (SELECT pkey FROM roots)");
+    LogF("library scan done in %lums: %d new, %d updated, %d missing",
+         (unsigned long)(GetTickCount()-t0),added,updated,missing);
+    // Posters/genres are fetched by the UI's own background pass AFTER the grid is
+    // shown, so a new folder appears immediately instead of waiting on OMDb.
+  }
+  // -- online posters (omdb.py): fill art for titles with no sidecar ----------
+  static std::wstring ExeDir(){
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+    std::wstring d(exe); size_t p=d.find_last_of(L'\\');
+    return p==std::wstring::npos?std::wstring(L"."):d.substr(0,p); }
+  static std::wstring OmdbKey(){
+    wchar_t up[MAX_PATH];
+    if(GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH)){
+      std::string j=ReadTextFile(std::wstring(up)+L"\\.unplugged\\app_config.json");
+      std::wstring k=JStr(j,"omdb_api_key"); if(!k.empty()&&k!=L"null") return k; }
+    std::wstring d=ExeDir();
+    const std::wstring c[5]={d+L"\\_omdb_key.py",d+L"\\_internal\\_omdb_key.py",
+      d+L"\\_internal\\mpvprocessor\\media\\_omdb_key.py",
+      d+L"\\..\\..\\src\\unplugged-ui\\src\\mpvprocessor\\media\\_omdb_key.py",
+      L"C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\src\\mpvprocessor\\media\\_omdb_key.py"};
+    for(auto&f:c){ std::string s=ReadTextFile(f); size_t k=s.find("OMDB_API_KEY");
+      if(k==std::string::npos) continue; size_t q1=s.find('"',k); if(q1==std::string::npos) continue;
+      size_t q2=s.find('"',q1+1); if(q2==std::string::npos) continue;
+      if(q2>q1+1) return Widen(s.substr(q1+1,q2-q1-1)); }
+    return L""; }
+  static std::wstring UrlEnc(const std::wstring& w){
+    std::string u=Narrow(w); std::wstring o;
+    const wchar_t* hex=L"0123456789ABCDEF";
+    for(char ch:u){ unsigned char c=(unsigned char)ch;
+      if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~') o+=(wchar_t)c;
+      else { o+=L'%'; o+=hex[c>>4]; o+=hex[c&15]; } }
+    return o; }
+  static bool HttpGet(const std::wstring& url,const std::wstring& dest){
+    return SUCCEEDED(URLDownloadToFileW(nullptr,url.c_str(),dest.c_str(),0,nullptr)); }
+  static std::string GetJsonUrl(const std::wstring& url){
+    wchar_t td[MAX_PATH],tf[MAX_PATH]; GetTempPathW(MAX_PATH,td); GetTempFileNameW(td,L"unp",0,tf);
+    std::string s; if(HttpGet(url,tf)) s=ReadTextFile(tf); DeleteFileW(tf); return s; }
+  static bool ImageDims(const std::wstring& f,int& w,int& h){
+    Gdiplus::Bitmap* b=Gdiplus::Bitmap::FromFile(f.c_str(),FALSE);
+    w=h=0; if(b&&b->GetLastStatus()==Gdiplus::Ok){ w=(int)b->GetWidth(); h=(int)b->GetHeight(); }
+    delete b; return w>0&&h>0; }
+  static bool PosterShaped(const std::wstring& f){
+    int w,h; if(!ImageDims(f,w,h)) return false;
+    return (double)h/w>=1.25; }
+  // Last resort: OMDb sometimes has only a wide promotional still (Born to be
+  // Wild 2025). The library paints non-2:3 art as contain + blurred backdrop, so
+  // a still is still usable; reject only banner-thin images/logos.
+  static bool WideUsable(const std::wstring& f){
+    int w,h; if(!ImageDims(f,w,h)) return false;
+    return h*2>=w; }
+  // "Euphoria US" is the scanner's folder-derived title; OMDb knows it as
+  // "Euphoria". Try the literal title first, then strip a trailing country tag.
+  static std::vector<std::wstring> OmdbCandidates(const std::wstring& title){
+    std::vector<std::wstring> v; v.push_back(title);
+    std::wstring t=title;
+    static const wchar_t* tags[]={L"US",L"UK",L"AU",L"CA",L"IE",L"NZ"};
+    for(auto tag:tags){
+      std::wstring p1=L" ("+std::wstring(tag)+L")", p2=L" "+std::wstring(tag);
+      if(t.size()>p1.size()&&t.compare(t.size()-p1.size(),p1.size(),p1)==0){ t=t.substr(0,t.size()-p1.size()); break; }
+      if(t.size()>p2.size()&&t.compare(t.size()-p2.size(),p2.size(),p2)==0){ t=t.substr(0,t.size()-p2.size()); break; } }
+    while(!t.empty()&&(t.back()==L' '||t.back()==L'-')) t.pop_back();
+    if(!t.empty()&&t!=title) v.push_back(t);
+    return v; }
+  bool FetchPoster(const std::wstring& key,const std::wstring& title,int year,
+                   const std::wstring& kind,std::wstring& outPath,
+                   std::wstring* genreOut=nullptr,bool needPoster=true){
+    outPath.clear();
+    // Try the literal title, then a country-stripped variant. OMDb has "Euphoria"
+    // but not the scanner's "Euphoria US" from the folder name.
+    std::string js;
+    for(auto&cand:OmdbCandidates(title)){
+      std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&t="+UrlEnc(cand);
+      if(year>0&&kind==L"movie") u+=L"&y="+std::to_wstring(year);
+      u+=L"&type="+kind;
+      wchar_t td[MAX_PATH],tf[MAX_PATH]; GetTempPathW(MAX_PATH,td); GetTempFileNameW(td,L"unp",0,tf);
+      js.clear(); if(HttpGet(u,tf)) js=ReadTextFile(tf); DeleteFileW(tf);
+      if(js.empty()){ LogF("library art: '%s' OMDb request failed as '%s'",
+                           Narrow(title).c_str(),Narrow(cand).c_str()); continue; }
+      if(JStr(js,"Response")==L"True"){
+        if(cand!=title) LogF("library art: '%s' matched OMDb as '%s'",
+                             Narrow(title).c_str(),Narrow(cand).c_str());
+        break; }
+      std::string msg=js.substr(0,160);
+      LogF("library art: '%s' not found on OMDb as '%s' (%s)",
+           Narrow(title).c_str(),Narrow(cand).c_str(),msg.c_str());
+      js.clear(); }
+    if(js.empty()) return false;
+    if(genreOut){ std::wstring g=JStr(js,"Genre"); if(!g.empty()&&g!=L"N/A") *genreOut=g; }
+    if(!needPoster) return false;
+    std::wstring imdb=JStr(js,"imdbID"), poster=JStr(js,"Poster");
+    std::vector<std::wstring> urls;
+    if(poster.find(L"http")==0&&poster!=L"N/A") urls.push_back(poster);
+    if(!imdb.empty())
+      urls.push_back(L"https://img.omdbapi.com/?i="+UrlEnc(imdb)+L"&h=900&apikey="+UrlEnc(key));
+    wchar_t fallback[MAX_PATH]={0}; std::wstring fbExt,fbId;
+    for(auto&url:urls){
+      wchar_t td2[MAX_PATH],tf2[MAX_PATH]; GetTempPathW(MAX_PATH,td2); GetTempFileNameW(td2,L"unp",0,tf2);
+      bool got=HttpGet(url,tf2); std::string magic; std::wstring ext;
+      if(got) magic=ReadTextFile(tf2);
+      if(magic.size()>3&&(unsigned char)magic[0]==0xFF&&(unsigned char)magic[1]==0xD8) ext=L".jpg";
+      else if(magic.size()>8&&(unsigned char)magic[0]==0x89&&magic[1]=='P'&&magic[2]=='N'&&magic[3]=='G') ext=L".png";
+      std::wstring id=imdb; if(id.empty()){ wchar_t b[32]; swprintf(b,32,L"%08x",(unsigned)title.size()); id=b; }
+      for(auto&c:id) if(!iswalnum((wint_t)c)) c=L'_';
+      if(!ext.empty()&&PosterShaped(tf2)){
+        std::wstring dest=artDir+L"\\omdb_"+id+ext;
+        CreateDirectoryW(artDir.c_str(),nullptr);
+        DeleteFileW(dest.c_str());
+        if(CopyFileW(tf2,dest.c_str(),FALSE)){ outPath=dest; DeleteFileW(tf2);
+          if(fallback[0]) DeleteFileW(fallback);
+          LogF("library art: '%s' -> %s",Narrow(title).c_str(),Narrow(dest).c_str()); return true; } }
+      else if(!fallback[0]&&!ext.empty()&&WideUsable(tf2)){
+        wcscpy_s(fallback,MAX_PATH,tf2); fbExt=ext; fbId=id; }
+      if(!(fallback[0]&&_wcsicmp(fallback,tf2)==0)) DeleteFileW(tf2); }
+    if(fallback[0]){
+      std::wstring dest=artDir+L"\\omdb_"+fbId+fbExt;
+      CreateDirectoryW(artDir.c_str(),nullptr);
+      DeleteFileW(dest.c_str());
+      bool ok=CopyFileW(fallback,dest.c_str(),FALSE)!=0;
+      DeleteFileW(fallback);
+      if(ok){ outPath=dest;
+        LogF("library art: '%s' -> %s (wide fallback)",Narrow(title).c_str(),Narrow(dest).c_str());
+        return true; } }
+    LogF("library art: no usable poster for '%s'",Narrow(title).c_str());
+    return false; }
+  // OMDb's poster URL is sometimes dead (Bad Apples 2025: both the Amazon image
+  // and img.omdbapi 404). The film's own Wikipedia article still holds the poster
+  // as a non-free file; use it only as a last resort, matched by page + "poster".
+  bool FetchWikiPoster(const std::wstring& title,int year,std::wstring& outPath){
+    outPath.clear(); std::vector<std::wstring> pages;
+    if(year>0) pages.push_back(title+L" ("+std::to_wstring(year)+L" film)");
+    pages.push_back(title+L" (film)");
+    for(auto&page:pages){
+      std::wstring api=L"https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1"
+        L"&prop=images&imlimit=max&titles="+UrlEnc(page);
+      std::string js=GetJsonUrl(api); if(js.empty()||js.find("\"missing\"")!=std::string::npos) continue;
+      std::vector<std::wstring> files; std::string key="\"title\":\"File:"; size_t p=0;
+      while((p=js.find(key,p))!=std::string::npos){ p+=key.size(); size_t e=js.find('"',p);
+        if(e==std::string::npos) break; files.push_back(L"File:"+Widen(js.substr(p,e-p))); p=e; }
+      for(auto&f:files){ std::wstring lf=PLower(f);
+        if(lf.find(L"poster")==std::wstring::npos) continue;
+        std::wstring ext=PExtLower(f); if(ext!=L".jpg"&&ext!=L".jpeg"&&ext!=L".png") continue;
+        std::string ij=GetJsonUrl(L"https://en.wikipedia.org/w/api.php?action=query&format=json"
+          L"&prop=imageinfo&iiprop=url&titles="+UrlEnc(f));
+        if(ij.empty()) continue; std::wstring iu=JStr(ij,"url");
+        if(iu.find(L"http")!=0) continue;
+        wchar_t td[MAX_PATH],tf[MAX_PATH]; GetTempPathW(MAX_PATH,td); GetTempFileNameW(td,L"unp",0,tf);
+        bool got=HttpGet(iu,tf); std::string magic; if(got) magic=ReadTextFile(tf);
+        std::wstring e2;
+        if(magic.size()>3&&(unsigned char)magic[0]==0xFF&&(unsigned char)magic[1]==0xD8) e2=L".jpg";
+        else if(magic.size()>8&&(unsigned char)magic[0]==0x89&&magic[1]=='P'&&magic[2]=='N') e2=L".png";
+        if(!e2.empty()&&PosterShaped(tf)){
+          std::wstring safe=PLower(title); for(auto&c:safe) if(!iswalnum((wint_t)c)) c=L'_';
+          std::wstring dest=artDir+L"\\wiki_"+safe+e2;
+          CreateDirectoryW(artDir.c_str(),nullptr); DeleteFileW(dest.c_str());
+          if(CopyFileW(tf,dest.c_str(),FALSE)){ outPath=dest; DeleteFileW(tf);
+            LogF("library art: '%s' -> Wikipedia %s",Narrow(title).c_str(),Narrow(dest).c_str());
+            return true; } }
+        DeleteFileW(tf); } }
+    LogF("library art: no Wikipedia poster for '%s' (%d)",Narrow(title).c_str(),year);
+    return false; }
+  int FetchMissingArt(){
+    if(artDir.empty()){ LogF("library art: no art directory"); return 0; }
+    int changed=0; DWORD lastReady=0;
+    std::wstring key=OmdbKey();
+    if(key.empty()) LogF("library art: no OMDb key - Wikipedia fallback only");
+    // Posters always come from OMDb (Wikipedia as the fallback), never from an MKV's
+// embedded cover or a folder image: those are often cropped/different art. Items
+// whose current art is not an `omdb_`/`wiki_` file are re-fetched once a week.
+    double now=(double)time(nullptr), cutoff=now-7*86400;
+    int budget=key.empty()?0:120;
+    struct Q{ std::wstring pkey,path,title; int year; bool needArt,needGenre; };
+    std::vector<Q> movies;
+    { char sql[512]; snprintf(sql,sizeof(sql),
+        "SELECT pkey,path,title,year,COALESCE(art,''),COALESCE(genre,''),COALESCE(art_checked,0) "
+        "FROM items WHERE present=1 AND kind='movie' AND ("
+        "COALESCE(genre,'')='' OR "
+        "(instr(COALESCE(art,''),'omdb_')=0 AND instr(COALESCE(art,''),'wiki_')=0 "
+        " AND COALESCE(art_checked,0)<%.0f)) LIMIT 120",cutoff);
+      SQ::ST s=Prep(sql);
+      if(s){ while(SQ::p_step(s)==SQ::ROW){ Q q; q.pkey=Col(s,0); q.path=Col(s,1);
+        q.title=Col(s,2); q.year=(int)SQ::p_i64(s,3);
+        std::wstring art=Col(s,4); q.needGenre=Col(s,5).empty();
+        q.needArt=!IsOnlineArt(art)&&(SQ::p_dbl?SQ::p_dbl(s,6):0.0)<cutoff;
+        if(q.needArt||q.needGenre) movies.push_back(q); } SQ::p_fin(s); } }
+    struct SQSh{ std::wstring title,art; bool needArt,needGenre; };
+    std::vector<SQSh> shows;
+    { char sql[768]; snprintf(sql,sizeof(sql),
+        "SELECT title, MAX(COALESCE(show_art,'')), MAX(COALESCE(genre,'')), "
+        "MAX(COALESCE(art_checked,0)) FROM items WHERE present=1 AND kind='episode' "
+        "GROUP BY title COLLATE NOCASE HAVING MAX(COALESCE(genre,''))='' OR "
+        "(instr(MAX(COALESCE(show_art,'')),'omdb_')=0 "
+        " AND instr(MAX(COALESCE(show_art,'')),'wiki_')=0 "
+        " AND MAX(COALESCE(art_checked,0))<%.0f) LIMIT 120",cutoff);
+      SQ::ST s=Prep(sql);
+      if(s){ while(SQ::p_step(s)==SQ::ROW){ SQSh q; q.title=Col(s,0);
+        std::wstring art=Col(s,1); q.art=art; q.needGenre=Col(s,2).empty();
+        q.needArt=!IsOnlineArt(art)&&(SQ::p_dbl?SQ::p_dbl(s,3):0.0)<cutoff;
+        if(q.needArt||q.needGenre) shows.push_back(q); } SQ::p_fin(s); } }
+    int total=(int)movies.size()+(int)shows.size(),done=0;
+    HWND n=g_scanNotify;
+    if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+28,0,(LPARAM)total);
+    for(auto&m:movies){
+      if(budget<=0) break;
+      std::wstring p,genre; bool got=false; bool tried=false;
+      if(m.needArt||m.needGenre){ --budget; tried=true;
+        got=FetchPoster(key,m.title,m.year,L"movie",p,&genre,m.needArt); }
+      if(m.needArt&&!got) got=FetchWikiPoster(m.title,m.year,p);
+      if(got){ SQ::ST u=Prep("UPDATE items SET art=?,art_checked=? WHERE pkey=?");
+        if(u){ BText(u,1,p); SQ::p_bind_dbl(u,2,now); BText(u,3,m.pkey);
+          SQ::p_step(u); SQ::p_fin(u); ++changed; } }
+      else if(tried&&m.needArt) SetArtCheckedPkey(m.pkey,now);
+      if(!genre.empty()&&SetGenre(m.path,genre)) ++changed;
+      ++done; if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+28,(WPARAM)done,(LPARAM)total);
+      if(changed&&GetTickCount()-lastReady>500){ lastReady=GetTickCount();
+        if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+35,0,0); } }
+    for(auto&t:shows){ if(budget<=0) break; --budget; std::wstring p,genre;
+      // A genre-only lookup still asks for the poster when the show has no online
+      // art. Otherwise Euphoria US (missing genre, recent art_checked) would never
+      // get its newly-matched poster.
+      bool wantPoster=t.needArt||!IsOnlineArt(t.art);
+      bool got=FetchPoster(key,t.title,0,L"series",p,&genre,wantPoster);
+      if(got){ SQ::ST u=Prep("UPDATE items SET show_art=?,art_checked=? WHERE kind='episode' "
+                             "AND title=? COLLATE NOCASE");
+        if(u){ BText(u,1,p); SQ::p_bind_dbl(u,2,now); BText(u,3,t.title);
+          SQ::p_step(u); SQ::p_fin(u); ++changed; } }
+      else if(t.needArt) SetSeriesArtChecked(t.title,now);
+      if(!genre.empty()&&SetSeriesGenre(t.title,genre)) ++changed;
+      ++done; if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+28,(WPARAM)done,(LPARAM)total);
+      if(changed&&GetTickCount()-lastReady>500){ lastReady=GetTickCount();
+        if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+35,0,0); } }
+    return changed; }
+
+  void Items(const char* sql,const std::wstring& a,const std::wstring& b,std::vector<LItem>& out){
+    SQ::ST s=0; if(!ok||SQ::p_prep(db,sql,-1,&s,nullptr)) return;
+    std::string a8=Narrow(a),b8=Narrow(b);
+    if(!a.empty()&&SQ::p_bind) SQ::p_bind(s,1,a8.c_str(),(int)a8.size(),(void*)-1);
+    if(!b.empty()&&SQ::p_bind) SQ::p_bind(s,2,b8.c_str(),(int)b8.size(),(void*)-1);
+    while(SQ::p_step(s)==SQ::ROW){ LItem it;
+      it.kind=Col(s,0); it.title=Col(s,1); it.year=(int)SQ::p_i64(s,2);
+      it.season=(int)SQ::p_i64(s,3); it.episode=(int)SQ::p_i64(s,4);
+      it.epTitle=Col(s,5); it.path=Col(s,6); it.folder=Col(s,7); it.size=SQ::p_i64(s,8);
+      it.art=Col(s,9); it.seasonArt=Col(s,10); it.showArt=Col(s,11);
+      it.watched=(int)SQ::p_i64(s,12);
+      it.lastPos=SQ::p_dbl?SQ::p_dbl(s,13):(double)SQ::p_i64(s,13);
+      it.lastSeen=SQ::p_i64(s,14);
+      it.duration=SQ::p_dbl?SQ::p_dbl(s,15):(double)SQ::p_i64(s,15);
+      it.present=(int)SQ::p_i64(s,16);
+      out.push_back(it); }
+    SQ::p_fin(s); }
+  // library.py:289-291
+  std::vector<LItem> Movies(){ std::vector<LItem> v;
+    Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
+          "season_art,show_art,watched,last_pos,last_seen,duration,present "
+          "FROM items WHERE kind='movie' "
+          "ORDER BY title COLLATE NOCASE, year",L"",L"",v); return v; }
+  // library.py:314-317
+  std::vector<LItem> Episodes(const std::wstring& show,int season){ std::vector<LItem> v;
+    wchar_t ns[16]; swprintf(ns,16,L"%d",season);
+    Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
+          "season_art,show_art,watched,last_pos,last_seen,duration,present "
+          "FROM items WHERE kind='episode' "
+          "AND title=? COLLATE NOCASE AND season=? ORDER BY episode",show,ns,v); return v; }
+  std::vector<LItem> AllEpisodes(){ std::vector<LItem> v;
+    Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
+          "season_art,show_art,watched,last_pos,last_seen,duration,present "
+          "FROM items WHERE kind='episode' ORDER BY title COLLATE NOCASE, season, episode",
+          L"",L"",v); return v; }
+  // library.py:293-302
+  struct ShowRow{ std::wstring title,art,path; int seasons=0,eps=0; };
+  std::vector<ShowRow> Shows(){ std::vector<ShowRow> v; SQ::ST s=0; if(!ok) return v;
+    if(SQ::p_prep(db,"SELECT title, MAX(show_art), COUNT(DISTINCT season), COUNT(*), MAX(season_art), MAX(path)"
+                    " FROM items WHERE present=1 AND kind='episode' GROUP BY title COLLATE NOCASE"
+                    " ORDER BY title COLLATE NOCASE",-1,&s,nullptr)) return v;
+    while(SQ::p_step(s)==SQ::ROW){ ShowRow r; r.title=Col(s,0); r.art=Col(s,1);
+      r.seasons=(int)SQ::p_i64(s,2); r.eps=(int)SQ::p_i64(s,3);
+      if(r.art.empty()) r.art=Col(s,4); r.path=Col(s,5); v.push_back(r); } SQ::p_fin(s); return v; }
+  // library.py:304-312
+  struct SeasonRow{ int season=0; std::wstring art,path; int eps=0; };
+  std::vector<SeasonRow> Seasons(const std::wstring& show){ std::vector<SeasonRow> v; SQ::ST s=0;
+    if(!ok) return v;
+    if(SQ::p_prep(db,"SELECT season, MAX(season_art), MAX(show_art), COUNT(*), MAX(path) FROM items "
+                    "WHERE present=1 AND kind='episode' AND title=? COLLATE NOCASE "
+                    "GROUP BY season ORDER BY season",-1,&s,nullptr)) return v;
+    std::string a8=Narrow(show); if(SQ::p_bind) SQ::p_bind(s,1,a8.c_str(),(int)a8.size(),(void*)-1);
+    while(SQ::p_step(s)==SQ::ROW){ SeasonRow r; r.season=(int)SQ::p_i64(s,0); r.art=Col(s,1);
+      if(r.art.empty()) r.art=Col(s,2); r.eps=(int)SQ::p_i64(s,3); r.path=Col(s,4); v.push_back(r); }
+    SQ::p_fin(s); return v; }
+  // library.py:319-349
+  struct SubRow{ std::wstring path,art; int n=0; };
+  void FolderView(const std::wstring& folder,std::vector<SubRow>& subs,std::vector<LItem>& files){
+    std::vector<LItem> all; Items("SELECT kind,title,year,season,episode,episode_title,path,"
+      "folder,size,art,season_art,show_art,watched,last_pos,last_seen,duration,present "
+      "FROM items WHERE present=1 ORDER BY path",L"",L"",all);
+    if(folder.empty()){ for(auto&r:Roots()){ SubRow s; s.path=r; s.n=0;
+        SQ::ST st=0; if(!SQ::p_prep(db,"SELECT COUNT(*), MAX(art) FROM items WHERE present=1 AND root=?",-1,&st,nullptr)){
+          std::string k=Narrow(r); if(SQ::p_bind) SQ::p_bind(st,1,k.c_str(),(int)k.size(),(void*)-1);
+          if(SQ::p_step(st)==SQ::ROW){ s.n=(int)SQ::p_i64(st,0); s.art=Col(st,1); } } SQ::p_fin(st);
+        subs.push_back(s); } return; }
+    std::wstring fk=folder; for(auto&c:fk) c=towlower(c);
+    std::wstring prefix=fk; if(!prefix.empty()&&prefix.back()!=L'\\') prefix+=L'\\';
+    std::map<std::wstring,size_t> idx;
+    for(auto&it:all){ std::wstring ik=it.folder; for(auto&c:ik) c=towlower(c);
+      if(ik==fk){ files.push_back(it); }
+      else if(ik.compare(0,prefix.size(),prefix)==0){
+        std::wstring rest=it.folder.substr(prefix.size()); size_t sl=rest.find(L'\\');
+        std::wstring child=(sl==std::wstring::npos)?rest:rest.substr(0,sl);
+        std::wstring cl=child; for(auto&c:cl) c=towlower(c);
+        auto e=idx.find(cl);
+        if(e==idx.end()){ SubRow s; s.path=folder+L"\\"+child; s.n=1;
+          s.art=(it.kind==L"episode")?(it.showArt.empty()?it.seasonArt:it.showArt):it.art;
+          idx[cl]=subs.size(); subs.push_back(s); }
+        else { subs[e->second].n++;
+          std::wstring a=(it.kind==L"episode")?(it.showArt.empty()?it.seasonArt:it.showArt):it.art;
+          if(subs[e->second].art.empty()) subs[e->second].art=a; } } }
+    std::sort(files.begin(),files.end(),[](const LItem&a,const LItem&b){
+      if(a.season!=b.season) return a.season<b.season;
+      if(a.episode!=b.episode) return a.episode<b.episode; return a.title<b.title; });
+    std::sort(subs.begin(),subs.end(),[](const SubRow&a,const SubRow&b){ return a.path<b.path; }); }
+};
+
+// ---- ffprobe: cached media facts for the library hover card ----------------
+static std::wstring FfprobePath(){
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+    std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?L".":d.substr(0,p);
+    const std::wstring c[5]={d+L"\\ffprobe.exe",d+L"\\tools\\ffprobe.exe",
+      d+L"\\..\\ffprobe.exe",d+L"\\_internal\\ffprobe.exe",
+      L"C:\\htpc\\ffmpeg-9.0.2-full_build\\bin\\ffprobe.exe"};
+    for(auto&f:c) if(GetFileAttributesW(f.c_str())!=INVALID_FILE_ATTRIBUTES) return f;
+    wchar_t found[MAX_PATH]; if(SearchPathW(nullptr,L"ffprobe.exe",nullptr,MAX_PATH,found,nullptr)) return found;
+    return L""; }
+static bool RunFfprobe(const std::wstring& exe,const std::wstring& file,std::string& out){
+    out.clear();
+    SECURITY_ATTRIBUTES sa={sizeof(sa)}; sa.bInheritHandle=TRUE;
+    HANDLE rd=nullptr,wr=nullptr;
+    if(!CreatePipe(&rd,&wr,&sa,0)) return false;
+    SetHandleInformation(rd,HANDLE_FLAG_INHERIT,0);
+    std::wstring cmd=L"\""+exe+L"\" -v error -print_format json -show_format -show_streams \""
+      +file+L"\"";
+    // stderr MUST NOT share the stdout pipe: a warning/error line made the "JSON"
+    // non-empty, ParseProbe found nothing, and a zero-valued probe was cached as done
+    // (Civil War showed SDR/0x0/0 Mbps forever). stderr goes to NUL.
+    HANDLE nul=CreateFileW(L"NUL",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                           &sa,OPEN_EXISTING,0,nullptr);
+    STARTUPINFOW si={sizeof(si)}; si.dwFlags=STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;
+    si.wShowWindow=SW_HIDE; si.hStdOutput=wr; si.hStdError=nul?nul:wr;
+    PROCESS_INFORMATION pi={};
+    std::vector<wchar_t> cl(cmd.begin(),cmd.end()); cl.push_back(0);
+    BOOL ok=CreateProcessW(nullptr,cl.data(),nullptr,nullptr,TRUE,CREATE_NO_WINDOW,
+                           nullptr,nullptr,&si,&pi);
+    CloseHandle(wr);
+    if(!ok){ CloseHandle(rd); if(nul) CloseHandle(nul); return false; }
+    DWORD start=GetTickCount(); char buf[65536]; bool timedOut=false;
+    for(;;){
+        DWORD avail=0;
+        if(PeekNamedPipe(rd,nullptr,0,nullptr,&avail,nullptr)&&avail>0){
+            DWORD got=0;
+            if(!ReadFile(rd,buf,sizeof(buf),&got,nullptr)||!got) break;
+            out.append(buf,got);
+        } else {
+            DWORD w=WaitForSingleObject(pi.hProcess,50);
+            if(w==WAIT_OBJECT_0){
+                while(PeekNamedPipe(rd,nullptr,0,nullptr,&avail,nullptr)&&avail>0){
+                    DWORD got=0; if(!ReadFile(rd,buf,sizeof(buf),&got,nullptr)||!got) break;
+                    out.append(buf,got); }
+                break; } }
+        if(GetTickCount()-start>20000){ timedOut=true; TerminateProcess(pi.hProcess,1); break; } }
+    WaitForSingleObject(pi.hProcess,1000);
+    DWORD code=(DWORD)-1; GetExitCodeProcess(pi.hProcess,&code);
+    CloseHandle(rd); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    if(nul) CloseHandle(nul);
+    return !out.empty()&&code==0&&!timedOut; }
+static double ProbeNum(const std::string& j,const char* key){
+    std::string k=std::string("\"")+key+"\"";
+    size_t p=j.find(k); if(p==std::string::npos) return 0.0;
+    p=j.find(':',p+k.size()); if(p==std::string::npos) return 0.0; ++p;
+    while(p<j.size()&&(j[p]==' '||j[p]=='\t'||j[p]=='\r'||j[p]=='\n')) ++p;
+    if(p<j.size()&&j[p]=='"') ++p;    // ffprobe quotes many numbers
+    return strtod(j.c_str()+p,nullptr); }
+static std::vector<std::string> JsonArrayObjects(const std::string& j,const char* key){
+    std::vector<std::string> out; std::string k=std::string("\"")+key+"\"";
+    size_t p=j.find(k); if(p==std::string::npos) return out;
+    p=j.find('[',p+k.size()); if(p==std::string::npos) return out; ++p;
+    int depth=0; size_t start=std::string::npos; bool instr=false,esc=false;
+    for(;p<j.size();++p){ char c=j[p];
+        if(instr){ if(esc) esc=false; else if(c=='\\') esc=true; else if(c=='"') instr=false; continue; }
+        if(c=='"'){ instr=true; continue; }
+        if(c=='{'){ if(depth==0) start=p; ++depth; }
+        else if(c=='}'){ if(depth>0) --depth;
+            if(depth==0&&start!=std::string::npos){ out.push_back(j.substr(start,p-start+1)); start=std::string::npos; } }
+        else if(c==']'&&depth==0) break; }
+    return out; }
+static std::string JsonObjectForKey(const std::string& j,const char* key){
+    std::string k=std::string("\"")+key+"\":";
+    size_t p=j.find(k); if(p==std::string::npos) return std::string();
+    p=j.find('{',p); if(p==std::string::npos) return std::string();
+    int depth=0; bool instr=false,esc=false;
+    for(size_t i=p;i<j.size();++i){ char c=j[i];
+        if(instr){ if(esc) esc=false; else if(c=='\\') esc=true; else if(c=='"') instr=false; continue; }
+        if(c=='"'){ instr=true; continue; }
+        if(c=='{') ++depth; else if(c=='}'){ if(--depth==0) return j.substr(p,i-p+1); } }
+    return std::string(); }
+static std::wstring AudioChannelTxt(int ch){
+    if(ch==8) return L"7.1"; if(ch==6) return L"5.1"; if(ch==2) return L"2.0";
+    if(ch==1) return L"1.0"; wchar_t b[24]; swprintf(b,24,L"%dch",ch); return b; }
+// Returns false only if ffprobe failed; probeJson carries what was found.
+static bool ParseProbe(const std::string& j,long long size,std::string& probeJson,double& duration){
+    std::string fmt=JsonObjectForKey(j,"format");
+    double dur=ProbeNum(fmt,"duration"),br=ProbeNum(fmt,"bit_rate");
+    auto streams=JsonArrayObjects(j,"streams");
+    if(streams.empty()) return false;   // error text, not ffprobe JSON
+    int vw=0,vh=0; double fps=0; bool isDv=false,isHdr=false,isHlg=false;
+    int dvp=0,dvbl=0; std::wstring aspect;
+    std::wstring gamut=L"BT.709"; int cll=0,fall=0;
+    std::wstring bestAudio; int bestRank=-1000; bool bestHd=false;
+    for(auto&s:streams){
+        std::wstring type=JStr(s,"codec_type");
+        if(type==L"video"&&vw==0){
+            double w=ProbeNum(s,"width"),h=ProbeNum(s,"height");
+            vw=(int)w; vh=(int)h;
+            // Display aspect: prefer the container's explicit DAR, otherwise use
+            // the pixel aspect ratio, otherwise the stored dimensions.
+            aspect=JStr(s,"display_aspect_ratio");
+            if(aspect.empty()||aspect==L"0:1"||aspect==L"N/A"){
+              std::wstring sar=JStr(s,"sample_aspect_ratio");
+              int an=1,ad=1;
+              if(!sar.empty()){ size_t c=sar.find(':'); if(c!=std::wstring::npos){
+                an=_wtoi(sar.c_str()); ad=_wtoi(sar.c_str()+c+1); if(an<=0||ad<=0){an=1;ad=1;} } }
+              long long x=(long long)vw*an, y=(long long)vh*ad;
+              if(x>0&&y>0){
+                long long a=x,b=y; while(b){ long long r=a%b; a=b; b=r; }
+                if(a>0){ wchar_t ab[64]; swprintf_s(ab,L"%lld:%lld",x/a,y/a); aspect=ab; }
+              }
+            }
+            std::wstring ct=JStr(s,"color_transfer"),cp=JStr(s,"color_primaries");
+            if(cp==L"bt2020") gamut=L"BT.2020";
+            if(ct==L"smpte2084") isHdr=true;
+            if(ct==L"arib-std-b67") isHlg=true;
+            dvp=(int)ProbeNum(s,"dv_profile");
+            dvbl=(int)ProbeNum(s,"dv_bl_signal_compatibility_id");
+            if(dvp>0||s.find("DOVI configuration")!=std::string::npos
+               ||s.find("dvh1")!=std::string::npos||s.find("dvhe")!=std::string::npos) isDv=true;
+            cll=(int)ProbeNum(s,"max_content_light_level");
+            fall=(int)ProbeNum(s,"max_frame_average_light_level");
+            if(cll==0){ size_t ml=s.find("\"max_luminance\"");
+              if(ml!=std::string::npos){ size_t q=s.find('"',ml+15);
+                if(q!=std::string::npos) cll=atoi(s.c_str()+q+1); } }
+            std::string fr=Narrow(JStr(s,"avg_frame_rate")); size_t sl=fr.find('/');
+            if(sl!=std::string::npos){ double a=atof(fr.c_str()),b=atof(fr.c_str()+sl+1); if(b>0) fps=a/b; }
+        } else if(type==L"audio"){
+            std::wstring codec=JStr(s,"codec_name"),profile=JStr(s,"profile"),lang=JStr(s,"language");
+            int ch=(int)ProbeNum(s,"channels");
+            int rank=10;
+            bool hd=false;
+            std::wstring name=codec;
+            if(codec==L"truehd"){ rank=100; hd=true; name=L"TrueHD";
+                std::wstring all=Widen(s);
+                if(PLower(all).find(L"atmos")!=std::wstring::npos) name=L"TrueHD Atmos"; }
+            else if(codec==L"dts"){ rank=60; name=L"DTS";
+                std::wstring lp=PLower(profile);
+                if(lp.find(L"ma")!=std::wstring::npos){ rank=95; hd=true; name=L"DTS-HD MA"; }
+                else if(lp.find(L"x")!=std::wstring::npos){ rank=95; hd=true; name=L"DTS:X"; }
+                else if(lp.find(L"hd")!=std::wstring::npos){ rank=90; hd=true; name=L"DTS-HD"; } }
+            else if(codec==L"pcm_s16le"||codec==L"pcm_s24le"||codec==L"pcm_s32le"
+                    ||codec==L"pcm_bluray"||codec==L"pcm_dvd"){ rank=90; hd=true; name=L"PCM"; }
+            else if(codec==L"flac"){ rank=90; hd=true; name=L"FLAC"; }
+            else if(codec==L"eac3"){ rank=40; name=L"E-AC3"; }
+            else if(codec==L"ac3"){ rank=30; name=L"AC-3"; }
+            else if(codec==L"aac"){ rank=20; name=L"AAC"; }
+            else if(codec==L"mp3"){ rank=10; name=L"MP3"; }
+            if(lang==L"eng") rank+=12;
+            if(s.find("\"default\":1")!=std::string::npos) rank+=3;
+            if(rank>bestRank){ bestRank=rank; bestHd=hd;
+                bestAudio=name+L" "+AudioChannelTxt(ch); }
+        }
+    }
+    if(br<=0&&dur>0&&size>0) br=(double)size*8.0/dur;
+    std::wstring hdr;
+    if(isDv&&dvp==8){
+      // A P8 RPU rides on a normal base layer. Hybrid remuxes inject this metadata
+      // into HDR10 sources, so the base format is what actually describes the
+      // picture; the card reports the DV metadata separately.
+      hdr=isHdr?L"HDR10":(isHlg?L"HLG":L"SDR"); }
+    else if(isDv){ if(dvp==5) hdr=L"Dolby Vision P5";
+      else if(dvp==7) hdr=L"Dolby Vision P7";
+      else hdr=L"Dolby Vision"; }
+    else if(isHdr) hdr=L"HDR10";
+    else if(isHlg) hdr=L"HLG";
+    else hdr=L"SDR";
+    if(hdr==L"SDR") gamut=L"BT.709";
+    // DV masters are BT.2020 even when the container omits/omits-reports primaries
+    // (P5 especially often reports no useful colour_primaries).
+    if(isDv&&hdr!=L"SDR") gamut=L"BT.2020";
+    char b[640];
+    snprintf(b,sizeof(b),
+      "{\"dur\":%.3f,\"br\":%.0f,\"res\":\"%dx%d\",\"ar\":\"%s\",\"fps\":%.3f,\"hdr\":\"%s\","
+      "\"gamut\":\"%s\",\"cll\":%d,\"fall\":%d,\"dv\":%d,\"dvp\":%d,\"dvbl\":%d,"
+      "\"audio\":\"%s\",\"hd\":%d}",
+      dur,br,vw,vh,Narrow(aspect).c_str(),fps,Narrow(hdr).c_str(),Narrow(gamut).c_str(),
+      cll,fall,isDv?1:0,dvp,dvbl,Narrow(bestAudio).c_str(),bestHd?1:0);
+    probeJson=b; duration=dur; return true; }
+
+// ---- library folders dialog (FoldersDialog, media_library_panel.py:267) ------
+class CFoldersCard : public CUiWnd {
+public:
+  Lib* lib_=nullptr;
+  std::vector<std::wstring> roots_;
+  int sel_=-1,hov_=0,listOff_=0;
+  CRect listR,addR,remR,doneR;
+  bool HandAt(CPoint p) override { return addR.PtInRect(p)||remR.PtInRect(p)||
+    doneR.PtInRect(p)||listR.PtInRect(p); }
+  void Bind(Lib* l){ lib_=l; }
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",
+                    WS_POPUP,CRect(0,0,Px(680),Px(440)),owner,0); }
+  static std::wstring FullPath(const std::wstring& p){
+    wchar_t b[4096]; DWORD n=GetFullPathNameW(p.c_str(),4096,b,nullptr);
+    std::wstring s=(n&&n<4096)?std::wstring(b,n):p;
+    while(s.size()>3&&s.back()==L'\\') s.pop_back(); return s; }
+  void Show(){
+    roots_.clear(); if(lib_) roots_=lib_->Roots();
+    sel_=roots_.empty()?-1:0; listOff_=0; hov_=0;
+    CRect pr; GetOwner()->GetWindowRect(pr);
+    int w=Px(680),h=Px(440); int x=pr.left+(pr.Width()-w)/2,y=pr.top+(pr.Height()-h)/2;
+    MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd); Layout();
+    ShowWindow(SW_SHOW); SetActiveWindow(); ::SetForegroundWindow(m_hWnd);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    LogF("folders dialog shown: %d roots",(int)roots_.size()); }
+  void Dismiss(){ if(IsWindowVisible()){ ShowWindow(SW_HIDE); LogF("folders dialog dismissed"); } }
+  void Layout(){
+    CRect rc; GetClientRect(rc);
+    listR=CRect(Px(36),Px(96),rc.right-Px(36),rc.bottom-Px(68));
+    int bh=Px(36), by=rc.bottom-Px(52);
+    int aw=BtnW(L"Add folder\x2026",13,false,Px(150),Px(16));
+    int rw=BtnW(L"Remove",13,false,Px(110),Px(16));
+    int dw=BtnW(L"Done",13,true,Px(110),Px(16));
+    addR=CRect(Px(36),by,Px(36)+aw,by+bh);
+    remR=CRect(addR.right+Px(10),by,addR.right+Px(10)+rw,by+bh);
+    doneR=CRect(rc.right-Px(36)-dw,by,rc.right-Px(36),by+bh); }
+  int RowH(){ return Px(36); }
+  int RowsVis(){ int h=listR.Height()-Px(8); return h>0?h/RowH():0; }
+  void ClampList(){ int mx=(int)roots_.size()*RowH()-(listR.Height()-Px(8)); if(mx<0)mx=0;
+    if(listOff_>mx)listOff_=mx; if(listOff_<0)listOff_=0; }
+  CRect RowR(int i){ int y=listR.top+Px(4)+i*RowH()-listOff_;
+    return CRect(listR.left+Px(4),y,listR.right-Px(4),y+RowH()); }
+  int RowAt(CPoint p){ if(!listR.PtInRect(p)) return -1;
+    int i=(p.y-listR.top-Px(4)+listOff_)/RowH(); return (i>=0&&i<(int)roots_.size())?i:-1; }
+  bool Browse(std::wstring& out){
+    HRESULT hr=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED); bool uninit=SUCCEEDED(hr);
+    IFileOpenDialog* dlg=nullptr; bool got=false;
+    if(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dlg)))){
+      DWORD opt=0; dlg->GetOptions(&opt);
+      dlg->SetOptions(opt|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);
+      if(SUCCEEDED(dlg->Show(m_hWnd))){ IShellItem* it=nullptr;
+        if(SUCCEEDED(dlg->GetResult(&it))){ PWSTR p=nullptr;
+          if(SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH,&p))&&p){ out=p; CoTaskMemFree(p); got=true; }
+          it->Release(); } }
+      dlg->Release(); }
+    if(uninit) CoUninitialize(); return got; }
+  void Add(){
+    std::wstring p; if(!Browse(p)) return;
+    p=FullPath(p); std::wstring k=Lib::NormKey(p);
+    for(auto&r:roots_) if(Lib::NormKey(r)==k) return;
+    roots_.push_back(p); sel_=(int)roots_.size()-1; ClampList();
+    LogF("folders dialog: added '%s'",Narrow(p).c_str()); Invalidate(FALSE); }
+  void Remove(){ if(sel_<0||sel_>=(int)roots_.size()) return;
+    LogF("folders dialog: removed '%s'",Narrow(roots_[sel_]).c_str());
+    roots_.erase(roots_.begin()+sel_);
+    if(sel_>=(int)roots_.size()) sel_=(int)roots_.size()-1;
+    ClampList(); Invalidate(FALSE); }
+  void Done(){
+    if(!lib_||!lib_->SetRoots(roots_)){ LogF("folders dialog: could not save roots"); return; }
+    CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+24,0,0);
+    Dismiss(); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    Dbg(&dc,rc,&CFoldersCard::Body); }
+  void Body(CDC* dc,CRect rc){
+    CardAA(dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(dc,CRect(Px(36),Px(20),rc.right-Px(36),Px(44)),L"Library folders",RGB(255,255,255),16,true,
+         DT_LEFT|DT_VCENTER);
+    TxtW(dc,CRect(Px(36),Px(50),rc.right-Px(36),Px(86)),
+         L"Unplugged looks in these folders and every folder inside them\nfor MKV and MP4 files.",
+         RGB(0xaa,0xaa,0xaa),12,false,DT_LEFT|DT_TOP|DT_WORDBREAK);
+    RR(dc,listR,Px(6),RGB(12,12,12)); StrokeR(dc,listR,Px(6),RGB(51,51,51));
+    if(roots_.empty())
+      TxtW(dc,listR,L"No library folders yet - press Add folder\x2026",RGB(0x77,0x77,0x77),12,false,
+           DT_CENTER|DT_VCENTER);
+    int saved=dc->SaveDC(); dc->IntersectClipRect(listR);
+    for(int i=0;i<(int)roots_.size();++i){ CRect r=RowR(i);
+      if(r.bottom<listR.top||r.top>listR.bottom) continue;
+      if(i==sel_) dc->FillSolidRect(r,RGB(105,41,17));
+      else if(i==RowAt(GetCursorPosPoint())) dc->FillSolidRect(r,RGB(24,24,24));
+      CRect tr=r; tr.left+=Px(10); tr.right-=Px(10);
+      TxtW(dc,tr,roots_[i].c_str(),RGB(0xdd,0xdd,0xdd),12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      DWORD a=GetFileAttributesW(roots_[i].c_str());
+      if(a==INVALID_FILE_ATTRIBUTES||!(a&FILE_ATTRIBUTE_DIRECTORY)){
+        CRect ur=tr; ur.left=ur.right-Px(120);
+        TxtW(dc,ur,L"(not reachable)",RGB(0xE8,0x55,0x1F),11,false,DT_RIGHT|DT_VCENTER); } }
+    dc->RestoreDC(saved);
+    // Add / Remove / Done
+    RR(dc,addR,Px(12),hov_==1?RGB(60,60,60):RGB(32,32,32)); StrokeR(dc,addR,Px(12),RGB(54,54,54));
+    TxtW(dc,addR,L"Add folder\x2026",hov_==1?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,DT_CENTER|DT_VCENTER);
+    bool canRem=sel_>=0&&sel_<(int)roots_.size();
+    RR(dc,remR,Px(12),canRem?(hov_==2?RGB(60,60,60):RGB(32,32,32)):RGB(24,24,24));
+    StrokeR(dc,remR,Px(12),RGB(54,54,54));
+    TxtW(dc,remR,L"Remove",canRem?(hov_==2?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)):RGB(0x55,0x55,0x55),
+         13,false,DT_CENTER|DT_VCENTER);
+    RR(dc,doneR,Px(12),hov_==3?RGB(219,81,30):RGB(168,64,26)); StrokeR(dc,doneR,Px(12),RGB(223,82,30));
+    TxtW(dc,doneR,L"Done",RGB(255,255,255),13,true,DT_CENTER|DT_VCENTER); }
+  CPoint GetCursorPosPoint(){ CPoint p; ::GetCursorPos(&p); ScreenToClient(&p); return p; }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  void OnMouseMove(UINT,CPoint p){
+    int h=addR.PtInRect(p)?1:remR.PtInRect(p)?2:doneR.PtInRect(p)?3:0;
+    if(h!=hov_){ hov_=h; Invalidate(FALSE); } else if(listR.PtInRect(p)) Invalidate(FALSE); }
+  void OnLButtonDown(UINT,CPoint p){
+    if(addR.PtInRect(p)){ Add(); return; }
+    if(remR.PtInRect(p)){ Remove(); return; }
+    if(doneR.PtInRect(p)){ Done(); return; }
+    int i=RowAt(p); if(i>=0){ sel_=i; Invalidate(FALSE); } }
+  BOOL OnMouseWheel(UINT,short d,CPoint){ listOff_+=((d<0)?1:-1)*RowH()*2; ClampList();
+    Invalidate(FALSE); return TRUE; }
+  void OnKeyDown(UINT k,UINT,UINT){ if(k==VK_ESCAPE){ Dismiss(); } }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CFoldersCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_MOUSEWHEEL() ON_WM_KEYDOWN() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// ---- placeholder colours: media_library_panel.py:144-147 ---------------------
+static unsigned long Md5Head3(const std::wstring& title){
+  std::string u8=Narrow(title); HCRYPTPROV prov=0; HCRYPTHASH hs=0;
+  unsigned char dg[16]={0}; DWORD n=16;
+  if(!CryptAcquireContextA(&prov,nullptr,nullptr,PROV_RSA_FULL,CRYPT_VERIFYCONTEXT)) return 0;
+  unsigned long v=0;
+  if(CryptCreateHash(prov,CALG_MD5,0,0,&hs)&&CryptHashData(hs,(const BYTE*)u8.data(),(DWORD)u8.size(),0)
+     &&CryptGetHashParam(hs,HP_HASHVAL,dg,&n,0))
+    v=((unsigned long)dg[0]<<16)|((unsigned long)dg[1]<<8)|(unsigned long)dg[2];
+  if(hs) CryptDestroyHash(hs); CryptReleaseContext(prov,0); return v; }
+static COLORREF Hsv2Rgb(int hue,int sat,int val){
+  double h=((hue%360)+360)%360/60.0,s=sat/255.0,v=val/255.0;
+  int i=(int)floor(h); double f=h-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s),r,g,b;
+  switch(i%6){case 0:r=v;g=t;b=p;break;case 1:r=q;g=v;b=p;break;case 2:r=p;g=v;b=t;break;
+    case 3:r=p;g=q;b=v;break;case 4:r=t;g=p;b=v;break;default:r=v;g=p;b=q;}
+  return RGB((int)(r*255+.5),(int)(g*255+.5),(int)(b*255+.5)); }
+
+static std::wstring JStr(const std::string& j,const char* key){   // "key" : "value"
+  std::string k=std::string("\"")+key+"\""; size_t p=j.find(k);
+  if(p==std::string::npos) return L""; p+=k.size();
+  // app_config.json is written by json.dump WITH a space after the colon, so the
+  // search must skip whitespace before the ':' and again after it - matching
+  // "key":" exactly returned empty for every value and the app fell through to
+  // the auto-open branch instead of showing the library.
+  while(p<j.size()&&(j[p]==' '||j[p]=='\t'||j[p]=='\r'||j[p]=='\n')) ++p;
+  if(p>=j.size()||j[p]!=':') return L""; ++p;
+  while(p<j.size()&&(j[p]==' '||j[p]=='\t'||j[p]=='\r'||j[p]=='\n')) ++p;
+  if(p>=j.size()||j[p]!='"') return L""; ++p;
+  size_t e=j.find('"',p);
+  if(e==std::string::npos) return L"";
+  std::string v=j.substr(p,e-p); for(size_t i=0;i+1<v.size();++i)
+    if(v[i]=='\\'&&(v[i+1]=='\\'||v[i+1]=='"')) v.erase(i,1);
+  return Widen(v); }
+
+static int Hex4(const std::string&s,size_t p){ int v=0;
+  for(int i=0;i<4&&p+i<s.size();++i){ char c=s[p+i]; v=v*16+(c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:0); }
+  return v; }
+static std::wstring JsonReadString(const std::string&s,size_t&p){
+  while(p<s.size()&&s[p]!='"')++p; if(p>=s.size()) return L""; ++p;
+  std::wstring out; std::string raw;
+  auto flush=[&](){ if(!raw.empty()){ out+=Widen(raw); raw.clear(); } };
+  while(p<s.size()){ char c=s[p++];
+    if(c=='"') break;
+    if(c!='\\'){ raw+=c; continue; }
+    if(p>=s.size()) break; char e=s[p++];
+    if(e=='u'){
+      if(p+4>s.size()) break; unsigned cp=Hex4(s,p); p+=4;
+      if(cp>=0xD800&&cp<=0xDBFF&&p+6<=s.size()&&s[p]=='\\'&&s[p+1]=='u'){
+        unsigned lo=Hex4(s,p+2); if(lo>=0xDC00&&lo<=0xDFFF){ cp=0x10000+((cp-0xD800)<<10)+(lo-0xDC00); p+=6; } }
+      flush(); if(cp<=0xFFFF) out+=(wchar_t)cp;
+      else { cp-=0x10000; out+=(wchar_t)(0xD800+(cp>>10)); out+=(wchar_t)(0xDC00+(cp&1023)); }
+    } else { const char* m=strchr("\"\\/bfnrt",e); raw+=m?(*m=='b'?'\b':*m=='f'?'\f':*m=='n'?'\n':*m=='r'?'\r':*m=='t'?'\t':e):e; }
+  }
+  flush(); return out;
+}
+static std::wstring JStrNested(const std::string& j,const char* key){
+  std::string pat=std::string("\"")+key+"\""; size_t p=j.find(pat);
+  if(p==std::string::npos) return L""; p=j.find(':',p+pat.size());
+  if(p==std::string::npos) return L""; size_t pos=p+1; return JsonReadString(j,pos);
+}
+static std::map<std::wstring,std::wstring> ParseInputLabels(const std::string& j){
+  std::map<std::wstring,std::wstring> m; size_t p=j.find('{'); if(p==std::string::npos) return m; ++p;
+  while(p<j.size()){
+    while(p<j.size()&&(isspace((unsigned char)j[p])||j[p]==','))++p;
+    if(p>=j.size()||j[p]=='}') break;
+    std::wstring k=JsonReadString(j,p); if(k.empty()) break;
+    while(p<j.size()&&j[p]!=':')++p; if(p<j.size())++p;
+    std::wstring v=JsonReadString(j,p); if(!k.empty()) m[k]=v;
+    while(p<j.size()&&j[p]!=','&&j[p]!='}')++p;
+  }
+  return m;
+}
+static std::wstring BuildInputLabelsJson(const std::map<std::wstring,std::wstring>& m){
+  std::wstring j=L"{"; bool first=true;
+  for(const auto&kv:m){ if(!first) j+=L", "; first=false;
+    j+=L"\""; j+=Widen(JsonEscape(Narrow(kv.first))); j+=L"\": \"";
+    j+=Widen(JsonEscape(Narrow(kv.second))); j+=L"\""; }
+  return j+L"}";
+}
+
+static void PollDecklinkPorts(std::vector<DlPort>& out){
+  out.clear();
+  typedef int(__cdecl* PollAll)(char(*)[128],int*,int*,int);
+  static HMODULE hm=nullptr; static PollAll poll=nullptr; static bool tried=false;
+  if(!tried){ tried=true;
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+    std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?L".":d.substr(0,p);
+    const std::wstring candidates[]={d+L"\\decklink_monitor.dll",
+      L"C:\\Program Files\\Unplugged\\_internal\\decklink_monitor.dll",
+      L"C:\\code\\unplugged-mpc-hc\\tools\\engine_s3\\decklink_monitor.dll"};
+    for(const auto&path:candidates){ if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES) continue;
+      hm=LoadLibraryW(path.c_str()); if(hm){ poll=(PollAll)GetProcAddress(hm,"vf_dl_poll_all_ports");
+        LogF("decklink monitor loaded %S poll=%d",path.c_str(),poll!=nullptr); break; } }
+    if(!hm) LogF("decklink_monitor.dll not found; SOURCE list will be empty"); }
+  if(!poll) return;
+  char urls[16][128]={}; int locked[16]={},dr[16]={};
+  int n=poll(urls,locked,dr,16); if(n<0){ LogF("poll_all_ports failed rc=%d",n); return; }
+  for(int i=0;i<n&&i<16;++i){ if(!urls[i][0]) continue;
+    out.push_back({Widen(urls[i]),locked[i],dr[i]}); }
+}
+
+static std::string ReadTextFile(const std::wstring& p){ std::ifstream in(p.c_str(),std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>()); }
+
+// ---- IDLE WALLPAPER (ui/background_widget.py) --------------------------------
+// 1.3.0 fills QColor(10,10,10) then draws assets/images/unplugged_wallpaper.png
+// CONTAINED (whole image visible, letterboxed, centred, smooth) - the module
+// docstring is explicit that contain is deliberate: "cropping to fill would cut
+// the scopes at the edges, which are the part that reads as this product".
+// It is painted on the VIDEO HOST child, which is the bottom-most full-frame
+// window, so the library panel sits over it exactly as the Qt panel sits over the
+// Background widget, and MPCVR simply covers it once a picture arrives.
+static std::wstring WallFile(){
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\'); d=(p==std::wstring::npos)?std::wstring(L"."):d.substr(0,p);
+  const wchar_t* rel=L"\\assets\\images\\unplugged_wallpaper.png";
+  std::wstring c[3]={ d+rel, d+L"\\_internal"+rel,
+    L"C:\\code\\unplugged-mpc-hc\\src\\unplugged-ui\\assets\\images\\unplugged_wallpaper.png" };
+  for(const std::wstring& s:c) if(GetFileAttributesW(s.c_str())!=INVALID_FILE_ATTRIBUTES) return s;
+  return std::wstring(); }
+// Scale the wallpaper ONCE into a 32bpp canvas at the host's size, then blit.
+// Re-running HighQualityBicubic over the 3840x2160 original on every
+// WM_ERASEBKGND measured 223-297ms per paint, and showing/hiding the chrome
+// triggers a dozen repaints - that was the 3.2s pause after the splash
+// (log: "chrome+repaint=3218ms", "wallpaper paint #12 avg=223ms").
+static HBITMAP g_wallBmp=0; static int g_bw=0,g_bh=0;
+static HBITMAP WallCanvas(){ return g_wallBmp; }
+static void BuildWallCanvas(int w,int h){
+  if(g_wallBmp&&g_bw==w&&g_bh==h) return;
+  if(g_wallBmp){ DeleteObject(g_wallBmp); g_wallBmp=0; }
+  BITMAPINFO bi; ZeroMemory(&bi,sizeof(bi));
+  bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth=w;
+  bi.bmiHeader.biHeight=-h; bi.bmiHeader.biPlanes=1; bi.bmiHeader.biBitCount=32;
+  bi.bmiHeader.biCompression=BI_RGB;
+  void* bits=nullptr; HDC sdc=GetDC(nullptr);
+  HBITMAP bmp=CreateDIBSection(sdc,&bi,DIB_RGB_COLORS,&bits,nullptr,0); ReleaseDC(nullptr,sdc);
+  if(!bmp||!bits) return;
+  HDC mem=CreateCompatibleDC(nullptr); HBITMAP ob=(HBITMAP)SelectObject(mem,bmp);
+  { Gdiplus::Graphics g(mem);
+    g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    g.Clear(Gdiplus::Color(255,10,10,10));
+    Gdiplus::Bitmap* wp=g_wall;
+    if(wp&&wp->GetWidth()&&wp->GetHeight()){
+      double ir=(double)wp->GetWidth()/wp->GetHeight(), wr=(double)w/h;
+      int sw,sh; if(ir>wr){ sw=w; sh=(int)(w/ir); } else { sh=h; sw=(int)(h*ir); }
+      g.DrawImage(wp,(w-sw)/2,(h-sh)/2,sw,sh); } }
+  SelectObject(mem,ob); DeleteDC(mem);
+  g_wallBmp=bmp; g_bw=w; g_bh=h; LogF("wallpaper canvas built %dx%d (one-time scale)",w,h); }
+static void PaintWallpaper(HWND h){
+  RECT rc; GetClientRect(h,&rc); int w=rc.right-rc.left, ht=rc.bottom-rc.top;
+  if(w<=0||ht<=0) return;
+  DWORD t0=GetTickCount(); BuildWallCanvas(w,ht);
+  HDC dc=GetDC(h); HDC mem=CreateCompatibleDC(dc);
+  HBITMAP ob=g_wallBmp?(HBITMAP)SelectObject(mem,g_wallBmp):nullptr;
+  if(ob) BitBlt(dc,0,0,w,ht,mem,0,0,SRCCOPY); else PatBlt(dc,0,0,w,ht,BLACKNESS);
+  if(ob) SelectObject(mem,ob);
+  DeleteDC(mem); ReleaseDC(h,dc);
+  static DWORD n=0,tot=0; n++; tot+=GetTickCount()-t0;
+  if(n==1||n==12||n==40) LogF("wallpaper paint #%d avg=%lums (cached blit)",n,(unsigned long)(tot/n)); }
+static void LoadWallpaper(HWND host){
+  std::thread([host]{
+    std::wstring f=WallFile();
+    if(f.empty()){ LogF("wallpaper: asset not found"); return; }
+    DWORD t=GetTickCount();
+    Gdiplus::Bitmap* b=Gdiplus::Bitmap::FromFile(f.c_str(),FALSE);
+    if(!b||b->GetLastStatus()!=Gdiplus::Ok){ delete b; LogF("wallpaper: decode failed"); return; }
+    g_wall=b;
+    LogF("wallpaper loaded %dx%d in %lums",(int)b->GetWidth(),(int)b->GetHeight(),
+         (unsigned long)(GetTickCount()-t));
+    if(host&&::IsWindow(host)) InvalidateRect(host,nullptr,FALSE);   // 11 MB PNG: off the UI thread
+  }).detach(); }
+
+static std::string g_openUrl;                 // the pane's Play() writes it
+static double g_openResumeSec=0;              // History tile -> seek after open
+static std::wstring g_openTitleMain,g_openTitleMeta; // transport title above the seek bar
+static std::wstring Plural(int n,const wchar_t* w){ wchar_t b[96];
+  swprintf(b,96,L"%d %s%s",n,w,(n==1)?L"":L"s"); return b; }
+static std::wstring SizeTxt(long long bytes){
+  double gb=(double)bytes/(1024.0*1024.0*1024.0); wchar_t b[32];
+  if(gb>=1.0) swprintf(b,32,L"%.1f GB",gb); else swprintf(b,32,L"%.0f MB",(double)bytes/(1024.0*1024.0));
+  return b; }
+static std::wstring ExtUpper(const std::wstring& path){
+  size_t d=path.find_last_of(L'.'); if(d==std::wstring::npos) return L"";
+  std::wstring e=path.substr(d+1); for(auto&c:e) c=towupper(c); return e; }
+// 1.3.0's info line, media_library_panel.py:679-681: the film's label (or
+// "Title  ·  SxxEyy" for an episode), then EXT, then size, then the full path.
+static std::wstring InfoFor(const LItem& it){
+  std::wstring name; wchar_t b[96];
+  if(it.kind==L"episode"){ swprintf(b,96,L"  \xb7  S%02dE%02d",it.season,it.episode);
+    name=NormTitle(it.title)+b; }
+  else name=NormTitle(it.label());
+  return name+L"   \xb7   "+ExtUpper(it.path)+L"   \xb7   "+SizeTxt(it.size)+L"   \xb7   "+it.path; }
+
+class CPosterPane : public CUiWnd {
+public:
+  Lib lib;
+  int tab=0;                                        // 0 Movies 1 TV 2 Folders
+  std::vector<Tile> tiles;                          // flat grids (Folders / drill-downs)
+  // Top-level Movies/TV are sectioned: 0 = To Continue, 1 = Unwatched grid,
+  // 2 = Watched. The middle grid keeps `tiles`' old geometry; the rails are new.
+  std::vector<Tile> sec[3];
+  int secSel[3]={-1,-1,-1}, secOff[3]={0,0,0}, curSec=1;
+  bool sectioned=false,scanning=false;
+  std::wstring syncMsg;
+  // What was playing and where it came from, for auto-next (SYSTEM setting).
+  struct PlayCtx{ std::vector<Tile> list; int idx=-1; std::wstring show,path;
+                  int season=-1,episode=-1; bool tv=false,active=false; };
+  PlayCtx ctx;
+  std::vector<std::wstring> fPath;                  // Folders drill-down
+  std::vector<std::wstring> tvShow; std::vector<int> tvSeason;
+  int sel=-1,hov=-1,scroll=0,cols=3,tileW=0,tileH=0,posterH=0,lastClick=-99;
+  int hovSec=-1,hovIdx=-1,lastClickSec=-99,lastClickIdx=-99;
+  bool hovEpChip=false;                 // cursor is over the Continue Episodes chip
+  // Season strip shown above the episode grid when the show has more than one
+  // season, so a Continue jump into S2 can still reach S1/S3 without backing out.
+  int flatTop=54,seasonStripH=0,seasonOff=0,seasonScrollMax=0,hovSeason=-1;
+  CRect seasonStripR,seasonLeftR,seasonRightR;
+  std::vector<CRect> seasonBtnR; std::vector<int> seasonNums;
+  int shTitleH=26,shRowH=0,shPosterH=0,shTileW=0;
+  CRect secHead[3], shView[3], midR, midViewR;
+  // Focused section header (overview) and the full-page view for a section that
+  // does not fit its band. fullSec=-1 means the three-band overview is shown.
+  int hdrSec=-1, fullSec=-1, fullScroll=0;
+  bool watchedOpen=false;              // Watched rail collapsed by default
+  CRect fullHead, fullViewR, fullBackR, watchedPlusR;
+  std::wstring crumb,statusTxt,info=L"Select a title to play",lastPlayed,emptyMsg;
+  bool canBack=false,playEnabled=false,empty=false,crumbShow=false;
+  // Selection policy: a tab/app landing starts on Continue (then New, then
+  // Watched). Only a play/stop in THIS run re-selects lastPlayed; the persisted
+  // last_played still gets its play badge but does not steal the first selection.
+  bool freshSelection=true,lastPlayedSession=false;
+  std::map<std::wstring,Gdiplus::Bitmap*> art;
+  std::map<std::wstring,Gdiplus::Bitmap*> blur;   // backdrop per art path + cell size
+  std::map<std::wstring,Gdiplus::Bitmap*> composed; // final cell-sized art (fit/backdrop)
+  CMediaTip m_facts; bool probing=false,artFetching=false,probeAgain=false,artAgain=false;
+  CDC m_mem; CBitmap m_bmp; int m_mw=0,m_mh=0;   // persistent back buffer
+  int lastHoverSec=-1,lastHoverIdx=-1,lastHoverFlat=-99;
+  static const int HDR=54, FOOT=56, TEXTH=56;
+  CRect tabR[3], folderR, rescanR, playR, beginR, vpR, infoR, crumbR, statR;
+
+  BOOL CreateLib(CWnd* p){
+    static bool gdi=false; if(!gdi){ Gdiplus::GdiplusStartupInput si; ULONG_PTR tok;
+      Gdiplus::GdiplusStartup(&tok,&si,nullptr); gdi=true; }
+    return CreateUi(p,907); }
+
+  // ---- geometry, media_library_panel.py:505-510 -----------------------------
+  void Metrics(int w){ int vw=w-Px(16); if(vw<Px(300)) vw=Px(300);
+    CRect rc; GetClientRect(rc); if(rc.Width()<=0) rc=CRect(0,0,w,Px(700));
+    int ch=rc.bottom-Px(FOOT)-Px(HDR); if(ch<Px(120)) ch=Px(120);
+    shTitleH=Px(34);
+    // Uniform poster size everywhere: the rails use the SAME tile as the grid.
+    // Pick the densest 5..10 column count that still leaves the grid >= 1.25 rows.
+    int limitH=(ch-2*shTitleH)*4/13; if(limitH<Px(96)) limitH=Px(96);
+    cols=vw/Px(210); if(cols<5) cols=5; if(cols>10) cols=10;
+    for(;;){ tileW=vw/cols; posterH=(int)((tileW-Px(16))*1.5);
+      tileH=posterH+Px(TEXTH)+Px(14);
+      if(tileH<=limitH||cols>=10) break; ++cols; }
+    LayoutSections(rc); }
+  // Two horizontal rails with the scrollable grid between them; every poster is
+  // the grid's tile size (user requirement: all posters the same size).
+  void LayoutSections(CRect rc){
+    int top=Px(HDR), bottom=rc.bottom-Px(FOOT); int ch=bottom-top;
+    if(ch<Px(120)) ch=Px(120);
+    shTitleH=Px(34);
+    shPosterH=posterH; shTileW=tileW; shRowH=tileH;
+    int shH=shTitleH+shRowH;
+    int watchReserve=shTitleH+(watchedOpen?shRowH:0);
+    secHead[0]=CRect(0,top,rc.right,top+shTitleH);
+    shView[0]=CRect(Px(8),top+shTitleH,rc.right-Px(8),top+shH);
+    secHead[2]=CRect(0,bottom-watchReserve,rc.right,bottom-watchReserve+shTitleH);
+    shView[2]=watchedOpen?CRect(Px(8),bottom-shTitleH-shRowH,rc.right-Px(8),bottom)
+                         :CRect(0,0,0,0);
+    midR=CRect(0,top+shH,rc.right,bottom-watchReserve);
+    int pb=Px(24);
+    watchedPlusR=CRect(rc.right-Px(14)-pb,secHead[2].top+(shTitleH-pb)/2,
+                       rc.right-Px(14),secHead[2].top+(shTitleH-pb)/2+pb);
+    secHead[1]=CRect(0,midR.top,rc.right,midR.top+shTitleH);
+    midViewR=CRect(Px(8),midR.top+shTitleH,rc.right-Px(8),midR.bottom);
+    // Full-section page: header under the tabs, then a full-width grid.
+    fullHead=CRect(0,top,rc.right,top+shTitleH);
+    fullViewR=CRect(Px(8),top+shTitleH,rc.right-Px(8),bottom);
+    int bw=TextW(L"\x2039  Back (Esc)",12,false)+Px(28);
+    fullBackR=CRect(rc.right-Px(14)-bw,top,rc.right-Px(14),top+shTitleH);
+    // Flat grids start below the optional season strip. TileR/GridH/FlatTileAt
+    // all read flatTop, so the strip never overlaps the first poster row.
+    flatTop=Px(HDR)+seasonStripH;
+    seasonStripR=CRect(Px(8),Px(HDR),rc.right-Px(8),Px(HDR)+seasonStripH);
+    LayoutSeasonStrip(); }
+  int SecStep(){ return shTileW+Px(10); }
+  CRect TileR(int i){ int row=i/cols, col=i%cols;
+    return CRect(Px(8)+col*tileW, flatTop+row*tileH-scroll, Px(8)+(col+1)*tileW, flatTop+(row+1)*tileH-scroll); }
+  CRect PosterIn(CRect r){ r.DeflateRect(Px(8),Px(8),Px(8),Px(6));
+    return CRect(r.left,r.top,r.right,r.bottom-Px(TEXTH)); }
+  CRect PosterR(int i){ return PosterIn(TileR(i)); }
+  CRect ShelfR(int s,int i){ int st=SecStep(); int x=Px(8)+i*st-secOff[s];
+    return CRect(x,shView[s].top,x+shTileW,shView[s].top+shRowH); }
+  CRect GridR(int i){ int row=i/cols,col=i%cols;
+    return CRect(Px(8)+col*tileW, midViewR.top+row*tileH-scroll,
+                 Px(8)+(col+1)*tileW, midViewR.top+(row+1)*tileH-scroll); }
+  static COLORREF SecColor(int s){ static const COLORREF c[3]={RGB(0x9B,0x7B,0xD8),
+    RGB(0x5B,0x8F,0xD0),RGB(0xC8,0xA0,0x30)}; return c[(s<0||s>2)?1:s]; }
+  int VisibleRows(){ int r=midViewR.Height()/tileH; return r<1?1:r; }
+  bool Overflow(int s){ if(s<0||s>2) return false;
+    if(s==1) return (int)sec[1].size()>cols*VisibleRows();
+    int cap=shView[s].Width()/SecStep(); if(cap<1) cap=1;
+    return (int)sec[s].size()>cap; }
+  void ClampFull(){ if(fullSec<0) return;
+    int n=(int)sec[fullSec].size(), rows=(n+cols-1)/cols;
+    int need=rows*tileH, h=fullViewR.Height();
+    fullScroll=need>h?IMIN(fullScroll,need-h):0; if(fullScroll<0) fullScroll=0; }
+  void EnterFull(int s){
+    if(s<0||s>2||!Overflow(s)) return;
+    HideFacts();
+    fullSec=s; curSec=s; hdrSec=-1;
+    if(secSel[s]<0||secSel[s]>=(int)sec[s].size()) secSel[s]=0;
+    // Bring the selected title into view (with a row of context). Previously the
+    // full page always started at scroll 0, so the current selection could be far
+    // below the viewport: no ring, and the Play/info line named an invisible tile.
+    int row=secSel[s]/IMAX(1,cols);
+    fullScroll=row*tileH-(fullViewR.Height()-tileH)/2;
+    ClampFull(); SyncCurrent(); Invalidate(FALSE);
+    LogF("library: full section %s (%d items) sel=%d '%s' scroll=%d",
+         s==0?"continue":s==2?"watched":"new",(int)sec[s].size(),secSel[s],
+         Narrow(sec[s][secSel[s]].title).c_str(),fullScroll); }
+  void SetWatchedOpen(bool open){
+    if(watchedOpen==open) return;
+    watchedOpen=open;
+    CRect rc=Client(); Metrics(rc.Width());
+    if(!watchedOpen&&curSec==2){
+      curSec=!sec[1].empty()?1:(!sec[0].empty()?0:2);
+      if(secSel[curSec]<0&&!sec[curSec].empty()) secSel[curSec]=0; }
+    ClampScroll(); SyncCurrent(); Invalidate(FALSE);
+    LogF("library: watched rail %s",open?"expanded":"collapsed"); }
+  void ExitFull(){ if(fullSec<0) return; HideFacts();
+    fullSec=-1; fullScroll=0; hdrSec=-1; Invalidate(FALSE); }
+  CRect FullGridR(int i){ int row=i/cols,col=i%cols;
+    return CRect(Px(8)+col*tileW, fullViewR.top+row*tileH-fullScroll,
+                 Px(8)+(col+1)*tileW, fullViewR.top+(row+1)*tileH-fullScroll); }
+  int FullAt(CPoint p,int& idx){ idx=-1;
+    if(fullSec<0||!fullViewR.PtInRect(p)) return -1;
+    int x=p.x-Px(8); if(x<0) return -1;
+    int col=x/tileW; if(col<0||col>=cols) return -1;
+    int row=(p.y-fullViewR.top+fullScroll)/tileH; if(row<0) return -1;
+    int i=row*cols+col; if(i>=(int)sec[fullSec].size()) return -1;
+    if(!FullGridR(i).PtInRect(p)) return -1;
+    idx=i; return fullSec; }
+  int FlatTileAt(CPoint p){ if(p.y<flatTop||p.y>=Client().bottom-Px(FOOT)) return -1;
+    for(size_t i=0;i<tiles.size();++i){ if(PosterR((int)i).PtInRect(p)) return (int)i; } return -1; }
+  int TileAt(CPoint p){ return sectioned?-1:FlatTileAt(p); }
+  int SectionAt(CPoint p,int& idx){ idx=-1; if(!sectioned) return -1;
+    for(int s=0;s<3;s+=2){ if(!shView[s].PtInRect(p)) continue;
+      int st=SecStep(); int i=(p.x-Px(8)+secOff[s])/st;
+      if(i>=0&&i<(int)sec[s].size()&&ShelfR(s,i).PtInRect(p)){ idx=i; return s; } }
+    if(midViewR.PtInRect(p)){ int x=p.x-Px(8); if(x<0) return -1;
+      int col=x/tileW; if(col<0||col>=cols) return -1;
+      int row=(p.y-midViewR.top+scroll)/tileH; if(row<0) return -1;
+      int i=row*cols+col; if(i>=(int)sec[1].size()) return -1;
+      if(!GridR(i).PtInRect(p)) return -1; idx=i; return 1; }
+    return -1; }
+  CRect Client(){ CRect rc; GetClientRect(rc); return rc; }
+  int GridH(){ if(sectioned) return midViewR.Height();
+    return Client().bottom-Px(FOOT)-flatTop; }
+  void ClampScroll(){ if(sectioned){
+      int rows=((int)sec[1].size()+cols-1)/cols; int need=rows*tileH;
+      scroll=need>GridH()?IMIN(scroll,need-GridH()):0; if(scroll<0)scroll=0;
+      for(int s=0;s<3;s+=2){ int total=(int)sec[s].size()*SecStep(), vw=shView[s].Width();
+        int mx=total-vw; if(mx<0)mx=0; if(secOff[s]>mx)secOff[s]=mx; if(secOff[s]<0)secOff[s]=0; }
+      return; }
+    int rows=((int)tiles.size()+cols-1)/cols;
+    int need=rows*tileH; scroll=need>GridH()?IMIN(scroll,need-GridH()):0; if(scroll<0)scroll=0; }
+  static int PctOf(double pos,double dur,int watched){
+    if(watched) return 100; if(dur<=0.0) return -1;
+    int p=(int)(pos*100.0/dur+0.5); return p<0?0:(p>100?100:p); }
+  Tile* Cur(){ if(sectioned){ int i=secSel[curSec];
+      if(curSec>=0&&curSec<3&&i>=0&&i<(int)sec[curSec].size()) return &sec[curSec][i];
+      return nullptr; }
+    return (sel>=0&&sel<(int)tiles.size())?&tiles[sel]:nullptr; }
+  void SyncCurrent(){ SetCurrent(Cur()); }
+  // Play From Beginning only makes sense for a Continue item: a New/Watched title
+  // has no resume point to skip, and flat grids have no Continue category at all.
+  bool BeginEnabled() const { return playEnabled && sectioned && curSec==0; }
+  // Continue items with a saved position get a "Resume" label; the action is the
+  // same Play path (it already uses last_pos as the start position).
+  bool CanResume(){ Tile* t=Cur();
+    return t&&t->kind==0&&t->avail&&t->lastPos>5.0&&!t->watched; }
+  // 1.3.0 media_library_panel.py:693-703: during a sync the status line shows the
+  // worker's message; otherwise the title count plus any unreachable roots.
+  std::wstring StatusLine(){
+    if(scanning) return syncMsg.empty()?std::wstring(L"Updating library..."):syncMsg;
+    if(artFetching) return syncMsg.empty()?std::wstring(L"Fetching posters..."):syncMsg;
+    if(probing) return syncMsg.empty()?std::wstring(L"Reading media details..."):syncMsg;
+    std::wstring s=Plural((int)lib.Count(),L"title");
+    auto off=lib.UnreachableRoots();
+    // `roots.reachable` is written by the SCANNER, so a drive that has come back
+    // still reads "Not reachable" until the next scan (reported: F: reachable but
+    // the status line said otherwise). Verify the flagged roots live before
+    // showing them; a root that answers is simply not listed.
+    if(!off.empty()){
+      std::vector<std::wstring> live;
+      for(auto&r: off)
+        if(GetFileAttributesW(r.c_str())==INVALID_FILE_ATTRIBUTES) live.push_back(r);
+      off.swap(live);
+    }
+    if(!off.empty()){ s+=L"   Not reachable: ";
+      for(size_t i=0;i<off.size();++i){ if(i) s+=L", ";
+        std::wstring b=PLeaf(off[i]); s+=b.empty()?off[i]:b; } }
+    return s; }
+
+  // ---- content -------------------------------------------------------------
+  static std::wstring LCase(std::wstring s){ for(auto&c:s) c=towlower(c); return s; }
+  void EpiTile(const std::wstring& show,const LItem& e,const std::wstring& tail,Tile& t){
+    t.kind=0; t.path=e.path; t.size=e.size; t.title=NormTitle(show);
+    t.art=e.art.empty()?(e.seasonArt.empty()?e.showArt:e.seasonArt):e.art;
+    t.infoLine=InfoFor(e); t.avail=e.present!=0;
+    t.lastPos=e.lastPos; t.duration=e.duration; t.lastSeen=e.lastSeen;
+    t.season=e.season; t.episode=e.episode; t.watched=e.watched?1:0;
+    t.pct=PctOf(e.lastPos,e.duration,e.watched); t.season=e.season;
+    std::wstring tl=tail.empty()?ProgressTxt(t):tail; if(tl.empty()) tl=L"Continue";
+    wchar_t b[192]; swprintf(b,192,L"S%02dE%02d  \x00B7  %s",e.season,e.episode,tl.c_str());
+    t.sub=b; if(!e.present) t.sub+=L"  \x00B7  Unavailable"; }
+  static std::wstring DurTxt(double sec){ int t=(int)(sec+0.5); if(t<0)t=0; wchar_t b[32];
+    if(t>=3600) swprintf(b,32,L"%d:%02d:%02d",t/3600,(t/60)%60,t%60);
+    else swprintf(b,32,L"%d:%02d",t/60,t%60); return b; }
+  // "42% watched · 1:12:10 left" for the line under the green timeline.
+  static std::wstring ProgressTxt(const Tile& t){
+    if(t.pct<0) return L"";
+    wchar_t b[96];
+    if(t.duration>0.0&&t.lastPos>0.0){ double left=t.duration-t.lastPos; if(left<0)left=0;
+      std::wstring d=DurTxt(left);
+      swprintf(b,96,L"%d%% watched  \x00B7  %s left",t.pct,d.c_str()); }
+    else swprintf(b,96,L"%d%% watched",t.pct);
+    return b; }
+  void AddMovieSections(){
+    for(auto&m:lib.Movies()){
+      bool have=m.lastSeen>0||m.lastPos>0||m.watched;
+      if(!m.present&&!have) continue;
+      Tile t; t.kind=0; t.title=NormTitle(m.title);
+      t.sub=m.year?std::to_wstring(m.year):L""; t.art=m.art; t.path=m.path;
+      t.size=m.size; t.infoLine=InfoFor(m); t.watched=m.watched?1:0;
+      t.avail=m.present!=0; t.lastPos=m.lastPos; t.duration=m.duration;
+      t.lastSeen=m.lastSeen; t.pct=PctOf(m.lastPos,m.duration,m.watched);
+      if(t.watched||t.pct>=95){ t.watched=1; t.pct=100;
+        t.sub=t.avail?L"Watched":L"Watched  \x00B7  Unavailable";
+        sec[2].push_back(t); }
+      else if(m.present&&t.lastPos>5.0){
+        if(t.pct>=0) t.sub=ProgressTxt(t);
+        else { wchar_t b[80]; swprintf(b,80,L"Continue at %d:%02d",(int)t.lastPos/60,(int)t.lastPos%60);
+               t.sub=b; }
+        sec[0].push_back(t); }
+      else if(m.present) sec[1].push_back(t);
+      else { wchar_t b[96];
+        if(t.lastPos>5.0) swprintf(b,96,L"Continue at %d:%02d  \x00B7  Unavailable",
+                                   (int)t.lastPos/60,(int)t.lastPos%60);
+        else swprintf(b,96,L"Unavailable");
+        t.sub=b; sec[0].push_back(t); } }
+  }
+  void AddSections(){ if(tab==0) AddMovieSections(); else AddTvSections();
+    auto bySeen=[](const Tile&a,const Tile&b){ return a.lastSeen>b.lastSeen; };
+    std::sort(sec[0].begin(),sec[0].end(),bySeen);
+    std::sort(sec[2].begin(),sec[2].end(),bySeen); }
+  void AddTvSections(){
+    auto eps=lib.AllEpisodes();
+    std::map<std::wstring,std::vector<LItem>> by; std::vector<std::wstring> names;
+    for(auto&e:eps){ std::wstring k=LCase(e.title);
+      if(!by.count(k)) names.push_back(e.title); by[k].push_back(e); }
+    std::map<std::wstring,int> secOf;
+    for(auto&name:names){
+      std::wstring k=LCase(name); auto&g=by[k];
+      std::sort(g.begin(),g.end(),[](const LItem&a,const LItem&b){
+        if(a.season!=b.season) return a.season<b.season; return a.episode<b.episode; });
+      int seasonN=0,lastSeason=-1;
+      for(auto&e:g){ if(e.season!=lastSeason){ ++seasonN; lastSeason=e.season; } }
+      int presentN=0,watchN=0;
+      for(auto&e:g){ if(e.present)presentN++; if(e.watched)watchN++; }
+      int best=-1,upnext=-1;
+      for(size_t i=0;i<g.size();++i){ LItem&e=g[i];
+        int pc=PctOf(e.lastPos,e.duration,e.watched);
+        if(!e.watched&&e.lastPos>5.0&&(pc<0||pc<95)){
+          if(best<0||e.lastSeen>g[best].lastSeen) best=(int)i; }
+        if(upnext<0&&e.present&&!e.watched&&(pc<0||pc<95)) upnext=(int)i; }
+      if(best>=0){ Tile t; EpiTile(name,g[best],L"",t); t.contEp=true;
+        t.seriesSeasons=seasonN; sec[0].push_back(t); secOf[k]=0; }
+      else if(watchN>0&&watchN>=presentN){ Tile t; t.kind=1; t.title=NormTitle(name);
+        t.sub=L"Watched"; if(seasonN>0) t.sub+=L"  \xb7  "+Plural(seasonN,L"season");
+        t.pct=100; t.watched=1; t.seriesSeasons=seasonN; t.seriesEps=(int)g.size();
+        t.art=g[0].showArt.empty()?g[0].seasonArt:g[0].showArt;
+        // Show tiles need a path or availability cannot be judged at all — this
+        // is why the TV shelves never showed the badge.
+        t.path=g[0].path;
+        for(auto&e:g) if(e.lastSeen>t.lastSeen) t.lastSeen=e.lastSeen;
+        sec[2].push_back(t); secOf[k]=2; }
+      else if(watchN>0&&upnext>=0){ Tile t; EpiTile(name,g[upnext],L"Up next",t);
+        t.pct=0; t.contEp=true; t.seriesSeasons=seasonN;
+        sec[0].push_back(t); secOf[k]=0; }
+      else secOf[k]=1;
+    }
+    for(auto&s:lib.Shows()){
+      auto it=secOf.find(LCase(s.title));
+      if(it!=secOf.end()&&it->second!=1) continue;
+      Tile t; t.kind=1; t.title=NormTitle(s.title);
+      t.sub=Plural(s.seasons,L"season")+L"  \xb7  "+Plural(s.eps,L"episode");
+      t.seriesSeasons=s.seasons; t.seriesEps=s.eps;
+      t.art=s.art; t.path=s.path; sec[1].push_back(t); }
+  }
+  void Reload(){
+    HideFacts();
+    fullSec=-1; fullScroll=0; hdrSec=-1;
+    tiles.clear(); sec[0].clear(); sec[1].clear(); sec[2].clear();
+    empty=false; emptyMsg.clear();
+    // A season switcher appears only in the episode grid of a multi-season show.
+    seasonStripH=0;
+    if(tab==1&&!tvShow.empty()&&!tvSeason.empty()){
+      auto ss=lib.Seasons(tvShow.back());
+      LogF("library: episodes '%s' seasons=%d selected=%d strip=%d",
+           Narrow(tvShow.back()).c_str(),(int)ss.size(),tvSeason.back(),
+           (int)(ss.size()>1));
+      if(ss.size()>1) seasonStripH=Px(44); }
+    CRect rc=Client(); Metrics(rc.Width());
+    // 1.3.0: the caption is the bare TITLE with the year as the sub-line, and the
+    // breadcrumb is only shown once you have drilled into something
+    // (_crumb.setText(crumb if self._path else "")).
+    crumbShow=false;
+    // Top-level Movies and TV Shows use the three-section sheet (To Continue /
+    // Unwatched grid / Watched). Drilling into a show or folder keeps the flat grid.
+    sectioned = (tab==0) || (tab==1&&tvShow.empty()&&tvSeason.empty());
+    if(sectioned){
+      crumb = (tab==0)?L"Movies":L"TV Shows";
+      AddSections();
+      for(int s=0;s<3;++s) secSel[s]=-1;
+      bool matched=false;
+      for(int s=0;s<3;++s) for(size_t i=0;i<sec[s].size();++i)
+        if(lastPlayedSession&&!lastPlayed.empty()&&sec[s][i].path==lastPlayed){
+          secSel[s]=(int)i; curSec=s; matched=true; }
+      bool fresh=freshSelection;
+      if(fresh&&!matched) curSec = !sec[0].empty()?0 : (!sec[1].empty()?1:2);
+      freshSelection=false;
+      // Preserve the user's section on internal reloads; only a fresh tab/app
+      // landing (or a now-empty section) re-picks the default.
+      if(curSec<0||curSec>2||sec[curSec].empty())
+        curSec = !sec[0].empty()?0 : (!sec[1].empty()?1:2);
+      for(int s=0;s<3;++s){
+        if(secSel[s]<0&&!sec[s].empty()) secSel[s]=0;
+        if(secSel[s]>=(int)sec[s].size()) secSel[s]=(int)sec[s].size()-1; }
+      if(matched) LogF("library: selection lastPlayed sec=%d idx=%d",curSec,secSel[curSec]);
+      else if(fresh) LogF("library: fresh selection sec=%d idx=%d",curSec,secSel[curSec]);
+      canBack=false;
+      if(sec[0].empty()&&sec[1].empty()&&sec[2].empty()){ empty=true;
+        emptyMsg = lib.ok ? L"No films found in your library folders."
+                          : L"The media library could not be opened."; }
+      statusTxt=StatusLine();
+      // The shelves are what the user sees first, so their availability must be
+      // known BEFORE the first paint — this path returns early and used to skip
+      // the check entirely, which is why the badges appeared a beat late (or not
+      // at all until the 5 s timer).
+      RefreshAvailability(true);
+      ClampScroll(); SyncCurrent(); Invalidate(FALSE);
+      LogF("library: %s sections continue=%d unwatched=%d watched=%d cols=%d",
+           tab==0?"movies":"tv",(int)sec[0].size(),(int)sec[1].size(),
+           (int)sec[2].size(),cols);
+      return; }
+    if(tab==1){
+      if(tvShow.empty()){ crumb=L"TV Shows";
+        for(auto&s:lib.Shows()){ Tile t; t.kind=1; t.title=NormTitle(s.title);
+          t.sub=Plural(s.seasons,L"season")+L"  ·  "+Plural(s.eps,L"episode");
+          t.seriesSeasons=s.seasons; t.seriesEps=s.eps; t.art=s.art; t.path=s.path; tiles.push_back(t); } }
+      else if(tvSeason.empty()){ crumb=L"TV Shows  \x203A  "+tvShow.back(); crumbShow=true;
+        for(auto&s:lib.Seasons(tvShow.back())){ Tile t; t.kind=2; wchar_t b[48];
+          swprintf(b,48,L"Season %d",s.season); t.title=b; t.sub=Plural(s.eps,L"episode");
+          t.art=s.art; t.season=s.season; t.path=s.path; tiles.push_back(t); } }
+      else { wchar_t b[96]; swprintf(b,96,L"Season %d",tvSeason.back());
+        crumb=L"TV Shows  \x203A  "+tvShow.back()+L"  \x203A  "+b; crumbShow=true;
+        for(auto&e:lib.Episodes(tvShow.back(),tvSeason.back())){ Tile t; t.kind=0;
+          t.title=NormTitle(e.label()); t.size=e.size; t.infoLine=InfoFor(e);
+          t.art=e.art.empty()?(e.seasonArt.empty()?e.showArt:e.seasonArt):e.art;
+          t.season=e.season; t.episode=e.episode;
+          t.path=e.path; t.avail=e.present!=0;
+          // Status per episode: the season can be long, so every tile says
+          // Watched / n% watched / Not started and paints a 0-100% timeline.
+          t.lastPos=e.lastPos; t.duration=e.duration; t.watched=e.watched?1:0;
+          t.pct=PctOf(e.lastPos,e.duration,e.watched); t.epStatus=true;
+          std::wstring st = t.watched ? L"Watched"
+            : (t.pct>0&&t.pct<100 ? ProgressTxt(t)
+            : (t.pct>=100 ? L"100% watched" : L"Not started"));
+          if(!e.present) st+=L"  \xb7  Unavailable";
+          t.sub=st; tiles.push_back(t); } } }
+    else if(tab==2){
+      std::wstring folder=fPath.empty()?L"":fPath.back();
+      std::vector<Lib::SubRow> subs; std::vector<LItem> files;
+      lib.FolderView(folder,subs,files);            // empty folder = the roots themselves
+      crumb=L"Folders";
+      for(auto&p:fPath){ size_t k=p.find_last_of(L"\\/");
+        crumb+=L"  \x203A  "; crumb+=(k==std::wstring::npos)?p:p.substr(k+1); }
+      for(auto&s:subs){ Tile t; t.kind=3; size_t k=s.path.find_last_of(L"\\/");
+        t.title=(k==std::wstring::npos||k+1>=s.path.size())?s.path:s.path.substr(k+1);
+        t.sub=Plural(s.n,L"title"); t.art=s.art; t.path=s.path; tiles.push_back(t); }
+      crumbShow=!fPath.empty();
+      for(auto&f:files){ Tile t; t.kind=0; wchar_t b[96];
+        t.title = (f.kind==L"episode")
+                  ? (swprintf(b,96,L"%s S%02dE%02d",f.title.c_str(),f.season,f.episode),std::wstring(b))
+                  : f.label();
+        t.sub=ExtUpper(f.path); t.size=f.size; t.infoLine=InfoFor(f);
+        t.art=f.art.empty()?(f.seasonArt.empty()?f.showArt:f.seasonArt):f.art;
+        t.title=NormTitle(t.title);
+        t.path=f.path; tiles.push_back(t); } }
+    canBack = (tab==1&&(!tvShow.empty()||!tvSeason.empty())) || (tab==2&&!fPath.empty());
+    if(tiles.empty()){ empty=true;
+      emptyMsg = lib.ok ? L"No films found in your library folders."
+                        : L"The media library could not be opened."; }
+    // Availability is a property of the STORAGE, not of the scan: check it as the
+    // list is built so a detached volume is visible on the poster immediately
+    // instead of only when the user clicks and gets a message.
+    RefreshAvailability(true);
+    if(sel>=(int)tiles.size()) sel=-1;
+    if(sel<0&&!tiles.empty()){
+      if(lastPlayedSession&&!lastPlayed.empty()) for(size_t i=0;i<tiles.size();++i)
+        if(tiles[i].path==lastPlayed){ sel=(int)i; break; }
+      if(sel<0) sel=0; }
+    statusTxt=StatusLine();
+    SetCurrent(sel>=0&&!tiles.empty()?&tiles[sel]:nullptr); ClampScroll(); Invalidate(FALSE); }
+  void SetCurrent(Tile* t){
+    if(!t){ playEnabled=false; info=L"Select a title to play"; return; }
+    // Unavailable is the FIRST thing said: play is disabled and the reason is on
+    // screen, so a click cannot look like the app ignored it.
+    if(!t->path.empty() && !RootReachable(t->path)){
+      playEnabled=false;
+      info = L"UNAVAILABLE — reconnect " + PathRoot(t->path) + L" to play this title";
+      return; }
+    // A show/season tile is playable through PlayShow (next/first episode).
+    playEnabled=(t->kind==0&&t->avail)||t->kind==1||t->kind==2;
+    info = (t->kind==0&&!t->infoLine.empty()) ? t->infoLine
+           : (t->sub.empty()? t->title : t->title+L"   \xb7   "+t->sub);
+    // Container tiles are not playable files; say what Enter/click does so a user
+    // looking for an episode does not stop at the show/season tile.
+    if(t->kind==1) info+=(t->seriesSeasons>1)
+      ? L"   \x2014   Click or Enter to choose a season"
+      : L"   \x2014   Click or Enter to open episodes";
+    else if(t->kind==2) info+=L"   \x2014   Click or Enter to choose an episode";
+    else if(t->kind==3) info+=L"   \x2014   Click or Enter to open folder";
+    if(t->contEp) info+=(t->seriesSeasons>1)
+      ? L"   \x2014   Click poster to resume \x00B7 Seasons chip opens the season list"
+      : L"   \x2014   Click poster to resume \x00B7 Episodes chip opens the episode list"; }
+
+  void Activate(int i,bool fromClick=false){ if(i<0||i>=(int)tiles.size())return; Tile&t=tiles[i];
+    if(t.kind==0){ Play(t); return; }
+    if(t.kind==1){ tvShow.push_back(t.title); tvSeason.clear();
+      // Mouse click on a single-season series goes straight to its episodes;
+      // a multi-season series still shows the season list first.
+      if(fromClick){ auto q=lib.Seasons(t.title); if(q.size()==1) tvSeason.push_back(q[0].season); } }
+    else if(t.kind==2){ tvSeason.push_back(t.season); }
+    else if(t.kind==3){ fPath.push_back(t.path); }
+    Reload(); }
+  void ActivateSec(int s,int i,bool fromClick=false){ if(s<0||s>2||i<0||i>=(int)sec[s].size())return; Tile&t=sec[s][i];
+    if(t.kind==0){ Play(t); return; }
+    if(t.kind==1){ tvShow.push_back(t.title); tvSeason.clear();
+      if(fromClick){ auto q=lib.Seasons(t.title); if(q.size()==1) tvSeason.push_back(q[0].season); } }
+    else if(t.kind==2){ tvSeason.push_back(t.season); }
+    else if(t.kind==3){ fPath.push_back(t.path); }
+    Reload(); }
+  // The Episodes action for a TV Continue tile: open that series at the episode's
+  // season. The poster itself resumes, so this is the only way in to the episode
+  // list from Continue (and it must not be a click on the whole tile).
+  void OpenSeasonFor(const Tile& t){
+    if(t.title.empty()||t.season<=0) return;
+    std::wstring show=t.title; int season=t.season;
+    tvShow.clear(); tvSeason.clear(); tvShow.push_back(show); tvSeason.push_back(season);
+    sel=-1; lastClick=-99; Reload();
+    LogF("library: episodes '%s' season %d",Narrow(show).c_str(),season); }
+  // The series action on a Continue tile: multi-season shows get the season
+  // chooser (so the SEASONS (N) chip is truthful); single-season shows go straight
+  // to their only episode list.
+  void OpenSeriesFor(const Tile& t){
+    if(t.seriesSeasons>1){
+      std::wstring show=t.title; int n=t.seriesSeasons;   // Reload clears sec[], so don't touch t after it
+      tvShow.clear(); tvSeason.clear(); tvShow.push_back(show);
+      sel=-1; lastClick=-99; Reload();
+      LogF("library: seasons '%s' (%d)",Narrow(show).c_str(),n);
+    } else OpenSeasonFor(t); }
+  static std::wstring SeriesChipText(const Tile& t){
+    if(t.seriesSeasons>1){ wchar_t b[48];
+      swprintf(b,48,L"SEASONS (%d) \x203A",t.seriesSeasons); return b; }
+    return L"EPISODES \x203A"; }
+  CRect SeriesChipR(CRect tr,const Tile& t){ CRect pr=PosterIn(tr);
+    int w=t.seriesSeasons>1?Px(106):Px(80);
+    return CRect(pr.left+Px(6),pr.top+Px(6),pr.left+Px(6)+w,pr.top+Px(6)+Px(20)); }
+  // Season buttons for the multi-season episode grid. Logical positions are laid
+  // out from 0 so the selected season can be scrolled into view; the strip has
+  // left/right chevrons only when the full row does not fit.
+  void LayoutSeasonStrip(){
+    seasonBtnR.clear(); seasonNums.clear();
+    seasonLeftR=CRect(0,0,0,0); seasonRightR=CRect(0,0,0,0);
+    seasonScrollMax=0;
+    if(seasonStripH<=0||tvShow.empty()||tvSeason.empty()) return;
+    auto ss=lib.Seasons(tvShow.back());
+    if(ss.size()<2) return;
+    std::vector<int> widths; int total=0;
+    for(auto&s:ss){
+      wchar_t b[32]; swprintf(b,32,L"Season %d",s.season);
+      int w=IMAX(Px(78),TextW(b,12,false)+Px(24));
+      widths.push_back(w); total+=w+Px(6); }
+    if(!widths.empty()) total-=Px(6);
+    int avail=seasonStripR.Width();
+    bool over=total>avail;
+    int left=seasonStripR.left, arrowW=Px(28);
+    if(over){
+      seasonLeftR=CRect(seasonStripR.left,seasonStripR.top+Px(6),
+                        seasonStripR.left+arrowW,seasonStripR.bottom-Px(6));
+      seasonRightR=CRect(seasonStripR.right-arrowW,seasonStripR.top+Px(6),
+                         seasonStripR.right,seasonStripR.bottom-Px(6));
+      left+=arrowW+Px(8);
+      avail=seasonStripR.Width()-2*(arrowW+Px(8));
+      seasonScrollMax=IMAX(0,total-avail);
+    } else seasonOff=0;
+    int cur=0;
+    for(size_t i=0;i<ss.size();++i) if(ss[i].season==tvSeason.back()) cur=(int)i;
+    int lx=0; for(int i=0;i<cur;++i) lx+=widths[i]+Px(6);
+    int rx=lx+widths[cur];
+    if(lx-seasonOff<0) seasonOff=lx;
+    if(rx-seasonOff>avail) seasonOff=rx-avail;
+    seasonOff=IMAX(0,IMIN(seasonOff,seasonScrollMax));
+    int x=left-seasonOff;
+    for(size_t i=0;i<ss.size();++i){
+      CRect r(x,seasonStripR.top+Px(6),x+widths[i],seasonStripR.bottom-Px(6));
+      seasonBtnR.push_back(r); seasonNums.push_back(ss[i].season);
+      x+=widths[i]+Px(6); }
+  }
+  void Back(){
+    if(tab==1){ if(!tvSeason.empty()) tvSeason.pop_back();
+      else if(!tvShow.empty()){ tvShow.pop_back(); auto s=tvShow; Reload(); return; } }
+    else if(tab==2&&!fPath.empty()) fPath.pop_back();
+    sel=-1; Reload(); }
+  static bool PosIsWatched(double pos,double dur){
+    // A 20 s clip stopped at 5 s is not "finished": scale the end window with the
+    // length instead of a flat 30 s (which marked every short clip watched).
+    if(dur<=0.0) return false;
+    double margin=IMAX(5.0,IMIN(30.0,dur*0.05));
+    return pos>=dur-margin; }
+  void WriteHistory(const std::wstring& path,double pos,double dur){
+    if(lib.ok) lib.WriteHistory(path,pos,dur,PosIsWatched(pos,dur)); }
+  void StartScan(){
+    if(scanning){ LogF("library scan: already running"); return; }
+    scanning=true; syncMsg=L"Updating library..."; HWND me=m_hWnd; g_scanNotify=me;
+    statusTxt=StatusLine(); Invalidate(FALSE);
+    LogF("library scan: starting in background");
+    std::thread([me]{ Lib scan; if(scan.Open()) scan.ScanAll();
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+27,0,0); }).detach(); }
+  afx_msg LRESULT OnScanDone(WPARAM,LPARAM){ scanning=false; syncMsg.clear();
+    if(!artFetching) g_scanNotify=0;
+    Reload(); StartArtFetch();   // grid first; posters, then ffprobe facts
+    LogF("library scan: UI reloaded (%d tiles)",(int)sec[1].size()+(int)tiles.size()); return 0; }
+  afx_msg LRESULT OnScanProgress(WPARAM done,LPARAM total){
+    if(scanning||artFetching){ wchar_t b[96];
+      swprintf(b,96,L"Fetching posters... %d/%d",(int)done,(int)total);
+      syncMsg=b; statusTxt=StatusLine(); Invalidate(FALSE); }
+    return 0; }
+  // ---- background media probe (ffprobe) + hover facts -----------------------
+  void RefreshArtTiles(){
+    std::map<std::wstring,std::wstring> m,sh;
+    lib.ArtMap(m); lib.ShowArtMap(sh);
+    auto up=[&](Tile& t){
+      if(t.kind==1){ auto it=sh.find(PLower(t.title));
+        if(it!=sh.end()&&!it->second.empty()) t.art=it->second; return; }
+      // An episode's `art` column is often empty; its poster comes from
+      // season_art/show_art fallback. Never overwrite that with an empty value,
+      // or the Continue tile goes blank when the poster pass runs after Stop.
+      auto it=m.find(t.path);
+      if(it!=m.end()&&!it->second.empty()) t.art=it->second; };
+    for(int s=0;s<3;++s) for(auto&t:sec[s]) up(t);
+    for(auto&t:tiles) up(t);
+    Invalidate(FALSE);
+    if(m_facts.IsWindowVisible()) ShowFactsForHover(); }
+  void StartArtFetch(){
+    if(artFetching){ artAgain=true; g_scanNotify=m_hWnd; return; }
+    artFetching=true; syncMsg=L"Fetching posters..."; statusTxt=StatusLine(); Invalidate(FALSE);
+    HWND me=m_hWnd; g_scanNotify=me;
+    LogF("art: starting background poster/genre pass");
+    std::thread([me]{
+      Lib a; if(!a.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+36,0,0); return; }
+      int changed=0;
+      for(int pass=0;pass<8;++pass){
+        int c=a.FetchMissingArt(); changed+=c;
+        if(c<=0) break;
+        if(::IsWindow(me)) ::PostMessageW(me,WM_APP+35,0,0); }
+      LogF("art: %d rows updated",changed);
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+36,0,0);
+    }).detach(); }
+  afx_msg LRESULT OnArtReady(WPARAM,LPARAM){ RefreshArtTiles(); return 0; }
+  afx_msg LRESULT OnArtDone(WPARAM,LPARAM){
+    artFetching=false; syncMsg.clear(); g_scanNotify=0;
+    statusTxt=StatusLine(); Invalidate(FALSE);
+    if(artAgain){ artAgain=false; StartArtFetch(); return 0; }
+    StartProbes();   // posters first, then the heavier ffprobe pass
+    return 0; }
+  void StartProbes(){
+    if(probing){ probeAgain=true; return; }
+    std::wstring ff=FfprobePath();
+    if(ff.empty()){ LogF("probe: ffprobe.exe not found - details limited"); return; }
+    probing=true; probeAgain=false; syncMsg=L"Reading media details...";
+    statusTxt=StatusLine(); Invalidate(FALSE);
+    HWND me=m_hWnd;
+    LogF("probe: probing missing media facts with '%s'",Narrow(ff).c_str());
+    std::thread([me,ff]{
+      Lib p; if(!p.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+34,0,0); return; }
+      auto rows=p.ProbeRows(); int ok=0,total=(int)rows.size();
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+33,0,(LPARAM)total);
+      for(auto&r:rows){
+        std::string js,pj; double dur=0;
+        if(RunFfprobe(ff,r.path,js)&&ParseProbe(js,r.size,pj,dur)
+           &&p.SetProbe(r.path,pj,r.size,r.mtime,dur)){
+          ++ok; if(ok==1||ok%50==0) LogF("probe: %d files done",ok); }
+        if(::IsWindow(me)) ::PostMessageW(me,WM_APP+33,(WPARAM)(ok),(LPARAM)total);
+      }
+      LogF("probe: %d/%d files probed",ok,total);
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+34,0,0);
+    }).detach(); }
+  afx_msg LRESULT OnProbeReady(WPARAM done,LPARAM total){
+    if(probing){ wchar_t b[96];
+      if(total>0) swprintf(b,96,L"Reading media details... %d/%d",(int)done,(int)total);
+      else wcscpy_s(b,L"Reading media details...");
+      syncMsg=b; statusTxt=StatusLine(); Invalidate(FALSE); }
+    static DWORD lastCard=0;
+    if(m_facts.IsWindowVisible()&&GetTickCount()-lastCard>350){
+      lastCard=GetTickCount(); ShowFactsForHover(); }
+    return 0; }
+  afx_msg LRESULT OnProbeDone(WPARAM,LPARAM){
+    probing=false; syncMsg.clear(); statusTxt=StatusLine(); Invalidate(FALSE);
+    if(probeAgain){ probeAgain=false; StartProbes(); }
+    return 0; }
+  bool CurHoverTile(Tile*& out){
+    out=nullptr;
+    if(fullSec>=0){
+      if(lastHoverSec==fullSec&&lastHoverIdx>=0&&lastHoverIdx<(int)sec[fullSec].size())
+        out=&sec[fullSec][lastHoverIdx]; }
+    else if(sectioned){
+      if(lastHoverSec>=0&&lastHoverSec<3&&lastHoverIdx>=0
+         &&lastHoverIdx<(int)sec[lastHoverSec].size()) out=&sec[lastHoverSec][lastHoverIdx]; }
+    else if(lastHoverFlat>=0&&lastHoverFlat<(int)tiles.size()) out=&tiles[lastHoverFlat];
+    return out!=nullptr; }
+  void HideFacts(){ KillTimer(11); m_facts.Hide(); }
+  void ShowFactsForHover(){
+    if(!IsWindowVisible()) return;
+    Tile* tp=nullptr; if(!CurHoverTile(tp)||!tp||tp->kind==3) return;
+    Lib::MetaRow mm; std::wstring genre; std::string probe;
+    int year=0,eps=0;
+    if(tp->kind==0){ lib.MetaFor(tp->path,mm); genre=mm.genre; probe=mm.probe; year=mm.year; }
+    else if(tp->kind==1){ lib.SeriesMeta(tp->title,-1,genre,probe,year,eps); }
+    else if(tp->kind==2){ std::wstring show=tvShow.empty()?tp->title:tvShow.back();
+      lib.SeriesMeta(show,tp->season,genre,probe,year,eps); }
+    double dur=0,br=0; int cll=0,hd=0,dvp=0; std::wstring hdr,gamut,audio,ar;
+    if(!probe.empty()){
+      JNum(probe.c_str(),"dur",dur); JNum(probe.c_str(),"br",br);
+      hdr=JStr(probe,"hdr"); gamut=JStr(probe,"gamut"); audio=JStr(probe,"audio");
+      ar=JStr(probe,"ar");
+      if(ar.empty()){ // records written before p4: derive it from the resolution
+        std::wstring res=JStr(probe,"res"); int w=0,h=0;
+        if(swscanf_s(res.c_str(),L"%dx%d",&w,&h)==2&&w>0&&h>0){
+          wchar_t ab[32]; swprintf_s(ab,L"%.2f:1",(double)w/(double)h); ar=ab; } }
+      double d=0; JNum(probe.c_str(),"cll",d); cll=(int)d;
+      d=0; JNum(probe.c_str(),"hd",d); hd=(int)d;
+      d=0; JNum(probe.c_str(),"dvp",d); dvp=(int)d;
+      if(gamut==L"BT.709"&&(hdr.rfind(L"Dolby Vision",0)==0||dvp==8)) gamut=L"BT.2020"; }
+    if(dur<=0.0&&tp->duration>0.0) dur=tp->duration;
+    std::wstring title=NormTitle(tp->title);
+    std::vector<TipLine> lines; wchar_t b[192];
+    auto add=[&](const std::wstring& s,COLORREF c){ TipLine l; l.text=s; l.color=c; lines.push_back(l); };
+    const COLORREF cGray=RGB(0xC0,0xC0,0xC0), cDim=RGB(0x86,0x86,0x86),
+      cGreen=RGB(0x3F,0xC9,0x5B);
+    COLORREF cHdr=RGB(0xA8,0xA8,0xA8);
+    if(hdr.rfind(L"Dolby Vision",0)==0) cHdr=RGB(0xB0,0x8C,0xFF);
+    else if(hdr==L"HDR10") cHdr=RGB(0xE0,0xB8,0x50);
+    else if(hdr==L"HLG") cHdr=RGB(0x4C,0xC9,0xB0);
+    std::wstring lg=L"—"; if(!genre.empty()) lg=genre;
+    if(year>0) swprintf(b,192,L"%d  \x00B7  %s",year,lg.c_str());
+    else swprintf(b,192,L"%s",lg.c_str());
+    std::wstring l1=b;
+    if(eps>0){ swprintf(b,192,L"  \x00B7  %d episodes",eps); l1+=b; }
+    add(l1,cDim);
+    if(probe.empty()){
+      add(L"Duration / bitrate / aspect: probing...",cDim);
+      add(L"HDR / gamut: probing...",cDim);
+      add(L"Audio: probing...",cDim); }
+    else {
+      std::wstring dt;
+      if(dur>0){ int t=(int)(dur+0.5);
+        if(t>=3600){ swprintf(b,192,L"%dh %02dm",t/3600,(t/60)%60); dt=b; }
+        else { swprintf(b,192,L"%dm",t/60); dt=b; } }
+      else dt=L"—";
+      if(br>0) swprintf(b,192,L"%s  \x00B7  %.1f Mbps  \x00B7  %s",
+                        dt.c_str(),br/1e6,ar.empty()?L"—":ar.c_str());
+      else swprintf(b,192,L"%s  \x00B7  %s",dt.c_str(),ar.empty()?L"—":ar.c_str());
+      add(b,cGray);
+      if(cll>0) swprintf(b,192,L"%s  \x00B7  %s  \x00B7  MaxCLL %d",
+                         hdr.empty()?L"—":hdr.c_str(),gamut.empty()?L"—":gamut.c_str(),cll);
+      else swprintf(b,192,L"%s  \x00B7  %s",hdr.empty()?L"—":hdr.c_str(),
+                    gamut.empty()?L"—":gamut.c_str());
+      add(b,cHdr);
+      if(dvp==8){ swprintf(b,192,L"DV P8 metadata  \x00B7  base layer %s",hdr.c_str());
+        add(b,RGB(0xB0,0x8C,0xFF)); }
+      if(!audio.empty()){ swprintf(b,192,L"%s%s",audio.c_str(),hd?L"  (HD)":L"");
+        add(b,hd?cGreen:cGray); }
+      else add(L"Audio: —",cDim); }
+    if(tp->pct>0&&tp->pct<100){ swprintf(b,192,L"%d%% watched",tp->pct); add(b,cGreen); }
+    static std::wstring logTitle; static int logProbe=-1;
+    if(title!=logTitle||(int)!probe.empty()!=logProbe){
+      logTitle=title; logProbe=(int)!probe.empty();
+      LogF("facts: '%s' probe=%d genre='%s' dur=%.1f br=%.0f ar='%s' hdr='%s' audio='%s'",
+           Narrow(title).c_str(),logProbe,Narrow(genre).c_str(),dur,br,
+           Narrow(ar).c_str(),Narrow(hdr).c_str(),Narrow(audio).c_str()); }
+    if(!m_facts.GetSafeHwnd()) m_facts.CreateTip(AfxGetMainWnd());
+    CPoint cur; ::GetCursorPos(&cur);
+    m_facts.ShowFacts(title,lines,cur); }
+  void OnTimer(UINT_PTR id){
+    if(id==11){ KillTimer(11); ShowFactsForHover(); }
+    CWnd::OnTimer(id); }
+  afx_msg void OnMouseLeave(){ KillTimer(11); m_facts.Hide(); UiTipHide();
+    lastHoverSec=-1; lastHoverIdx=-1; lastHoverFlat=-99;
+    hov=-1; hovSec=-1; hovIdx=-1; hovSeason=-1; hovEpChip=false;
+    Invalidate(FALSE); }
+  void CaptureCtx(Tile& t){
+    ctx=PlayCtx(); ctx.active=true; ctx.path=t.path;
+    if(sectioned){ ctx.list=sec[curSec];
+      for(size_t i=0;i<ctx.list.size();++i) if(ctx.list[i].path==t.path){ ctx.idx=(int)i; break; }
+      if(tab==1&&t.kind==0){ ctx.tv=true; ctx.show=t.title; ctx.season=t.season; ctx.episode=t.episode; } }
+    else { ctx.list=tiles;
+      for(size_t i=0;i<ctx.list.size();++i) if(ctx.list[i].path==t.path){ ctx.idx=(int)i; break; }
+      if(tab==1&&t.kind==0){ ctx.tv=true;
+        ctx.show=tvShow.empty()?L"":tvShow.back();
+        ctx.season=t.season; ctx.episode=t.episode; } }
+    LogF("library: play ctx tab=%d sectioned=%d idx=%d tv=%d show='%s' S%dE%d",
+         tab,(int)sectioned,ctx.idx,(int)ctx.tv,Narrow(ctx.show).c_str(),ctx.season,ctx.episode); }
+  bool CtxValidFor(const std::wstring& p){ return ctx.active&&ctx.path==p; }
+  bool TvContext(){ return ctx.active&&ctx.tv&&!ctx.show.empty(); }
+  // The next item in the SAME context: TV -> next episode/season of the show;
+  // otherwise the next playable tile in the section/folder list playback started
+  // from. Stops at the end (user's choice), never wraps or changes section.
+  bool NextAfter(std::wstring& path,double& resume,std::wstring& label){
+    path.clear(); resume=0; label.clear();
+    if(ctx.tv&&!ctx.show.empty()){
+      auto all=lib.AllEpisodes(); std::vector<LItem> eps;
+      std::wstring want=PLower(ctx.show);
+      for(auto&e:all) if(PLower(e.title)==want) eps.push_back(e);
+      int cur=-1;
+      for(size_t i=0;i<eps.size();++i) if(eps[i].path==ctx.path){ cur=(int)i; break; }
+      if(cur<0) for(size_t i=0;i<eps.size();++i)
+        if(eps[i].season==ctx.season&&eps[i].episode==ctx.episode){ cur=(int)i; break; }
+      if(cur<0){ LogF("auto-next: current episode not found for '%s'",Narrow(ctx.show).c_str()); return false; }
+      for(size_t i=(size_t)cur+1;i<eps.size();++i){
+        if(!eps[i].present||eps[i].path.empty()) continue;
+        path=eps[i].path;
+        resume=(eps[i].lastPos>5.0&&!eps[i].watched)?eps[i].lastPos:0.0;
+        label=eps[i].label(); ctx.path=path; ctx.season=eps[i].season; ctx.episode=eps[i].episode;
+        g_openTitleMain=ctx.show; wchar_t tb[32];
+        swprintf_s(tb,L"S%02dE%02d",eps[i].season,eps[i].episode);
+        g_openTitleMeta=tb; if(!label.empty()) g_openTitleMeta+=L"  \xb7  "+label;
+        LogF("auto-next: next episode S%02dE%02d '%s'",eps[i].season,eps[i].episode,Narrow(label).c_str());
+        return true; }
+      LogF("auto-next: no next episode for '%s' after S%02dE%02d",Narrow(ctx.show).c_str(),
+           ctx.season,ctx.episode); return false; }
+    for(int i=ctx.idx+1;i<(int)ctx.list.size();++i){ const Tile&t=ctx.list[i];
+      if(t.kind!=0||!t.avail||t.path.empty()) continue;
+      path=t.path; resume=(t.lastPos>5.0&&!t.watched)?t.lastPos:0.0; label=t.title;
+      ctx.idx=i; ctx.path=path; ctx.season=t.season; ctx.episode=t.episode;
+      g_openTitleMain=label; g_openTitleMeta.clear();
+      LogF("auto-next: next item '%s' at %d/%d",Narrow(label).c_str(),i,(int)ctx.list.size());
+      return true; }
+    LogF("auto-next: end of section (%d items, idx=%d)",(int)ctx.list.size(),ctx.idx);
+    return false; }
+  // Mirror of NextAfter for the transport's previous-item button. Walking is
+  // backwards and skips missing files just like the forward path.
+  bool PrevBefore(std::wstring& path,double& resume,std::wstring& label){
+    path.clear(); resume=0; label.clear();
+    if(ctx.tv&&!ctx.show.empty()){
+      auto all=lib.AllEpisodes(); std::vector<LItem> eps;
+      std::wstring want=PLower(ctx.show);
+      for(auto&e:all) if(PLower(e.title)==want) eps.push_back(e);
+      int cur=-1;
+      for(size_t i=0;i<eps.size();++i) if(eps[i].path==ctx.path){ cur=(int)i; break; }
+      if(cur<0) for(size_t i=0;i<eps.size();++i)
+        if(eps[i].season==ctx.season&&eps[i].episode==ctx.episode){ cur=(int)i; break; }
+      if(cur<0){ LogF("previous: current episode not found for '%s'",Narrow(ctx.show).c_str()); return false; }
+      for(int i=cur-1;i>=0;--i){
+        if(!eps[i].present||eps[i].path.empty()) continue;
+        path=eps[i].path;
+        resume=(eps[i].lastPos>5.0&&!eps[i].watched)?eps[i].lastPos:0.0;
+        label=eps[i].label(); ctx.path=path; ctx.season=eps[i].season; ctx.episode=eps[i].episode;
+        g_openTitleMain=ctx.show; wchar_t tb[32];
+        swprintf_s(tb,L"S%02dE%02d",eps[i].season,eps[i].episode);
+        g_openTitleMeta=tb; if(!label.empty()) g_openTitleMeta+=L"  \xb7  "+label;
+        LogF("previous episode S%02dE%02d '%s'",eps[i].season,eps[i].episode,Narrow(label).c_str());
+        return true; }
+      LogF("previous: no previous episode for '%s' before S%02dE%02d",Narrow(ctx.show).c_str(),
+           ctx.season,ctx.episode); return false; }
+    for(int i=ctx.idx-1;i>=0;--i){ const Tile&t=ctx.list[i];
+      if(t.kind!=0||!t.avail||t.path.empty()) continue;
+      path=t.path; resume=(t.lastPos>5.0&&!t.watched)?t.lastPos:0.0; label=t.title;
+      ctx.idx=i; ctx.path=path; ctx.season=t.season; ctx.episode=t.episode;
+      g_openTitleMain=label; g_openTitleMeta.clear();
+      LogF("previous item '%s' at %d/%d",Narrow(label).c_str(),i,(int)ctx.list.size());
+      return true; }
+    LogF("previous: start of section (idx=%d)",ctx.idx);
+    return false; }
+  // Play a whole series/season from the library Play button: resume the episode in
+// progress, else the first unwatched episode, else the first present episode.
+  bool PlayShow(const std::wstring& show,int season){
+    auto eps=lib.AllEpisodes(); std::wstring want=PLower(show);
+    int best=-1,firstPresent=-1,firstUnwatched=-1;
+    for(size_t i=0;i<eps.size();++i){ LItem&e=eps[i];
+      if(PLower(e.title)!=want||!e.present||e.path.empty()) continue;
+      if(season>=0&&e.season!=season) continue;
+      if(firstPresent<0) firstPresent=(int)i;
+      int pc=PctOf(e.lastPos,e.duration,e.watched);
+      if(!e.watched&&(pc<0||pc<95)){
+        if(firstUnwatched<0) firstUnwatched=(int)i;
+        if(e.lastPos>5.0&&(best<0||e.lastSeen>eps[best].lastSeen)) best=(int)i; } }
+    int pick=best>=0?best:(firstUnwatched>=0?firstUnwatched:firstPresent);
+    if(pick<0){ LogF("library: show '%s' has no playable episode",Narrow(show).c_str()); return false; }
+    LItem&e=eps[pick];
+    Tile t; t.kind=0; t.path=e.path; t.title=NormTitle(show); t.avail=true;
+    t.art=e.art.empty()?(e.seasonArt.empty()?e.showArt:e.seasonArt):e.art;
+    t.season=e.season; t.episode=e.episode; t.lastPos=e.lastPos;
+    t.duration=e.duration; t.watched=e.watched?1:0;
+    t.pct=PctOf(e.lastPos,e.duration,e.watched); t.infoLine=InfoFor(e);
+    wchar_t b[96]; swprintf(b,96,L"S%02dE%02d",e.season,e.episode); t.sub=b;
+    LogF("library: play series '%s' -> S%02dE%02d resume=%.1f",Narrow(show).c_str(),
+         e.season,e.episode,(e.lastPos>5.0&&!e.watched)?e.lastPos:0.0);
+    Play(t); return true; }
+  // Is the volume that holds this path reachable RIGHT NOW? The DB's `present`
+  // flag is written by a scan and can be hours old; a drive that was unplugged
+  // since must not be played blindly (and the tile's "!" badge should say so).
+  // Only the ROOT is probed, cached for a few seconds: probing the file itself on
+  // every repaint would hit the network/disconnected volume per tile. Play() does
+  // the full check once, when it matters.
+  static std::wstring PathRoot(const std::wstring& path){
+    if(path.size()>=2 && path[1]==L':') return path.substr(0,2)+L"\\";
+    if(path.size()>2 && path[0]==L'\\' && path[1]==L'\\'){
+      const size_t a=path.find(L'\\',2);
+      if(a!=std::wstring::npos){
+        const size_t b=path.find(L'\\',a+1);
+        return path.substr(0,b==std::wstring::npos?path.size():b); } }
+    return L""; }
+  static bool RootReachable(const std::wstring& path){
+    const std::wstring root=PathRoot(path);
+    if(root.empty()) return true;                  // relative/local path: assume ok
+    static std::map<std::wstring,bool> cache; static ULONGLONG stamp=0;
+    const ULONGLONG now=GetTickCount64();
+    if(now-stamp>4000){ cache.clear(); stamp=now; }
+    auto it=cache.find(root);
+    if(it!=cache.end()) return it->second;
+    const bool ok = GetDriveTypeW(root.c_str())!=DRIVE_NO_ROOT_DIR &&
+                    GetFileAttributesW(root.c_str())!=INVALID_FILE_ATTRIBUTES;
+    cache[root]=ok; return ok; }
+  // Re-check every tile's volume; the "!" badge then reflects what is plugged in
+  // NOW rather than what was plugged in at the last scan. Called on a slow timer
+  // while the library is on screen.
+  // deep=true also stats the FILE (build/reload: catches deleted or renamed files);
+// the periodic refresh only probes the volume root, which is what changes while
+// the library is open and is cheap even on a dead network path.
+  void RefreshAvailability(bool deep=false){
+    // The visible shelves (Continue / New / Watched) live in `sec[]`, not in
+    // `tiles` — checking only `tiles` marked nothing and the posters never got an
+    // icon even though 245 of the titles sit on a drive that is gone.
+    bool changed=false;
+    auto check=[&](Tile& t){
+      if(t.path.empty()) return;
+      const bool ok=RootReachable(t.path) &&
+                    (!deep || GetFileAttributesW(t.path.c_str())!=INVALID_FILE_ATTRIBUTES);
+      if(ok!=t.avail){ t.avail=ok; changed=true;
+        LogF("library: '%s' is now %s",Narrow(t.path).c_str(), ok?"available":"UNAVAILABLE"); } };
+    for(auto& t: tiles) check(t);
+    for(int s=0;s<3;++s) for(auto& t: sec[s]) check(t);
+    if(changed){
+      // The selected item's info line and the status line are DERIVED from
+      // availability; leaving them alone kept "reconnect F:\" on screen after the
+      // drive came back (reported). Recompute both with the new state.
+      SyncCurrent();
+      statusTxt=StatusLine();
+      Invalidate(FALSE); }
+    LogF("library: availability deep=%d tiles=%d sec=%d/%d/%d unavailable=%d", deep?1:0,
+         (int)tiles.size(),(int)sec[0].size(),(int)sec[1].size(),(int)sec[2].size(),
+         (int)std::count_if(tiles.begin(),tiles.end(),[](const Tile& x){ return !x.avail; })
+         +(int)std::count_if(sec[0].begin(),sec[0].end(),[](const Tile& x){ return !x.avail; })
+         +(int)std::count_if(sec[1].begin(),sec[1].end(),[](const Tile& x){ return !x.avail; })
+         +(int)std::count_if(sec[2].begin(),sec[2].end(),[](const Tile& x){ return !x.avail; })); }
+  void Play(Tile&t,bool fromStart=false){
+    // Two separate failures, two different messages: the volume is gone vs the
+    // file itself is gone. Telling the user WHICH is the "accurate reason".
+    if(!RootReachable(t.path)){
+      const std::wstring root=PathRoot(t.path);
+      g_toastText = L"Storage unavailable: reconnect "+root+L" to play this title";
+      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0);
+      LogF("library: play refused — volume %S not reachable for '%s'",
+           root.c_str(),Narrow(t.path).c_str()); return; }
+    if(!t.avail || GetFileAttributesW(t.path.c_str())==INVALID_FILE_ATTRIBUTES){
+      g_toastText = L"File not found at its saved location";
+      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0);
+      LogF("library: play refused — file missing '%s'",Narrow(t.path).c_str()); return; }
+    CaptureCtx(t);
+    g_openTitleMain.clear(); g_openTitleMeta.clear();
+    if(tab==1&&t.kind==0){
+      std::wstring show=tvShow.empty()?t.title:tvShow.back();
+      g_openTitleMain=show;
+      wchar_t b[32]; swprintf_s(b,L"S%02dE%02d",t.season,t.episode); g_openTitleMeta=b;
+      if(!tvShow.empty()&&t.title!=show) g_openTitleMeta+=L"  \xb7  "+t.title;
+    } else {
+      g_openTitleMain=t.title;
+      if(tab==0&&t.sub.size()==4&&t.sub.find_first_not_of(L"0123456789")==std::wstring::npos)
+        g_openTitleMeta=t.sub;
+    }
+    std::string u8=Narrow(t.path); std::string esc; for(char c:u8){ if(c=='\\')esc+="\\\\"; else esc+=c; }
+    char cmd[2048]; snprintf(cmd,sizeof(cmd),"{\"a\":\"open\",\"url\":\"%s\"}",esc.c_str());
+    g_openUrl=cmd; lastPlayed=t.path; lastPlayedSession=true;
+    g_openResumeSec=fromStart?0.0:
+      ((t.avail&&t.lastPos>5.0&&!t.watched)?t.lastPos:0.0);
+    LogF("library: play%s '%s' resume=%.1fs",fromStart?" FROM BEGINNING":"",esc.c_str(),g_openResumeSec);
+    ShowWindow(SW_HIDE);
+    CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+1,0,0); }
+
+  // ---- painting ------------------------------------------------------------
+  Gdiplus::Bitmap* Art(const std::wstring& p){
+    if(p.empty()) return nullptr;
+    auto it=art.find(p); if(it!=art.end()) return it->second;
+    Gdiplus::Bitmap* b=nullptr;
+    Gdiplus::Bitmap* t=Gdiplus::Bitmap::FromFile(p.c_str(),FALSE);
+    if(t&&t->GetLastStatus()==Gdiplus::Ok) b=t; else delete t;
+    if(art.size()>=300){ delete art.begin()->second; art.erase(art.begin()); }  // _PixCache cap
+    art[p]=b; return b; }
+
+  void OnPaint(){ DWORD t0=GetTickCount(); CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    // Reuse one 4K back buffer. Allocating a compatible bitmap on every paint was
+    // pure overhead exactly when the wheel produced a burst of paints.
+    if(!m_mem.GetSafeHdc()) m_mem.CreateCompatibleDC(&dc);
+    if(m_mw!=rc.Width()||m_mh!=rc.Height()||!m_bmp.GetSafeHandle()){
+      CBitmap nb;
+      if(!nb.CreateCompatibleBitmap(&dc,IMAX(1,rc.Width()),IMAX(1,rc.Height()))) return;
+      m_mem.SelectObject(&nb);
+      if(m_bmp.GetSafeHandle()) m_bmp.DeleteObject();
+      m_bmp.Attach((HBITMAP)nb.Detach()); m_mw=rc.Width(); m_mh=rc.Height(); }
+    CDC& mem=m_mem;
+    mem.FillSolidRect(rc,RGB(10,10,10));                    // rgba(10,10,10,245) over black
+    { Gdiplus::Graphics g(mem.GetSafeHdc());
+      g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      LayoutHits(rc);
+      // outer border 1px rgba(255,255,255,18) r10
+      { Gdiplus::Pen p(Gdiplus::Color(18,255,255,255),1.0f);
+        Gdiplus::RectF r(0.5f,0.5f,(Gdiplus::REAL)rc.Width()-1,(Gdiplus::REAL)rc.Height()-1);
+        g.DrawArc(&p,r.X,r.Y,r.Width,r.Height,180,90); g.DrawArc(&p,r.X+r.Width-r.Height,r.Y,r.Height,r.Height,270,90);
+        g.DrawArc(&p,r.X+r.Width-r.Height,r.Y+r.Height-r.Height,r.Height,r.Height,0,90); g.DrawArc(&p,r.X,r.Y+r.Height-r.Height,r.Height,r.Height,90,90);
+        g.DrawLine(&p,r.X+r.Height/2,r.Y,r.X+r.Width-r.Height/2,r.Y);
+        g.DrawLine(&p,r.X+r.Height/2,r.Y+r.Height-1,r.X+r.Width-r.Height/2,r.Y+r.Height-1);
+        g.DrawLine(&p,r.X,r.Y+r.Height/2,r.X,r.Y+r.Height-r.Height/2);
+        g.DrawLine(&p,r.X+r.Width-1,r.Y+r.Height/2,r.X+r.Width-1,r.Y+r.Height-r.Height/2); }
+      Gdiplus::SolidBrush hdr(Gdiplus::Color(180,0,0,0)); g.FillRectangle(&hdr,0,0,rc.Width(),Px(HDR));
+      Gdiplus::SolidBrush ftr(Gdiplus::Color(180,0,0,0)); g.FillRectangle(&ftr,0,rc.bottom-Px(FOOT),rc.Width(),Px(FOOT));
+      Gdiplus::Pen tb(Gdiplus::Color(10,255,255,255),1.0f);
+      g.DrawLine(&tb,0,rc.bottom-Px(FOOT),rc.Width(),rc.bottom-Px(FOOT));
+      PaintTiles(g,rc); PaintButtons(g,rc); }
+    PaintLabels(&mem,rc);
+    dc.BitBlt(0,0,rc.Width(),rc.Height(),&mem,0,0,SRCCOPY);
+    DWORD ms=GetTickCount()-t0; static int slowN=0;
+    if(ms>40&&slowN<5){ ++slowN; LogF("library paint %lums scroll=%d full=%d",ms,scroll,fullSec); } }
+
+  void LayoutHits(CRect rc){
+    int x=Px(14); const wchar_t* names[3]={L"Movies",L"TV Shows",L"Folders"};
+    for(int i=0;i<3;++i){ int tw=TextW(names[i],13,true); CRect r(x,Px(6),x+tw+Px(24),Px(6)+Px(30));
+      tabR[i]=r; x=r.right+Px(4); }
+    crumbR=CRect(x+Px(14),Px(6),tabR[2].right+Px(600),Px(6)+Px(30));
+    int bw=IMAX(TextW(L"Rescan",13,false),TextW(L"Scanning...",13,false))+Px(36),
+        fw=TextW(L"\x25A6  Folders\x2026",13,false)+Px(36);
+    rescanR=CRect(rc.right-Px(14)-bw,Px(6),rc.right-Px(14),Px(6)+Px(31));
+    folderR=CRect(rescanR.left-Px(4)-fw,Px(6),rescanR.left-Px(4),Px(6)+Px(31));
+    statR=CRect(crumbR.right,Px(6),folderR.left-Px(8),Px(6)+Px(31));
+    int fy=rc.bottom-Px(FOOT);
+    const int vpw=TextW(L"\U0001F4E1  Video Processor",13,false)+Px(36);
+    const int playw=IMAX(TextW(L"\x25B6  Play",13,false),
+                              TextW(L"\x25B6  Resume",13,false))+Px(36);
+    const int begw=TextW(L"\x23EE  Play From Beginning",13,false)+Px(36);
+    vpR=CRect(rc.right-Px(14)-vpw,fy+Px(8),rc.right-Px(14),fy+Px(FOOT)-Px(8));
+    playR=CRect(vpR.left-Px(12)-playw,fy+Px(8),vpR.left-Px(12),fy+Px(FOOT)-Px(8));
+    beginR=CRect(playR.left-Px(12)-begw,fy+Px(8),playR.left-Px(12),fy+Px(FOOT)-Px(8));
+    infoR=CRect(Px(14),fy+Px(8),beginR.left-Px(12),fy+Px(FOOT)-Px(8));
+    static int lw=0,lh=0; if(rc.Width()!=lw||rc.Height()!=lh){ lw=rc.Width(); lh=rc.Height();
+      LogF("library buttons %dx%d: begin=(%d,%d,%d,%d) play=(%d,%d,%d,%d) vp=(%d,%d,%d,%d)"
+           " folder=(%d,%d,%d,%d) rescan=(%d,%d,%d,%d)"
+           " tab0=(%d,%d,%d,%d) tab1=(%d,%d,%d,%d) tab2=(%d,%d,%d,%d)",
+           lw,lh,beginR.left,beginR.top,beginR.right,beginR.bottom,
+           playR.left,playR.top,playR.right,playR.bottom,vpR.left,vpR.top,vpR.right,vpR.bottom,
+           folderR.left,folderR.top,folderR.right,folderR.bottom,
+           rescanR.left,rescanR.top,rescanR.right,rescanR.bottom,
+           tabR[0].left,tabR[0].top,tabR[0].right,tabR[0].bottom,
+           tabR[1].left,tabR[1].top,tabR[1].right,tabR[1].bottom,
+           tabR[2].left,tabR[2].top,tabR[2].right,tabR[2].bottom); } }
+
+  // Blurred/dimmed copy of the poster at the cell's exact size, used behind a poster
+// whose aspect ratio does not fill the cell. Built from a tiny intermediate image so
+// the upscale is genuinely soft, and cached per (path, cell size).
+  Gdiplus::Bitmap* BlurFor(const std::wstring& path,Gdiplus::Bitmap* src,int w,int h){
+    if(!src||w<=0||h<=0) return nullptr;
+    wchar_t kb[64]; swprintf(kb,64,L"%d|%d",w,h);
+    std::wstring key=path+L"|"+kb;
+    auto it=blur.find(key); if(it!=blur.end()) return it->second;
+    UINT sw=src->GetWidth(),sh=src->GetHeight(); if(!sw||!sh) return nullptr;
+    int bw=24,bh=IMAX(1,(int)(24.0*h/w+0.5));
+    Gdiplus::Bitmap smallBmp(bw,bh,PixelFormat32bppPARGB);
+    if(smallBmp.GetLastStatus()!=Gdiplus::Ok) return nullptr;
+    { Gdiplus::Graphics sg(&smallBmp); sg.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      double rw=(double)bw/sw, rh=(double)bh/sh, sc=rw>rh?rw:rh;
+      int cw=(int)(bw/sc), ch=(int)(bh/sc); if(cw<1)cw=1; if(ch<1)ch=1;
+      sg.DrawImage(src,Gdiplus::RectF(0,0,(Gdiplus::REAL)bw,(Gdiplus::REAL)bh),
+                   (Gdiplus::REAL)((sw-cw)/2),(Gdiplus::REAL)((sh-ch)/2),
+                   (Gdiplus::REAL)cw,(Gdiplus::REAL)ch,Gdiplus::UnitPixel); }
+    Gdiplus::Bitmap* out=new Gdiplus::Bitmap(w,h,PixelFormat32bppPARGB);
+    if(out->GetLastStatus()!=Gdiplus::Ok){ delete out; return nullptr; }
+    { Gdiplus::Graphics og(out); og.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      og.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      og.DrawImage(&smallBmp,0,0,w,h); }
+    if(blur.size()>=60){ delete blur.begin()->second; blur.erase(blur.begin()); }
+    blur[key]=out; return out; }
+  // Compose the final cell-sized artwork once. Scaling a 4K/sidecar poster or
+  // building its blurred backdrop on every paint made a wheel notch in the New grid
+  // cost tens of milliseconds per newly revealed tile.
+  Gdiplus::Bitmap* Composed(const std::wstring& path,int w,int h){
+    if(path.empty()||w<=0||h<=0) return nullptr;
+    wchar_t kb[64]; swprintf(kb,64,L"%d|%d",w,h);
+    std::wstring key=path+L"|c|"+kb;
+    auto it=composed.find(key); if(it!=composed.end()) return it->second;
+    Gdiplus::Bitmap* src=Art(path); if(!src) return nullptr;
+    UINT sw=src->GetWidth(),sh=src->GetHeight(); if(!sw||!sh) return nullptr;
+    Gdiplus::Bitmap* out=new Gdiplus::Bitmap(w,h,PixelFormat32bppPARGB);
+    if(out->GetLastStatus()!=Gdiplus::Ok){ delete out; return nullptr; }
+    { Gdiplus::Graphics og(out);
+      og.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+      og.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      double cellAsp=(double)w/h, srcAsp=(double)sw/sh;
+      if(fabs(srcAsp-cellAsp)/cellAsp<0.04){
+        og.DrawImage(src,Gdiplus::RectF(0,0,(Gdiplus::REAL)w,(Gdiplus::REAL)h),
+                     0,0,(Gdiplus::REAL)sw,(Gdiplus::REAL)sh,Gdiplus::UnitPixel); }
+      else {
+        double rw=(double)w/sw, rh=(double)h/sh, sc=rw<rh?rw:rh;
+        int fw=(int)(sw*sc+0.5), fh=(int)(sh*sc+0.5);
+        int fx=(w-fw)/2, fy=(h-fh)/2;
+        Gdiplus::Bitmap* bl=BlurFor(path,src,w,h);
+        if(bl) og.DrawImage(bl,0,0,w,h);
+        else { double crw=(double)w/sw, crh=(double)h/sh, cs=crw>crh?crw:crh;
+          int cw=(int)(w/cs), ch=(int)(h/cs);
+          og.DrawImage(src,Gdiplus::RectF(0,0,(Gdiplus::REAL)w,(Gdiplus::REAL)h),
+                       (Gdiplus::REAL)((sw-cw)/2),(Gdiplus::REAL)((sh-ch)/2),
+                       (Gdiplus::REAL)cw,(Gdiplus::REAL)ch,Gdiplus::UnitPixel); }
+        Gdiplus::SolidBrush veil(Gdiplus::Color(115,0,0,0));
+        og.FillRectangle(&veil,0,0,w,h);
+        og.DrawImage(src,Gdiplus::RectF((Gdiplus::REAL)fx,(Gdiplus::REAL)fy,
+                     (Gdiplus::REAL)fw,(Gdiplus::REAL)fh),
+                     0,0,(Gdiplus::REAL)sw,(Gdiplus::REAL)sh,Gdiplus::UnitPixel); } }
+    if(composed.size()>=120){ delete composed.begin()->second; composed.erase(composed.begin()); }
+    composed[key]=out; return out; }
+  void PaintPoster(Gdiplus::Graphics& g,CRect tr,const Tile& t,bool selc,bool hovc,
+                   const CRect* outer=nullptr){
+    CRect pr=PosterIn(tr);
+    Gdiplus::RectF clip((Gdiplus::REAL)pr.left,(Gdiplus::REAL)pr.top,(Gdiplus::REAL)pr.Width(),(Gdiplus::REAL)pr.Height());
+    Gdiplus::GraphicsPath path; AddRound(path,clip,6);
+    // Apply the viewport/shelf band and the rounded poster as an INTERSECTION, and
+    // reset both at entry/exit. Save/Restore around a Replace clip lost the outer
+    // viewport in practice, so a scrolled large library painted rows over the
+    // Continue and Watched bands.
+    g.ResetClip();
+    if(outer) g.SetClip(Gdiplus::Rect(outer->left,outer->top,outer->Width(),outer->Height()),
+                        Gdiplus::CombineModeReplace);
+    g.SetClip(&path,Gdiplus::CombineModeIntersect);
+    Gdiplus::Bitmap* src=Art(t.art);
+    if(src){ UINT sw=src->GetWidth(),sh=src->GetHeight(); if(!sw)sw=1; if(!sh)sh=1;
+      double cellAsp=(double)pr.Width()/pr.Height(), srcAsp=(double)sw/sh;
+      if(fabs(srcAsp-cellAsp)/cellAsp<0.04){
+        // Common case (OMDb 380x562 in a 2:3 cell): draw straight from the cached
+        // decoded image. Building a cell-sized copy first only added a first-scroll
+        // stall for every tile.
+        g.DrawImage(src,Gdiplus::RectF(clip.X,clip.Y,clip.Width,clip.Height),
+                    0,0,(Gdiplus::REAL)sw,(Gdiplus::REAL)sh,Gdiplus::UnitPixel); }
+      else {
+        Gdiplus::Bitmap* comp=Composed(t.art,pr.Width(),pr.Height());
+        if(comp) g.DrawImage(comp,Gdiplus::RectF(clip.X,clip.Y,clip.Width,clip.Height),
+                             0,0,(Gdiplus::REAL)pr.Width(),(Gdiplus::REAL)pr.Height(),
+                             Gdiplus::UnitPixel);
+        else PaintPlaceholder(g,pr,t.title); } }
+    else PaintPlaceholder(g,pr,t.title);
+    if(!selc&&!hovc){ Gdiplus::SolidBrush dim(Gdiplus::Color(40,0,0,0)); g.FillRectangle(&dim,clip); }
+    if(t.watched||!t.avail){ Gdiplus::SolidBrush dim(Gdiplus::Color(120,0,0,0)); g.FillRectangle(&dim,clip); }
+    if(selc){ Gdiplus::Pen p(Gdiplus::Color(255,0xE8,0x55,0x1F),3.0f);
+      Gdiplus::RectF r=clip; r.X+=1.5f;r.Y+=1.5f;r.Width-=3;r.Height-=3;
+      Gdiplus::GraphicsPath q; AddRound(q,r,6); g.DrawPath(&p,&q); }
+    else if(hovc){ Gdiplus::Pen p(Gdiplus::Color(90,255,255,255),1.5f);
+      Gdiplus::RectF r=clip; r.X+=1;r.Y+=1;r.Width-=2;r.Height-=2;
+      Gdiplus::GraphicsPath q; AddRound(q,r,6); g.DrawPath(&p,&q); }
+    // Unavailable wins over watched: "you can't play this right now" matters more
+    // than "you finished it", and the watched check used to hide the warning.
+    if(t.kind==3) Badge(g,pr,L"F",Gdiplus::Color(170,0,0,0));
+    if(!t.avail) Badge(g,pr,L"!",Gdiplus::Color(230,0x8E,0x1F,0x1F));
+    else if(t.watched) Badge(g,pr,L"\x2713",Gdiplus::Color(230,0x2F,0x9E,0x4F));
+    else if(!lastPlayed.empty()&&t.path==lastPlayed)
+      Badge(g,pr,L"\x25B6",Gdiplus::Color(255,0xE8,0x55,0x1F));
+    if(!t.avail){
+      // The corner "!" badge is the icon; this line is the legible label under it.
+      // Kept short so it fits any poster ✓ (the tall band it replaced was too much).
+      Gdiplus::RectF band((Gdiplus::REAL)pr.left,(Gdiplus::REAL)(pr.bottom-Px(26)),
+                          (Gdiplus::REAL)pr.Width(),(Gdiplus::REAL)Px(20));
+      Gdiplus::SolidBrush bb(Gdiplus::Color(200,0,0,0)); g.FillRectangle(&bb,band);
+      Gdiplus::FontFamily ff(L"Segoe UI");
+      Gdiplus::Font f(&ff,(Gdiplus::REAL)Px(10),Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+      Gdiplus::SolidBrush wt(Gdiplus::Color(255,0xD8,0xD8,0xD8));
+      Gdiplus::StringFormat sf; sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+      sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      g.DrawString(L"UNAVAILABLE",-1,&f,band,&sf,&wt); }
+    if((t.contEp||t.kind==1)&&(t.contEp||hovc)){
+      // Series action chip. Continue keeps it visible (the poster resumes);
+      // New/Watched reveal it on hover. The label is the destination:
+      // EPISODES for one season, SEASONS (N) for a multi-season show.
+      CRect cb=SeriesChipR(tr,t);
+      Gdiplus::RectF rr((Gdiplus::REAL)cb.left,(Gdiplus::REAL)cb.top,
+                        (Gdiplus::REAL)cb.Width(),(Gdiplus::REAL)cb.Height());
+      Gdiplus::GraphicsPath q; AddRound(q,rr,4);
+      bool chipHov=hovc&&hovEpChip;
+      Gdiplus::SolidBrush bg(chipHov?Gdiplus::Color(255,0xE8,0x55,0x1F)
+                                    :Gdiplus::Color(205,8,8,8));
+      g.FillPath(&bg,&q);
+      Gdiplus::Pen pn(chipHov?Gdiplus::Color(255,0xFF,0xE2,0xD2)
+                             :Gdiplus::Color(70,255,255,255),1.0f);
+      g.DrawPath(&pn,&q);
+      Gdiplus::FontFamily ff(L"Segoe UI");
+      Gdiplus::Font f(&ff,(Gdiplus::REAL)Px(9),Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+      Gdiplus::SolidBrush wt(Gdiplus::Color(255,255,255,255));
+      Gdiplus::StringFormat sf; sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+      sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      std::wstring chip=SeriesChipText(t);
+      g.DrawString(chip.c_str(),-1,&f,rr,&sf,&wt); }
+    g.ResetClip(); }
+  void PaintSections(Gdiplus::Graphics& g,CRect rc){
+    for(int s=0;s<3;s+=2){
+      if(s==2&&!watchedOpen) continue;
+      int step=SecStep(), first=secOff[s]/step, last=(secOff[s]+shView[s].Width())/step+1;
+      for(int i=first;i<(int)sec[s].size()&&i<=last;++i){
+        CRect tr=ShelfR(s,i); if(tr.right<0||tr.left>rc.right) continue;
+        PaintPoster(g,tr,sec[s][i],curSec==s&&secSel[s]==i,hovSec==s&&hovIdx==i,&shView[s]); } }
+    for(int i=0;i<(int)sec[1].size();++i){
+      int row=i/cols;
+      if((row+1)*tileH-scroll<Px(0)||row*tileH-scroll>midViewR.Height()) continue;
+      CRect tr=GridR(i);
+      PaintPoster(g,tr,sec[1][i],curSec==1&&secSel[1]==i,hovSec==1&&hovIdx==i,&midViewR); } }
+  void PaintFull(Gdiplus::Graphics& g,CRect rc){
+    { Gdiplus::SolidBrush hb(Gdiplus::Color(30,0,0,0));
+      g.FillRectangle(&hb,0,fullHead.top,rc.right,fullHead.Height()); }
+    for(int i=0;i<(int)sec[fullSec].size();++i){
+      int row=i/cols;
+      if((row+1)*tileH-fullScroll<Px(0)||row*tileH-fullScroll>fullViewR.Height()) continue;
+      PaintPoster(g,FullGridR(i),sec[fullSec][i],secSel[fullSec]==i,
+                  hovSec==fullSec&&hovIdx==i,&fullViewR); } }
+  void PaintTiles(Gdiplus::Graphics& g,CRect rc){
+    if(fullSec>=0){ PaintFull(g,rc); return; }
+    if(sectioned){ PaintSections(g,rc); return; }
+    if(empty) return;
+    int first=scroll/tileH, last=(scroll+GridH())/tileH+1;
+    for(int i=first;i<(int)tiles.size()&&i<=last;++i){
+      CRect pr=PosterR(i); if(pr.bottom<flatTop||pr.top>rc.bottom) continue;
+      PaintPoster(g,TileR(i),tiles[i],i==sel,i==hov); } }
+  static void AddRound(Gdiplus::GraphicsPath& p,Gdiplus::RectF r,Gdiplus::REAL rad){
+    Gdiplus::REAL d=rad*2;
+    p.AddArc(r.X,r.Y,d,d,180,90); p.AddArc(r.X+r.Width-d,r.Y,d,d,270,90);
+    p.AddArc(r.X+r.Width-d,r.Y+r.Height-d,d,d,0,90); p.AddArc(r.X,r.Y+r.Height-d,d,d,90,90);
+    p.CloseFigure(); }
+  void PaintPlaceholder(Gdiplus::Graphics& g,CRect r,const std::wstring& title){
+    unsigned long h3=Md5Head3(title); int hue=(int)(h3%360);              // panel:144-147
+    COLORREF a=Hsv2Rgb(hue,120,90), b2=Hsv2Rgb((hue+40)%360,140,35);
+    Gdiplus::RectF rr((Gdiplus::REAL)r.left,(Gdiplus::REAL)r.top,(Gdiplus::REAL)r.Width(),(Gdiplus::REAL)r.Height());
+    Gdiplus::LinearGradientBrush lb(rr,GColor(a),GColor(b2),Gdiplus::LinearGradientModeVertical);
+    g.FillRectangle(&lb,rr); }
+  void Badge(Gdiplus::Graphics& g,CRect poster,const wchar_t* txt,Gdiplus::Color bg){
+    // panel:233-242 - 28x24 rounded-5 chip 6px in from the poster's top-right
+    CRect b(poster.right-Px(34),poster.top+Px(6),poster.right-Px(6),poster.top+Px(6)+Px(24));
+    Gdiplus::RectF rr((Gdiplus::REAL)b.left,(Gdiplus::REAL)b.top,(Gdiplus::REAL)b.Width(),(Gdiplus::REAL)b.Height());
+    Gdiplus::GraphicsPath p; AddRound(p,rr,5); Gdiplus::SolidBrush br(bg); g.FillPath(&br,&p);
+    Gdiplus::FontFamily ff(L"Segoe UI Symbol");
+    Gdiplus::Font f(&ff,12.0f,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+    Gdiplus::SolidBrush wt(Gdiplus::Color(255,255,255,255));
+    Gdiplus::StringFormat sf; sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+    sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    g.DrawString(txt,-1,&f,rr,&sf,&wt); }
+  void PaintButtons(Gdiplus::Graphics& g,CRect rc){
+    // Hover is the app's accent, the same signal the transport bar and the season
+    // chips use. The old +20 grey was invisible on a dark rail, so nothing told a
+    // user these were buttons.
+    Gdiplus::SolidBrush dis(Gdiplus::Color(180,30,30,30)), en(Gdiplus::Color(220,50,50,50)),
+                        hv(Gdiplus::Color(255,0xE8,0x55,0x1F));
+    struct{ CRect* r; bool hover; } btns[5]={ {&folderR,hov==100},{&rescanR,hov==101},
+      {&beginR,hov==104},{&playR,hov==102},{&vpR,hov==103} };
+    for(auto&b:btns){ bool playBtn=(b.r==&playR),beginBtn=(b.r==&beginR);
+      bool off=(playBtn&&!playEnabled)||(beginBtn&&!BeginEnabled())||(b.r==&rescanR&&scanning);
+      Gdiplus::RectF rr((Gdiplus::REAL)b.r->left,(Gdiplus::REAL)b.r->top,(Gdiplus::REAL)b.r->Width(),(Gdiplus::REAL)b.r->Height());
+      Gdiplus::GraphicsPath p; AddRound(p,rr,5);
+      g.FillPath(&(off?dis:(b.hover?hv:en)),&p);
+      Gdiplus::Pen pn(b.hover?Gdiplus::Color(255,0xFF,0xE2,0xD2):(off?
+                     Gdiplus::Color(10,255,255,255):Gdiplus::Color(30,255,255,255)),1.0f);
+      g.DrawPath(&pn,&p); } }
+  void PaintSeasonStrip(CDC* dc,CRect rc){
+    if(seasonStripH<=0) return;
+    int saved=dc->SaveDC(); dc->IntersectClipRect(seasonStripR);
+    dc->FillSolidRect(seasonStripR,RGB(14,14,14));
+    dc->FillSolidRect(CRect(0,seasonStripR.bottom-1,rc.right,seasonStripR.bottom),RGB(0x24,0x24,0x24));
+    auto arrow=[&](CRect r,bool en,bool hov,const wchar_t* ch){
+      if(r.IsRectEmpty()) return;
+      COLORREF bg=hov?RGB(0xE8,0x55,0x1F):RGB(32,32,34);
+      COLORREF bd=hov?RGB(0xFF,0xE2,0xD2):RGB(0x50,0x50,0x52);
+      RR(dc,r,Px(6),bg); StrokeR(dc,r,Px(6),bd);
+      TxtW(dc,r,ch,en?RGB(255,255,255):RGB(0x55,0x55,0x55),15,true,
+           DT_CENTER|DT_VCENTER); };
+    if(seasonScrollMax>0){
+      arrow(seasonLeftR,seasonOff>0,hovSeason==-2,L"\x2039");
+      arrow(seasonRightR,seasonOff<seasonScrollMax,hovSeason==-3,L"\x203A"); }
+    for(size_t i=0;i<seasonBtnR.size()&&i<seasonNums.size();++i){
+      CRect r=seasonBtnR[i];
+      if(r.right<seasonStripR.left||r.left>seasonStripR.right) continue;
+      bool on=seasonNums[i]==tvSeason.back();
+      bool hv=hovSeason==(int)i;
+      COLORREF bg=hv?RGB(0xE8,0x55,0x1F):(on?RGB(44,44,46):RGB(26,26,28));
+      COLORREF bd=hv?RGB(0xFF,0xE2,0xD2):(on?RGB(0xE8,0x55,0x1F):RGB(0x3A,0x3A,0x3C));
+      COLORREF tx=hv?RGB(255,255,255):(on?RGB(0xF2,0x84,0x4E):RGB(0xBB,0xBB,0xBB));
+      RR(dc,r,Px(6),bg); StrokeR(dc,r,Px(6),bd);
+      wchar_t b[32]; swprintf(b,32,L"Season %d",seasonNums[i]);
+      TxtW(dc,r,b,tx,12,on||hv,DT_CENTER|DT_VCENTER); }
+    dc->RestoreDC(saved); }
+  void PaintCaption(CDC* dc,CRect tr,const Tile& t,bool selc){
+    CRect pr=PosterIn(tr);
+    // green timeline directly BENEATH the poster, then the % line (user request)
+    // Episode grids show the timeline for every state: empty for Not started,
+  // partial for in-progress, full green for Watched. Other grids keep the old
+  // "only while in progress" rule so New does not grow empty bars.
+  bool prog=t.epStatus ? (t.pct>=0) : (!t.watched&&t.pct>0&&t.pct<100);
+    if(prog){ CRect br(pr.left,pr.bottom+Px(4),pr.right,pr.bottom+Px(4)+Px(6));
+      dc->FillSolidRect(br,RGB(0x2b,0x2b,0x2b));
+      int pp=t.watched?100:(t.pct<0?0:t.pct);
+      CRect bf=br; bf.right=bf.left+(int)(br.Width()*(double)pp/100.0+0.5);
+      if(pp>0) dc->FillSolidRect(bf,RGB(0x3F,0xC9,0x5B)); }
+    int ty=pr.bottom+(prog?Px(14):Px(6));
+    CRect tx(pr.left,ty,pr.right,ty+Px(18));
+    bool lastp=!lastPlayed.empty()&&t.path==lastPlayed;
+    COLORREF c=!t.avail?RGB(0x77,0x77,0x77)
+               :(lastp?RGB(0xE8,0x55,0x1F):(selc?RGB(255,255,255):RGB(0xdd,0xdd,0xdd)));
+    TxtW(dc,tx,t.title.c_str(),c,13,true,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    if(!t.sub.empty()){ CRect sr=tx; sr.OffsetRect(0,Px(18));
+      COLORREF sc=(t.epStatus ? (t.watched||t.pct>0)
+        : (!t.watched&&t.pct>0&&t.pct<100))
+        ?RGB(0x3F,0xC9,0x5B):RGB(0x88,0x88,0x88);
+      TxtW(dc,sr,t.sub.c_str(),sc,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); } }
+  void PaintSectionHeads(CDC* dc,CRect rc){
+    // One uniform header style: 14px bold name + a 4px vertical colour ribbon
+    // (Continue orange / New blue / Watched green) + 11px right-aligned count.
+    static const wchar_t* hn[3]={L"Continue",L"New",L"Watched"};
+    static const wchar_t* emptyTxt[3]={L"Nothing in progress",L"No titles",
+                                       L"Nothing watched yet"};
+    // Continue deliberately avoids the orange accent (it read as a selected tab):
+    // violet like the PLAYBACK group, blue for New, gold for Watched.
+    // Green is reserved for the continue progress bar, so Watched uses gold.
+    for(int s=0;s<3;++s){
+      if(hdrSec==s) dc->FillSolidRect(secHead[s],RGB(26,26,28));
+      CRect hr=secHead[s]; hr.left+=Px(14); hr.right-=Px(14);
+      CRect rb(hr.left,hr.top+(hr.Height()-Px(18))/2,hr.left+Px(4),
+               hr.top+(hr.Height()-Px(18))/2+Px(18));
+      dc->FillSolidRect(rb,SecColor(s));
+      int nw=TextW(hn[s],14,true);
+      CRect nr=hr; nr.left=rb.right+Px(10); nr.right=nr.left+nw;
+      TxtW(dc,nr,hn[s],RGB(0xF0,0xF0,0xF0),14,true,DT_LEFT|DT_VCENTER);
+      wchar_t b[48]; swprintf(b,48,L"%d %s",(int)sec[s].size(),
+        sec[s].size()==1?L"title":L"titles");
+      CRect cnt=hr; bool ovf=Overflow(s);
+      if(s==2){ cnt.right=watchedPlusR.left-Px(8);
+        RR(dc,watchedPlusR,Px(8),hov==106?RGB(60,60,60):RGB(30,30,30));
+        StrokeR(dc,watchedPlusR,Px(8),RGB(70,70,70));
+        TxtW(dc,watchedPlusR,watchedOpen?L"\x2212":L"+",
+             hov==106?RGB(255,255,255):RGB(0xdd,0xdd,0xdd),15,true,
+             DT_CENTER|DT_VCENTER); }
+      else if(ovf) cnt.right-=Px(20);
+      TxtW(dc,cnt,b,RGB(0x77,0x77,0x77),11,false,DT_RIGHT|DT_VCENTER);
+      if(ovf&&s!=2) TxtW(dc,hr,L"\x203A",SecColor(s),14,true,DT_RIGHT|DT_VCENTER);
+      CRect ln(0,secHead[s].bottom-1,rc.right,secHead[s].bottom);
+      dc->FillSolidRect(ln,RGB(0x24,0x24,0x24));
+      if(sec[s].empty()){
+        CRect er=(s==1)?midViewR:shView[s]; if(s!=1) er.right=er.left+Px(320);
+        TxtW(dc,er,emptyTxt[s],RGB(0x55,0x55,0x55),12,false,DT_LEFT|DT_VCENTER); } }
+  }
+  void PaintFullLabels(CDC* dc,CRect rc){
+    int s=fullSec; if(s<0||s>2) return;
+    dc->FillSolidRect(CRect(0,fullHead.top,rc.right,fullHead.Height()),RGB(26,26,28));
+    CRect hr=fullHead; hr.left+=Px(14); hr.right-=Px(14);
+    CRect rb(hr.left,hr.top+(hr.Height()-Px(18))/2,hr.left+Px(4),
+             hr.top+(hr.Height()-Px(18))/2+Px(18));
+    dc->FillSolidRect(rb,SecColor(s));
+    const wchar_t* nm=s==0?L"Continue":s==1?L"New":L"Watched";
+    int nw=TextW(nm,14,true);
+    CRect nr=hr; nr.left=rb.right+Px(10); nr.right=nr.left+nw;
+    TxtW(dc,nr,nm,RGB(0xF0,0xF0,0xF0),14,true,DT_LEFT|DT_VCENTER);
+    wchar_t b[48]; swprintf(b,48,L"%d %s",(int)sec[s].size(),
+      sec[s].size()==1?L"title":L"titles");
+    CRect cnt=hr; cnt.right=fullBackR.left-Px(14);
+    TxtW(dc,cnt,b,RGB(0x77,0x77,0x77),11,false,DT_RIGHT|DT_VCENTER);
+    TxtW(dc,fullBackR,L"\x2039  Back (Esc)",hov==105?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),
+         12,false,DT_RIGHT|DT_VCENTER);
+    dc->FillSolidRect(CRect(0,fullHead.bottom-1,rc.right,fullHead.bottom),RGB(36,36,38));
+    int saved=dc->SaveDC(); dc->IntersectClipRect(fullViewR);
+    for(int i=0;i<(int)sec[s].size();++i){ int row=i/cols;
+      if((row+1)*tileH-fullScroll<0||row*tileH-fullScroll>fullViewR.Height()) continue;
+      PaintCaption(dc,FullGridR(i),sec[s][i],secSel[s]==i); }
+    dc->RestoreDC(saved); }
+  void PaintLabels(CDC* dc,CRect rc){
+    const wchar_t* names[3]={L"Movies",L"TV Shows",L"Folders"};
+    for(int i=0;i<3;++i){ if(hov==200+i) RR(dc,tabR[i],Px(5),RGB(31,31,33));
+      COLORREF c=(i==tab)?RGB(255,255,255):(hov==200+i?RGB(0xdd,0xdd,0xdd):RGB(0x88,0x88,0x88));
+      TxtW(dc,tabR[i],names[i],c,13,true,DT_CENTER|DT_VCENTER);
+      if(i==tab){ CRect u(tabR[i].left,tabR[i].bottom-2,tabR[i].right,tabR[i].bottom);
+        dc->FillSolidRect(u,RGB(0xE8,0x55,0x1F)); } }
+    // 1.3.0 hides the breadcrumb at the top level; showing it always read as a
+    // duplicated "Movies" tab.
+    TxtW(dc,crumbR,(crumbShow&&!crumb.empty())?crumb.c_str():L"",RGB(0xbb,0xbb,0xbb),13,false,
+         DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    TxtW(dc,statR,statusTxt.empty()?L"":statusTxt.c_str(),RGB(0x77,0x77,0x77),11,false,DT_RIGHT|DT_VCENTER|DT_END_ELLIPSIS);
+    TxtW(dc,folderR,L"\x25A6  Folders\x2026",hov==100?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,DT_CENTER|DT_VCENTER);
+    TxtW(dc,rescanR,scanning?L"Scanning...":L"Rescan",
+         scanning?RGB(0x66,0x66,0x66):(hov==101?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)),13,false,
+         DT_CENTER|DT_VCENTER);
+    TxtW(dc,beginR,L"\x23EE  Play From Beginning",BeginEnabled()?(hov==104?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)):RGB(0x55,0x55,0x55),13,false,DT_CENTER|DT_VCENTER);
+    TxtW(dc,playR,CanResume()?L"\x25B6  Resume":L"\x25B6  Play",playEnabled?(hov==102?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)):RGB(0x55,0x55,0x55),13,false,DT_CENTER|DT_VCENTER);
+    TxtW(dc,vpR,L"\U0001F4E1  Video Processor",hov==103?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,DT_CENTER|DT_VCENTER);
+    TxtW(dc,infoR,info.c_str(),RGB(0x88,0x88,0x88),12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    if(fullSec>=0){ PaintFullLabels(dc,rc); return; }
+    if(sectioned){
+      PaintSectionHeads(dc,rc);
+      for(int s=0;s<3;s+=2){ if(s==2&&!watchedOpen) continue;
+        int step=SecStep(), first=secOff[s]/step,
+          last=(secOff[s]+shView[s].Width())/step+1;
+        int saved=dc->SaveDC(); dc->IntersectClipRect(shView[s]);
+        for(int i=first;i<(int)sec[s].size()&&i<=last;++i){
+          CRect tr=ShelfR(s,i); if(tr.right<0||tr.left>rc.right) continue;
+          PaintCaption(dc,tr,sec[s][i],curSec==s&&secSel[s]==i); }
+        dc->RestoreDC(saved); }
+      int saved=dc->SaveDC(); dc->IntersectClipRect(midViewR);
+      for(int i=0;i<(int)sec[1].size();++i){
+        int row=i/cols;
+        if((row+1)*tileH-scroll<0||row*tileH-scroll>midViewR.Height()) continue;
+        PaintCaption(dc,GridR(i),sec[1][i],curSec==1&&secSel[1]==i); }
+      dc->RestoreDC(saved);
+      if(empty){ CRect er=midViewR; er.top+=Px(10);
+        TxtW(dc,er,emptyMsg.c_str(),RGB(0x88,0x88,0x88),15,false,DT_CENTER|DT_TOP|DT_WORDBREAK); }
+      return; }
+    PaintSeasonStrip(dc,rc);
+    int first=scroll/tileH, last=(scroll+GridH())/tileH+1;
+    for(int i=first;i<(int)tiles.size()&&i<=last;++i)
+      PaintCaption(dc,TileR(i),tiles[i],i==sel);
+    if(empty){ CRect er(0,Px(HDR),rc.right,rc.bottom-Px(FOOT));
+      TxtW(dc,er,emptyMsg.c_str(),RGB(0x88,0x88,0x88),15,false,DT_CENTER|DT_VCENTER|DT_WORDBREAK); } }
+
+  // ---- input ---------------------------------------------------------------
+  bool HandAt(CPoint p) override {
+    if(hov>=0||hovSec>=0||hovSeason>=0||hovEpChip) return true;
+    CRect rc; GetClientRect(rc);
+    for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)) return true;
+    return folderR.PtInRect(p)||rescanR.PtInRect(p)||beginR.PtInRect(p)||
+           playR.PtInRect(p)||vpR.PtInRect(p)||watchedPlusR.PtInRect(p); }
+  void OnMouseMove(UINT f,CPoint p){ int h=-1,hs=-1,hi=-1,nseas=-1;
+    if(fullSec>=0){ if(fullBackR.PtInRect(p)) h=105; else hs=FullAt(p,hi); }
+    else if(sectioned) hs=SectionAt(p,hi); else h=TileAt(p);
+    for(int i=0;i<5;++i){ CRect* r=i==0?&folderR:i==1?&rescanR:i==2?&beginR:i==3?&playR:&vpR;
+      if(r->PtInRect(p)){ h=(i==2)?104:(i==3?102:(i==4?103:100+i)); hs=-1; break; } }
+    if(h<0) for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)){ h=200+i; hs=-1; break; }
+    if(h<0&&sectioned&&fullSec<0&&watchedPlusR.PtInRect(p)){ h=106; hs=-1; }
+    // The season strip owns its band: hovering it must not highlight a tile
+    // behind it, and its buttons/chevrons get an accent hover of their own.
+    if(fullSec<0&&!sectioned&&seasonStripH>0&&seasonStripR.PtInRect(p)){
+      h=-1; hs=-1; hi=-1;
+      if(seasonLeftR.PtInRect(p)) nseas=-2;
+      else if(seasonRightR.PtInRect(p)) nseas=-3;
+      else for(size_t i=0;i<seasonBtnR.size();++i)
+        if(seasonBtnR[i].PtInRect(p)){ nseas=(int)i; break; } }
+    bool chip=false;
+    if(fullSec>=0){ if(hs==fullSec&&hi>=0&&
+        (sec[hs][hi].contEp||sec[hs][hi].kind==1))
+      chip=SeriesChipR(FullGridR(hi),sec[hs][hi]).PtInRect(p); }
+    else if(sectioned&&hs>=0&&hi>=0&&
+        (sec[hs][hi].contEp||sec[hs][hi].kind==1)){
+      // Section 1 is the middle grid; sections 0/2 are the horizontal rails.
+      // Using ShelfR for New put the hover target above the actual poster.
+      CRect tr=(hs==1)?GridR(hi):ShelfR(hs,hi);
+      chip=SeriesChipR(tr,sec[hs][hi]).PtInRect(p); }
+    if(h!=hov||hs!=hovSec||hi!=hovIdx||nseas!=hovSeason||chip!=hovEpChip){
+      hov=h; hovSec=hs; hovIdx=hi; hovSeason=nseas; hovEpChip=chip;
+      Invalidate(FALSE); }
+    int ns=-1,ni=-1,nf=-99;
+    if(fullSec>=0){ if(hs==fullSec&&hi>=0){ ns=hs; ni=hi; } }
+    else if(sectioned){ if(hs>=0&&hi>=0){ ns=hs; ni=hi; } }
+    else if(h>=0&&h<100){ nf=h; }
+    if(ns!=lastHoverSec||ni!=lastHoverIdx||nf!=lastHoverFlat){
+      lastHoverSec=ns; lastHoverIdx=ni; lastHoverFlat=nf;
+      KillTimer(11); m_facts.Hide();
+      if(ns>=0||nf>=0){
+        SetTimer(11,350,nullptr);
+        TRACKMOUSEEVENT tme={sizeof(tme)}; tme.dwFlags=TME_LEAVE;
+        tme.hwndTrack=m_hWnd; TrackMouseEvent(&tme); } }
+    std::wstring tip;
+    if(h==100) tip=L"Library folders";
+    else if(h==101) tip=scanning?L"Scanning library...":L"Rescan library";
+    else if(h==102) tip=CanResume()?L"Resume":L"Play";
+    else if(h==103) tip=L"Switch to Video Processor";
+    else if(h==104) tip=L"Play from beginning";
+    else if(h==105) tip=L"Back to section";
+    else if(h==106) tip=watchedOpen?L"Collapse watched rail":L"Expand watched rail";
+    else if(h>=200&&h<203){ static const wchar_t* tn[3]={L"Movies",L"TV Shows",L"Folders"};
+      tip=tn[h-200]; }
+    else if(nseas==-2) tip=L"Scroll seasons left";
+    else if(nseas==-3) tip=L"Scroll seasons right";
+    else if(nseas>=0&&nseas<(int)seasonNums.size()){
+      wchar_t b[32]; swprintf_s(b,L"Season %d",seasonNums[nseas]); tip=b; }
+    else if(chip&&hs>=0&&hi>=0){
+      const Tile&t=sec[hs][hi];
+      tip=t.seriesSeasons>1?L"Open seasons":L"Open episodes"; }
+    if(!tip.empty()){ CPoint sp=p; ClientToScreen(&sp); UiTipShow(tip,sp); }
+    else UiTipHide(); }
+  void OnLButtonDown(UINT f,CPoint p){
+    // Any click on a chrome surface means "not the popup": tell the frame, which
+    // owns the preset card. The 300 ms outside-click poll misses quick clicks in
+    // this pane (reported: the card survived a click in the media dialog).
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+52,0,0);
+    HideFacts();
+    for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)){ if(tab!=i){ tab=i; tvShow.clear(); tvSeason.clear();
+        fPath.clear(); sel=-1; scroll=0; curSec=1; secSel[0]=secSel[1]=secSel[2]=-1;
+        secOff[0]=secOff[1]=secOff[2]=0; fullSec=-1; fullScroll=0; hdrSec=-1;
+        freshSelection=true; Reload(); } return; }
+    if(folderR.PtInRect(p)){ LogF("library: Folders... pressed -> folder dialog");
+      CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+26,0,0); return; }
+    if(rescanR.PtInRect(p)){ if(scanning){ LogF("library: Rescan ignored - scan running"); return; }
+      LogF("library: Rescan pressed"); StartScan(); return; }
+    if(beginR.PtInRect(p)){ Tile* t=Cur(); bool en=BeginEnabled();
+      LogF("lib PLAY FROM BEGINNING pressed sec=%d enabled=%d",curSec,(int)en);
+      if(en&&t) Play(*t,true); return; }
+    if(playR.PtInRect(p)){ Tile* t=Cur();
+      LogF("lib PLAY button pressed sec=%d enabled=%d",curSec,(int)playEnabled);
+      if(t&&t->kind==1){ PlayShow(t->title,-1); return; }
+      if(t&&t->kind==2){ std::wstring show=tvShow.empty()?t->title:tvShow.back();
+        PlayShow(show,t->season); return; }
+      if(playEnabled&&t) Play(*t); return; }
+    if(vpR.PtInRect(p)){ LogF("library: Video Processor pressed -> mode switch");
+      CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+9,0,0); return; }
+    if(sectioned&&fullSec<0&&watchedPlusR.PtInRect(p)){ SetWatchedOpen(!watchedOpen); return; }
+    if(!sectioned&&seasonStripH>0){
+      if(seasonLeftR.PtInRect(p)||seasonRightR.PtInRect(p)){
+        seasonOff+=(seasonLeftR.PtInRect(p)?-1:1)*Px(220);
+        seasonOff=IMAX(0,IMIN(seasonOff,seasonScrollMax));
+        LayoutSeasonStrip(); Invalidate(FALSE); return; }
+      if(seasonStripR.PtInRect(p)){
+        for(size_t i=0;i<seasonBtnR.size()&&i<seasonNums.size();++i)
+          if(seasonBtnR[i].PtInRect(p)){
+            int season=seasonNums[i];
+            if(!tvSeason.empty()&&tvSeason.back()!=season){
+              tvSeason.back()=season; sel=-1; lastClick=-99; Reload();
+              LogF("library: season %d selected",season); }
+            return; }
+        return; } }
+    if(fullSec>=0){
+      if(fullBackR.PtInRect(p)){ LogF("library: Back from full section"); ExitFull(); return; }
+      int idx; int s=FullAt(p,idx);
+      if(s>=0){ curSec=s; secSel[s]=idx; lastClickSec=s; lastClickIdx=idx;
+        SyncCurrent(); Invalidate(FALSE);
+        LogF("lib CLICK full sec=%d idx=%d (%s)",s,idx,Narrow(sec[s][idx].title).c_str());
+        if(sec[s][idx].kind==1||sec[s][idx].kind==2||sec[s][idx].kind==3)
+          ActivateSec(s,idx,true);
+        else if(sec[s][idx].kind==0){
+          Tile& t=sec[s][idx]; CRect tr=FullGridR(idx);
+          bool series=t.contEp&&(SeriesChipR(tr,t).PtInRect(p)||p.y>PosterIn(tr).bottom);
+          if(series) OpenSeriesFor(t);
+          else if(s==0) Play(t); } }
+      return; }
+    if(sectioned){
+      for(int s=0;s<3;++s) if(secHead[s].PtInRect(p)){
+        if(Overflow(s)){ LogF("library: open full section %d",s); EnterFull(s); }
+        else { curSec=s; if(secSel[s]<0&&!sec[s].empty()) secSel[s]=0;
+          SyncCurrent(); Invalidate(FALSE); }
+        return; }
+      int idx; int s=SectionAt(p,idx); if(s<0) return;
+      curSec=s; secSel[s]=idx; lastClickSec=s; lastClickIdx=idx;
+      SyncCurrent(); Invalidate(FALSE);
+      LogF("lib CLICK section=%d idx=%d (%s)",s,idx,Narrow(sec[s][idx].title).c_str());
+      // Container tiles open on a single click: a show -> its seasons, a season
+      // -> its episodes, a folder -> its contents.
+      if(sec[s][idx].kind==1||sec[s][idx].kind==2||sec[s][idx].kind==3)
+        ActivateSec(s,idx,true);
+      else if(sec[s][idx].kind==0){
+        // Continue resumes; New/Watched only select. A TV Continue tile keeps a
+        // separate series chip (and caption) for the season/episode list.
+        Tile& t=sec[s][idx]; CRect tr=ShelfR(s,idx);
+        bool series=t.contEp&&(SeriesChipR(tr,t).PtInRect(p)||p.y>PosterIn(tr).bottom);
+        if(series) OpenSeriesFor(t);
+        else if(s==0) Play(t); }
+      return; }
+    int i=TileAt(p);
+    if(i!=lastClick){ lastClick=(i<0?-99:i); }        // remember what this click selected
+    LogF("lib CLICK x=%d y=%d tile=%d",p.x,p.y,i);
+    // A single click ONLY highlights.
+    if(i>=0){ sel=i; SetCurrent(&tiles[i]); Invalidate(FALSE);
+      // Seasons/folders open on a single click; files only select, then Play or
+      // double-click starts them.
+      if(tiles[i].kind==1||tiles[i].kind==2||tiles[i].kind==3) Activate(i,true); } }
+  void OnLButtonDblClk(UINT f,CPoint p){
+    if(fullSec>=0){ int idx; int s=FullAt(p,idx);
+      if(s>=0){ LogF("lib DBLCLICK full sec=%d idx=%d (last=%d/%d)",s,idx,lastClickSec,lastClickIdx);
+        if(s==lastClickSec&&idx==lastClickIdx) ActivateSec(s,idx);
+        else { curSec=s; secSel[s]=idx; lastClickSec=s; lastClickIdx=idx;
+               SyncCurrent(); Invalidate(FALSE); } }
+      return; }
+    if(sectioned){ int idx; int s=SectionAt(p,idx);
+      if(s>=0){ LogF("lib DBLCLICK section=%d idx=%d (last=%d/%d)",s,idx,lastClickSec,lastClickIdx);
+        if(s==lastClickSec&&idx==lastClickIdx) ActivateSec(s,idx);
+        else { curSec=s; secSel[s]=idx; lastClickSec=s; lastClickIdx=idx;
+               SyncCurrent(); Invalidate(FALSE); } }
+      return; }
+    int i=TileAt(p);
+    LogF("lib DBLCLICK x=%d y=%d tile=%d last=%d",p.x,p.y,i,lastClick);
+    // Play on a real double-click only: Windows sends WM_LBUTTONDBLCLK whenever two
+    // clicks land within the double-click time, so a stray tap-tap used to launch a
+    // file. Require that the click which preceded it selected THIS tile - which every
+    // genuine double-click does, because its first button-down arrives first.
+    if(i>=0&&i==lastClick){ Activate(i); }
+    else if(i>=0){ sel=i; lastClick=i; SetCurrent(&tiles[i]); Invalidate(FALSE); } }
+  BOOL OnMouseWheel(UINT f,short d,CPoint p){ CPoint c=p; ScreenToClient(&c);
+    HideFacts();
+    // Wheel DOWN (negative delta) scrolls the list forward.
+    int notches=-(int)(d/WHEEL_DELTA); if(!notches) notches=(d<0)?1:-1;
+    // A notch moves a third of a row: 72 px felt glacial on 4K tiles and made the
+    // redraw look sluggish even when paint itself was cheap.
+    int vstep=IMAX(Px(100),tileH/3);
+    if(fullSec<0&&!sectioned&&seasonStripH>0&&seasonStripR.PtInRect(c)){
+      int o=seasonOff; seasonOff=IMAX(0,IMIN(seasonScrollMax,seasonOff+notches*Px(180)));
+      if(seasonOff!=o){ LayoutSeasonStrip(); Invalidate(FALSE); }
+      return TRUE; }
+    if(fullSec>=0){ int old=fullScroll; fullScroll+=notches*vstep; ClampFull();
+      if(fullScroll!=old) Invalidate(FALSE); return TRUE; }
+    if(sectioned){
+      bool ch=false;
+      if(shView[0].PtInRect(c)){ int o=secOff[0]; secOff[0]+=notches*SecStep()*3; ClampScroll(); ch=(o!=secOff[0]); }
+      else if(shView[2].PtInRect(c)){ int o=secOff[2]; secOff[2]+=notches*SecStep()*3; ClampScroll(); ch=(o!=secOff[2]); }
+      else { int o=scroll; scroll+=notches*vstep; ClampScroll(); ch=(o!=scroll); }
+      if(ch) Invalidate(FALSE); return TRUE; }
+    int o=scroll; scroll+=notches*vstep; ClampScroll();
+    if(scroll!=o) Invalidate(FALSE);
+    return TRUE; }
+  void EnsureSec(){ int s=curSec,i=secSel[s]; if(i<0) return;
+    if(s==1){ int row=i/cols;
+      if(row*tileH<scroll) scroll=row*tileH;
+      else if((row+1)*tileH>scroll+GridH()) scroll=(row+1)*tileH-GridH();
+      ClampScroll(); }
+    else { int st=SecStep(), x=i*st, vw=shView[s].Width();
+      if(x<secOff[s]) secOff[s]=x;
+      else if(x+shTileW>secOff[s]+vw) secOff[s]=x+shTileW-vw;
+      ClampScroll(); }
+    SyncCurrent(); Invalidate(FALSE); }
+  void MoveToSec(int want){
+    if(want<0||want>2||sec[want].empty()) return;
+    curSec=want; if(secSel[want]<0||secSel[want]>=(int)sec[want].size()) secSel[want]=0;
+    EnsureSec(); }
+  void EnsureFull(){ if(fullSec<0) return; int i=secSel[fullSec]; if(i<0) return;
+    int row=i/cols, h=fullViewR.Height();
+    if(row*tileH<fullScroll) fullScroll=row*tileH;
+    else if((row+1)*tileH>fullScroll+h) fullScroll=(row+1)*tileH-h;
+    ClampFull(); SyncCurrent(); Invalidate(FALSE); }
+  bool FullKey(UINT vk){
+    int n=(int)sec[fullSec].size(); int& i=secSel[fullSec];
+    switch(vk){
+      case VK_LEFT:  if(i>0){ --i; EnsureFull(); } return true;
+      case VK_RIGHT: if(i>=0&&i<n-1){ ++i; EnsureFull(); } return true;
+      case VK_UP:    if(i-cols>=0){ i-=cols; EnsureFull(); } return true;
+      case VK_DOWN:  if(i+cols<n){ i+=cols; EnsureFull(); } return true;
+      case VK_RETURN: case VK_SPACE:
+        if(i>=0&&i<n) ActivateSec(fullSec,i); return true;
+      case VK_BACK: case VK_ESCAPE: ExitFull(); return true; }
+    return true; }
+  bool HeaderKey(UINT vk){
+    switch(vk){
+      case VK_LEFT:  hdrSec=(hdrSec+2)%3; Invalidate(FALSE); return true;
+      case VK_RIGHT: hdrSec=(hdrSec+1)%3; Invalidate(FALSE); return true;
+      case VK_DOWN:  curSec=hdrSec; hdrSec=-1;
+        if(secSel[curSec]<0&&!sec[curSec].empty()) secSel[curSec]=0;
+        EnsureSec(); return true;
+      case VK_UP: return true;
+      case VK_RETURN: case VK_SPACE:
+        if(hdrSec==2){ SetWatchedOpen(!watchedOpen); return true; }
+        if(Overflow(hdrSec)) EnterFull(hdrSec);
+        else { curSec=hdrSec; hdrSec=-1;
+          if(!sec[curSec].empty()){ secSel[curSec]=0; EnsureSec(); } }
+        return true;
+      case VK_BACK: case VK_ESCAPE: hdrSec=-1; Invalidate(FALSE); return true; }
+    return false; }
+  bool SectionKey(UINT vk){
+    int n=(int)sec[curSec].size(); int& i=secSel[curSec];
+    switch(vk){
+      case VK_LEFT:  if(i>0){ --i; EnsureSec(); } return true;
+      case VK_RIGHT: if(i>=0&&i<n-1){ ++i; EnsureSec(); } return true;
+      case VK_UP:
+        if(curSec==2){ if(Overflow(2)){ hdrSec=2; Invalidate(FALSE); return true; }
+          MoveToSec(1); return true; }
+        if(curSec==1){ if(i/cols==0){
+            if(Overflow(1)){ hdrSec=1; Invalidate(FALSE); return true; }
+            MoveToSec(0); } else { i-=cols; EnsureSec(); } return true; }
+        if(curSec==0&&Overflow(0)){ hdrSec=0; Invalidate(FALSE); }
+        return true;
+      case VK_DOWN:
+        if(curSec==0){ MoveToSec(1); return true; }
+        if(curSec==1){ int rows=(n+cols-1)/cols;
+          if(i/cols>=rows-1){
+            if(!watchedOpen&&!sec[2].empty()) SetWatchedOpen(true);
+            MoveToSec(2); } else { i+=cols; EnsureSec(); } return true; }
+        return true;
+      case VK_RETURN: case VK_SPACE:
+        if(i>=0&&i<n) ActivateSec(curSec,i); return true;
+      case VK_BACK: case VK_ESCAPE: if(canBack){ Back(); return true; } return false; }
+    return false; }
+  bool Key(UINT vk){
+    if(!IsWindowVisible()) return false;
+    if(fullSec>=0) return FullKey(vk);
+    if(hdrSec>=0) return HeaderKey(vk);
+    if(sectioned) return SectionKey(vk);
+    int n=(int)tiles.size();
+    switch(vk){
+      case VK_LEFT:  if(sel>0){ sel--; Ensure(); } return true;
+      case VK_RIGHT: if(sel<n-1){ sel++; Ensure(); } return true;
+      case VK_UP:    if(sel-cols>=0){ sel-=cols; Ensure(); } return true;
+      case VK_DOWN:  if(sel+cols<n){ sel+=cols; Ensure(); } return true;
+      case VK_RETURN: case VK_SPACE: Activate(sel<0?0:sel); return true;
+      case VK_BACK: case VK_ESCAPE: if(canBack){ Back(); return true; } return false; }
+    return false; }
+  void Ensure(){ int row=sel/cols;
+    if(row*tileH<scroll) scroll=row*tileH;
+    else if((row+1)*tileH>scroll+GridH()) scroll=(row+1)*tileH-GridH();
+    ClampScroll(); Invalidate(FALSE); }
+  void ShowLib(bool on){ if(on){ Reload(); StartArtFetch(); ShowWindow(SW_SHOWNOACTIVATE);
+      SetWindowPos(&CWnd::wndTop,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+      LogF("library shown: %d flat tiles, %d+%d+%d sections, %d cols",
+           (int)tiles.size(),(int)sec[0].size(),(int)sec[1].size(),(int)sec[2].size(),cols); }
+    else ShowWindow(SW_HIDE); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CPosterPane,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_LBUTTONDBLCLK() ON_WM_MOUSEWHEEL()
+  ON_MESSAGE(WM_APP+27,&CPosterPane::OnScanDone)
+  ON_MESSAGE(WM_APP+28,&CPosterPane::OnScanProgress)
+  ON_MESSAGE(WM_APP+33,&CPosterPane::OnProbeReady)
+  ON_MESSAGE(WM_APP+34,&CPosterPane::OnProbeDone)
+  ON_MESSAGE(WM_APP+35,&CPosterPane::OnArtReady)
+  ON_MESSAGE(WM_APP+36,&CPosterPane::OnArtDone)
+  ON_WM_TIMER() ON_WM_MOUSELEAVE() END_MESSAGE_MAP()
+
+// ---- NO MORE CHROME OVERLAY --------------------------------------------------
+// The panes used to live in a separate top-level WS_EX_TOPMOST window whose window
+// REGION was used as visibility, because the capture surface composites above the
+// frame's children (measured) — so the chrome had to be a different window to be
+// seen over the video. Everything that went wrong since came from that window
+// sharing pixels with the picture: which window owned a press, which one was
+// active, which one was on top, whether the region was current. Windows decided
+// all of it at runtime, and it decided differently from click to click
+// ("activate state=0" after every chrome click, a card taking the foreground,
+// the keyboard addressed to a window with no key handler).
+//
+// The chrome and the picture no longer share a pixel. When the chromium is shown,
+// the video HOST is laid out into the remaining rect (Layout()); when the chrome
+// hides, the host fills the window again. The panes are therefore ordinary children
+// of the frame that sit only where the video is not, and the frame is the only
+// activatable window in the process.
+
+class CMainFrame : public CFrameWnd {
+public:
+  CTopStrip m_top; CStatusRail m_status; CSettingsRail m_settings; CTransportBar m_bar;
+  CConfirmCard m_confirm; CSetupCard m_setup; CFoldersCard m_folders; CHelpCard m_help;
+  CPresetCard m_presets; CChapterTip m_uiTip; CTitlePanel m_titlePanel;
+  CToastCard m_toast; CSplashPane m_splash; CPosterPane m_lib; bool m_shutdown=false;
+  std::wstring m_appMode,m_mediaFolder,m_cfgPath,m_inputUrl,m_inputLabel;
+  std::map<std::wstring,std::wstring> m_labels;
+  std::wstring m_mediaPath; ULONGLONG m_nextHistory=0;
+  // Auto-next: state edge detection + the 5 s "Up next" countdown.
+  std::string m_mediaState; std::wstring m_nextPath,m_nextLabel; double m_nextResume=0;
+  ULONGLONG m_nextAt=0; int m_nextLeft=0;
+  bool m_firstRun=false; std::wstring m_pendingInputUrl,m_pendingMode;
+  ULONGLONG m_nextPortPoll=0; int m_liveEotf=0,m_liveLocked=0; std::string m_portsSig;
+  CAcquireCard m_acq; bool m_vp=false,m_vpAcq=false; int m_attempt=0; bool m_graphRan=false;
+  double m_drawn=0,m_recv=0;
+  // 1.3.0: _VP_MAX_RETRIES = 10 (main_window.py), one attempt per check tick.
+  static const int VP_MAX_RETRY=10;
+  std::wstring InputLabel(const std::wstring& url){      // config/model.py label_for()
+    std::wstring c=url; size_t p=c.find(L"decklink://"); if(p==0) c=c.substr(11);
+    size_t at=c.rfind(L'@');
+    if(at!=std::wstring::npos){ int port=_wtoi(c.c_str()+at+1)+1; wchar_t b[32]; swprintf(b,32,L"HDMI %d",port); return b; }
+    return c; }
+  std::wstring LabelFor(const std::wstring& url){
+    auto it=m_labels.find(url); if(it!=m_labels.end()&&!it->second.empty()) return it->second;
+    return InputLabel(url);
+  }
+  void WriteConfigValue(const char* key,const std::string& value,bool quoted){
+    if(m_cfgPath.empty()) return;
+    std::string j=ReadTextFile(m_cfgPath),pat=std::string("\"")+key+"\"";
+    size_t p=j.find(pat); if(p==std::string::npos){ LogF("config write: key '%s' absent",key); return; }
+    size_t q=j.find(':',p+pat.size()); if(q==std::string::npos) return; ++q;
+    while(q<j.size()&&isspace((unsigned char)j[q]))++q;
+    size_t e=q;
+    if(q<j.size()&&j[q]=='"'){ e=q+1; bool esc=false;
+      while(e<j.size()){ char c=j[e++]; if(esc) esc=false; else if(c=='\\') esc=true; else if(c=='"') break; } }
+    else { while(e<j.size()&&j[e]!=','&&j[e]!='}'&&j[e]!='\n'&&j[e]!='\r') ++e; }
+    const std::string encoded=quoted?std::string("\"")+JsonEscape(value)+"\"":value;
+    j=j.substr(0,q)+" "+encoded+j.substr(e);
+    FILE* f=_wfopen(m_cfgPath.c_str(),L"wb");
+    if(f){ fwrite(j.data(),1,j.size(),f); fclose(f); LogF("config wrote %s",key); }
+    else LogF("config write FAILED %s",key);
+  }
+  void WriteMode(const wchar_t* mode){ WriteConfigValue("app_mode",Narrow(mode),true); }
+  void WriteActiveInput(const std::wstring& url){ WriteConfigValue("active_input_url",Narrow(url),true); }
+  void WriteFirstRun(bool first){ WriteConfigValue("first_run",first?"true":"false",false); }
+  void SaveInputLabels(){ WriteConfigValue("input_labels_json",Narrow(BuildInputLabelsJson(m_labels)),true); }
+  void RefreshSourcePorts(bool force=false){
+    // main_window._refresh_ports: media-player + chrome closed = nobody can use
+    // the answer, so skip. Poll on the 300 ms timer's schedule, never in paint.
+    if(m_appMode!=L"video_processor"&&!m_uiUp) return;
+    std::vector<DlPort> ports; PollDecklinkPorts(ports);
+    for(auto&p:ports) if(p.url==m_inputUrl){
+      // The active input has the better instrument: engine frame facts replace
+      // the card's reading (DR_FROM_EOTF 2->1, 3->2, 4->3).
+      if(m_liveLocked) p.locked=1;
+      if(m_liveEotf==2) p.dr=1; else if(m_liveEotf==3) p.dr=2; else if(m_liveEotf==4) p.dr=3;
+    }
+    std::string sig=Narrow(m_inputUrl)+"|"+std::to_string(m_liveEotf)+"|"+std::to_string(m_liveLocked);
+    for(const auto&p:ports) sig+="|"+Narrow(p.url)+":"+std::to_string(p.locked)+":"+std::to_string(p.dr);
+    if(!force&&sig==m_portsSig) return; m_portsSig=sig;
+    int slot=0;
+    for(auto&r:g_rows){ if(r.kind!=6) continue;
+      if(slot>=(int)ports.size()){ r.names.clear(); r.label=L""; r.payload.clear(); r.text.clear(); r.on=false; r.locked=r.dr=0; continue; }
+      const DlPort&p=ports[slot++]; r.payload=p.url; r.on=(p.url==m_inputUrl); r.locked=p.locked; r.dr=p.dr;
+      r.names.assign(1,LabelFor(p.url)); r.label=r.names[0].c_str();
+      if(slot==1) LogF("SOURCE first row label='%S' active=%d",r.label,r.on?1:0);
+      if(p.locked>0) r.text=std::wstring(L"\U0001F512  ")+DrLabel(p.dr);
+      else if(p.locked<0) r.text=L"\x2014  unknown";
+      else r.text=L"\x25CB  no signal";
+    }
+    m_settings.Invalidate(FALSE);
+    LogF("SOURCE ports=%d active='%S' labels=%d",(int)ports.size(),m_inputUrl.c_str(),(int)m_labels.size());
+  }
+  void StartVp(){ m_vp=true; m_vpAcq=true; m_attempt=0; m_mediaPath.clear();
+    // A capture graph counts as "a graph has run": switching modes in place after
+    // one leaves the capture running behind the library screen (1.3.0 warns about
+    // exactly this in _switch_mode), which is why the switch must restart instead.
+    m_graphRan=true;
+    std::string dev=Narrow(m_inputLabel);
+    DWORD t=GetTickCount(); int rc=s3_start_device(dev.c_str());
+    LogF("vp: s3_start_device('%s') rc=0x%08X took=%lums",dev.c_str(),(unsigned)rc,
+         (unsigned long)(GetTickCount()-t));
+    // One layout path for both modes: the host gets the room the chrome is not
+    // using, in VP and in media playback alike (see Layout()).
+    Layout();
+    m_acq.Start(m_inputLabel); SetTimer(5,3000,nullptr); }
+  // DELETED: the VP-only layout that inset the capture host and called the engine
+    // on every chrome toggle. It was the single source of the VP freezes (a UI-thread
+    // resize into a live capture graph) and of the mode split. The host now stays
+    // full-client in both modes and the chrome floats above it.
+  void ApplyVpLayout(){ }
+  void ResetPlaybackUi(){
+    // Stop must leave no playback state on any surface: timeline position,
+    // chapter ticks/tint, duration, audio-mode dim and the chapter tooltip.
+    int nchap=(int)m_chaps.size();
+    m_chaps.clear(); m_pos=0; m_dur=0; m_bitstream=false; m_nextHistory=0;
+    m_mediaState.clear(); m_paused=true;
+    m_bar.HideOverlay();
+    m_bar.SetMedia(false);
+    m_bar.SetState(0,0,m_vol,m_muted,true,false);
+    m_bar.SetChaps(m_chaps);
+    HideTitlePanel();
+    m_bar.Invalidate(FALSE);
+    LogF("playback UI cleared (timeline/chapters=%d)",nchap); }
+  void SyncPanels(){
+    m_top.infoOn=m_status.IsWindowVisible(); m_top.settingsOn=m_settings.IsWindowVisible();
+    m_top.Invalidate(FALSE); Layout(); }   // a rail toggled: the video rect changes with it
+  afx_msg LRESULT OnToggleInfo(WPARAM,LPARAM){
+    if(!m_uiUp) SetUi(true,false);
+    bool show=!m_status.IsWindowVisible(); g_showInfo=show;
+    if(show) m_suppressPanels=false;   // an explicit ask overrides the library suppression
+    m_status.ShowWindow(show?SW_SHOW:SW_HIDE);
+    g_ini["ui.showInfo"]=show?"True":"False"; g_iniDirty=true; SaveIni("ui layout");
+    SyncPanels(); LogF("ui: live status %s (saved=%d)",show?"shown":"hidden",(int)show); return 0; }
+  afx_msg LRESULT OnToggleSettings(WPARAM,LPARAM){
+    if(!m_uiUp) SetUi(true,false);
+    bool show=!m_settings.IsWindowVisible(); g_showSettings=show;
+    if(show) m_suppressPanels=false;   // an explicit ask overrides the library suppression
+    m_settings.ShowWindow(show?SW_SHOW:SW_HIDE);
+    if(show) m_settings.ShowRememberedHelp(); else m_help.HideCard();
+    g_ini["ui.showSettings"]=show?"True":"False"; g_iniDirty=true; SaveIni("ui layout");
+    SyncPanels(); LogF("ui: settings %s (saved=%d)",show?"shown":"hidden",(int)show); return 0; }
+  void GoLibrary(){ ResetPlaybackUi(); m_help.HideCard(); m_settings.ClearKeyFocus(); m_presets.HideCard();
+    m_suppressPanels=true;      // nothing is playing: keep the rails out of the way
+    m_hotBottom=false;
+    m_lib.ShowLib(true); SetUi(true,false); PlaceLib();
+    // SetUi early-returns when up/full already match, so an already-visible rake
+    // survived the suppression flag. Hide them here unconditionally.
+    m_status.ShowWindow(SW_HIDE); m_settings.ShowWindow(SW_HIDE);
+    m_top.infoOn=false; m_top.settingsOn=false; m_top.Invalidate(FALSE);
+    Layout(); }
+  bool m_uiUp=false,m_fullUi=false; double m_pos=0,m_dur=0,m_gen=-1; bool m_paused=false,m_bitstream=false;
+  // Panels are suppressed while the library is up: a title that just stopped
+  // (or a fresh start) leaves the user choosing something to play, and the live
+  // status + settings rails eat a third of the screen for no reason. Their
+  // enabled/disabled preference is untouched — this only gates the moment.
+  bool m_suppressPanels=false;
+  // True while the pointer rests in the bottom strip: the only gesture left, and it
+  // does exactly one thing — raise the bars when they are down.
+  bool m_hotBottom=false;
+  int m_vol=100; bool m_muted=false;
+  std::vector<Chap> m_chaps;
+  // Arrow-key hold acceleration (state-aware; see OnTimer id 7).
+  bool m_seekHeld=false; int m_seekDir=0,m_seekStage=-1; ULONGLONG m_seekStart=0;
+  double m_seekTarget=0;
+  void Create2(){ g_chromeWnd=m_hWnd;   // owner of the single chrome idle timer
+    g_dpi=GetDpiForWindow(m_hWnd); LoadUiFonts(); PickFont();
+    const bool hadIni = GetFileAttributesW(SettingsIniPath().c_str())!=INVALID_FILE_ATTRIBUTES;
+    LoadSettingsIni();   // before attach/open and before the first PushAll
+    PresetInitFromIni();
+    // First run: five ready presets and Preset 1 active. The user can then change
+    // anything and it SAVES (a custom preset auto-saves); Default stays as the
+    // untouched baseline they can return to, and rename lets them personalise the
+    // names. Only when the folder has no presets at all — never over real ones.
+    //
+    // UPGRADE vs FRESH: an existing install already has a settings INI, and those
+    // values ARE the user's look. On upgrade the five presets are seeded from the
+    // CURRENT row values (which LoadSettingsIni just applied), so nothing changes
+    // on screen and their tuning continues in Preset 1. The device rows (nits,
+    // convert, gamut) are global and were never part of a preset, so they carry
+    // over untouched — the new compiled defaults (sdrNits 80, deband on) only
+    // apply where a key is absent, i.e. fresh installs and new rows.
+    if(!IniBool(IniGet("ui.presetsSeeded")) && ListPresets().size()<=1){
+      const bool upgrade = hadIni;      // a settings file existed before this launch
+      for(int i=1;i<=5;++i){ wchar_t n[32]; swprintf_s(n,32,L"Preset %d",i);
+        if(upgrade) WritePresetFile(n,false); else WritePresetDefaults(n); }
+      g_ini["ui.presetsSeeded"]="True"; g_iniDirty=true; SaveIni("presets seeded");
+      SetActivePreset(L"Preset 1",false);
+      LogF("presets: seeded Preset 1..5 from %s, active='Preset 1'",
+           upgrade?"current settings (upgrade)":"compiled defaults (fresh install)");
+    }
+    static bool hreg=false; if(!hreg){ WNDCLASSW wc={}; wc.lpfnWndProc=::DefWindowProcW;
+      wc.hInstance=AfxGetInstanceHandle(); wc.lpszClassName=L"UnpluggedVideoHost";
+      // hCursor must not be left NULL: a class without a cursor makes DefWindowProc
+      // walk the parent chain for WM_SETCURSOR, and over the DirectX child that
+      // inherits whatever the last SetCursor left in effect (the busy ring).
+      wc.hCursor=::LoadCursor(nullptr,IDC_ARROW);
+      // Same canvas as background_widget.py's fill, so the pre-wallpaper instant
+      // matches the letterbox instead of flashing pure black.
+      static HBRUSH canvas=CreateSolidBrush(RGB(10,10,10));
+      wc.hbrBackground=canvas; AfxRegisterClass(&wc); hreg=true; }
+    CRect cr; GetClientRect(cr);
+    // The frame bleeds EDGE_BLEED px beyond the monitor (see InitInstance) so DWM's
+    // 2px light window ring falls off-screen; everything the user must see is laid
+    // out inside the inset rect, which is exactly the monitor - so the video is
+    // never cropped.
+    g_host=CreateWindowW(L"UnpluggedVideoHost",L"",WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS,
+                         Px(EDGE_BLEED),Px(EDGE_BLEED),cr.Width()-2*Px(EDGE_BLEED),
+                         cr.Height()-2*Px(EDGE_BLEED),m_hWnd,nullptr,AfxGetInstanceHandle(),nullptr);
+    g_hostOrig=(WNDPROC)SetWindowLongPtrW(g_host,GWLP_WNDPROC,(LONG_PTR)HostProc);
+    // Time the ATTACH, not just the open: s3_attach CoCreateInstance's LAV + MPCVR
+    // in-process on the UI thread BEFORE the first paint, which is the remaining
+    // candidate for the "starting" busy cursor (the open itself is proven detached:
+    // polls fired at t=312/625/937 during a 1157ms build).
+    DWORD ta=GetTickCount(); int arc=s3_attach((int64_t)(intptr_t)g_host);
+    LogF("attach rc=%d host=%lld took=%lums",arc,(long long)(intptr_t)g_host,(unsigned long)(GetTickCount()-ta));
+    // The panes are plain children of THIS frame and never overlap the video: Layout()
+// shrinks the host so the chrome has its own space whenever it is shown. That is
+// the whole point of the redesign - no second top-level window, so no region, no
+// topmost handoff, no activation split, and a click on a pane is just a click on a
+// child window of the only activatable window in the process.
+    m_top.CreateUi(this,901); m_status.CreateUi(this,902);
+    m_settings.CreateUi(this,903); m_bar.CreateUi(this,904);
+    m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty; m_top.Invalidate(FALSE);
+    m_confirm.CreateCard(this);              // top-level, hidden until the X raises it
+    m_setup.CreateCard(this);                // first-run / Rename-input, hidden until requested
+    m_folders.CreateCard(this); m_folders.Bind(&m_lib.lib);   // Library folders…
+    m_toast.CreateCard(this);                                // playback feedback
+    m_help.CreateCard(this); m_help.Preload();   // context-help card + guide store
+    m_settings.BindHelp(&m_help);
+    m_presets.CreateCard(this);              // top-right preset picker/manager
+    m_uiTip.CreateTip(this); g_uiTip=&m_uiTip; // shared button tooltip
+    m_titlePanel.CreateCard(this);           // top-of-window Now Playing banner
+    m_splash.CreateSplash(this);             // 1.3.0: splash first, everything else after it
+    m_lib.CreateLib(this);
+    { wchar_t up[MAX_PATH]; std::wstring cfg;
+      if(GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH))
+        cfg=std::wstring(up)+L"\\.unplugged\\app_config.json";
+      m_cfgPath=cfg;
+      std::string j=ReadTextFile(cfg);
+      m_inputUrl=JStr(j,"active_input_url"); m_inputLabel=InputLabel(m_inputUrl);
+      m_labels=ParseInputLabels(Narrow(JStrNested(j,"input_labels_json")));
+      m_setup.Bind(&m_labels,&m_inputUrl);
+      m_firstRun=JBool(j,"first_run");
+      // main.py: absence of the install-scoped SeenSetup marker forces setup even
+      // when app_config survived an uninstall with first_run=false.
+      if(!SeenSetupMarker()) m_firstRun=true;
+      m_nextPortPoll=GetTickCount64()+700;
+      m_appMode=JStr(j,"app_mode"); m_mediaFolder=JStr(j,"media_folder");
+      m_lib.lastPlayed=JStr(j,"last_played");
+      std::wstring t=JStr(j,"library_tab");
+      m_lib.tab = (t==L"tv")?1 : (t==L"folders")?2 : 0;
+      LogF("config mode='%S' folder='%S' tab='%S' input='%s' titles=%d",m_appMode.c_str(),
+           m_mediaFolder.c_str(),t.c_str(),Narrow(m_inputLabel).c_str(),(int)j.size()); }
+    m_acq.CreateAcq(this);
+    m_lib.lib.Open();
+    LoadWallpaper(g_host);                      // 11 MB PNG decodes on a worker, not here
+    m_splash.ShowSplash(); SetTimer(4,SPLASH_MS,nullptr);
+    SetTimer(2,300,nullptr);
+    SetTimer(TID_POINTER,POINTER_MS,nullptr); }
+  // Everything visible lives inside the monitor: the frame is 2px bigger on each
+  // side so DWM's ring is off-screen.
+  CRect WorkR(){ CRect rc; GetClientRect(rc); rc.DeflateRect(Px(EDGE_BLEED),Px(EDGE_BLEED)); return rc; }
+  // The taskbar is a topmost appbar and the shell does NOT auto-hide it for a
+  // borderless WS_POPUP, so it sits over the bottom 48 px of the monitor. Laying the
+  // chrome out to the monitor edge put the WHOLE transport bar under it: every click
+  // on play/seek/volume/restart/mode landed on Shell_TrayWnd (measured: (1720,1402)
+  // -> Shell_TrayWnd, rect=(0,1392)-(3440,1440)) and, because the taskbar is always
+  // topmost while we are not, it also kept the app inactive. "The chrome is
+  // non-interactive" was literally a click on the taskbar. So the chrome keeps out of
+  // the work area's bottom band, exactly like a windowed app.
+  int TaskbarReserve(){
+    // ONLY WHILE WE ARE NOT TOPMOST. The frame is made topmost whenever it is the
+    // active app (OnActivate), and a topmost window sits above the taskbar - so the
+    // bottom band is ours and reserving it cost real picture height for nothing: the
+    // transport bar's bottom edge landed at y=1378 of 1440, ~60 px of dead space off
+    // the screen edge. The reserve is only honest in the state where Shell_TrayWnd
+    // can actually cover a control, which is the state where we are not topmost.
+    if(::GetWindowLongPtrW(m_hWnd,GWL_EXSTYLE)&WS_EX_TOPMOST) return 0;
+    static int cached=-1;
+    if(cached>=0) return cached;
+    MONITORINFO mi={sizeof(mi)};
+    if(!GetMonitorInfoW(MonitorFromWindow(m_hWnd,MONITOR_DEFAULTTONEAREST),&mi)) return cached=0;
+    const int r=mi.rcMonitor.bottom-mi.rcWork.bottom;
+    return cached=(r>0&&r<Px(200))?r:0; }
+  // THE LAYOUT IS THE WHOLE INTERACTION MODEL. Whatever chrome is visible owns its
+  // band of the window, and the video HOST is laid out into what is left; when no
+  // chrome is visible the host fills the window. Nothing overlaps, so there is
+  // nothing to hit-test around, nothing to raise, and no window-region to keep in
+  // step. Every pane is moved here and nowhere else.
+  void Layout(){ CRect rc=WorkR(); int w=rc.Width(),h=rc.Height();
+    int railW=Px(RIGHT_W),statW=Px(340),topH=Px(44),barH=Px(48),cbm=Px(12);
+    int ox=Px(EDGE_BLEED), oy=Px(EDGE_BLEED);       // positions are client-relative
+    const int tb=TaskbarReserve();                   // never lay chrome under the taskbar
+    h-=tb;                                           // the usable height, this frame
+    const bool bars=m_top.IsWindowVisible()!=FALSE, info=m_status.IsWindowVisible()!=FALSE,
+               sett=m_settings.IsWindowVisible()!=FALSE;
+    // Panes keep their home positions; their BAND is reserved in the video rect below.
+    m_top.MoveWindow(ox,oy,w,topH);
+    m_status.MoveWindow(ox+Px(8),oy+topH+Px(6),statW,h-topH-barH-cbm-Px(16));
+    m_settings.MoveWindow(ox+w-railW-Px(8),oy+topH+Px(6),railW,h-topH-barH-cbm-Px(16));
+    m_bar.MoveWindow(ox+cbm,oy+h-barH-cbm,w-cbm*2,barH);
+    // The video gets exactly the room the chrome is not using.
+    CRect vid=rc;
+    if(bars){ vid.top+=topH; vid.bottom-=barH+cbm+tb; }
+    if(info) vid.left+=statW+Px(8);
+    if(sett) vid.right-=railW+Px(8);
+    if(vid.Width()<Px(64)||vid.Height()<Px(64)) vid=rc;   // never squeeze the picture out
+    // THE HOST IS CLIPPED TO THE VIDEO RECT, which is mpc-hc's rule (its controls
+    // are docked bars, never under the view) expressed as a window region so it
+    // costs nothing and never touches a swap chain.
+    //
+    // This is what makes "the chrome is visible but nothing works" impossible: the
+    // picture lives in the host (MPCVR creates its window with our host as parent,
+    // VideoRenderer.cpp:1499), and a window REGION clips that whole subtree. Even if
+    // the renderer raises its own child window, it can no longer cover a single
+    // chrome pixel or take a single chrome click. The host itself keeps its full
+    // size - resizing it would call ResizeBuffers on a live capture swap chain.
+    if(g_host){
+      // Full size (the engine's geometry canvas must stay the whole window)...
+      ::MoveWindow(g_host,rc.left,rc.top,rc.Width(),rc.Height(),TRUE);
+      // ...but only the video rect is part of it.
+      const int hx=Px(EDGE_BLEED), hy=Px(EDGE_BLEED);
+      HRGN rgn=CreateRectRgn(vid.left-hx, vid.top-hy,
+                             vid.left-hx+vid.Width(), vid.top-hy+vid.Height());
+      ::SetWindowRgn(g_host, rgn, TRUE);       // window manager owns rgn
+    }
+    PlaceVideo(vid,rc.TopLeft());
+    m_confirm.Place(); m_splash.Place(); BringUiTop(); }
+  // Tell the engine the picture rect moved. MpcPlayer::ResizeVideo reads the host's
+  // client rect, so this is what makes the picture follow the advice above. Skipped
+  // when the rect did not change (most Layout calls are not rect changes), and that
+  // matters: this call into a LIVE capture graph is the one that froze VP before.
+  void PlaceVideo(const CRect& vid,const CPoint& origin){
+    static CRect last(0,0,0,0);
+    if(vid==last) return;
+    const bool first = last.IsRectEmpty();
+    last=vid;
+    if(first) return;             // creation size, not a chrome transition
+    // In LIVE CAPTURE the geometry is never changed: the renderer's lock is held by
+    // the capture thread while it presents, so asking it to re-place the picture
+    // deadlocks the graph thread and takes the UI with it (measured: the log stops
+    // dead at the first chrome hide in VP). The host's region already keeps the
+    // picture out of the chrome's pixels, so the chrome still never overlaps it -
+    // the picture is simply clipped by the chrome instead of scaled around it.
+    if(m_vp) return;
+    // Host-client coordinates: the engine positions the PICTURE inside the host.
+    const int x=vid.left-origin.x, y=vid.top-origin.y, w=vid.Width(), h=vid.Height();
+    LogF("video rect -> (%d,%d,%d,%d) %dx%d",x,y,x+w,y+h,w,h);
+    // The picture is placed by DESTINATION rect; the renderer's window is never
+    // resized (that resizes a live swap chain and blocks the UI for tens of seconds
+    // during a capture - measured, twice, both before and after moving the call to
+    // a worker thread).
+    char b[160]; snprintf(b,sizeof(b),
+      "{\"a\":\"videorect\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}",x,y,w,h);
+    int rc=Cmd(b);
+    LogF("video rect cmd rc=%d %dx%d@%d,%d",rc,w,h,x,y);
+  }
+  // m_confirm LAST in the array on purpose: this is the same list the 300 ms heal
+  // re-tops, so the confirm card ends up above the chrome instead of under it
+  // (that inversion is what made the old modal dialog unclickable).
+  // main_window.py:616-622 - the poster grid wants the room: as wide as a TV row
+  // allows, the full height between the status strip and the control bar, centred.
+  void PlaceLib(){ CRect rc=WorkR(); int w=rc.Width(),h=rc.Height(),ox=Px(EDGE_BLEED),oy=Px(EDGE_BLEED);
+    int ml_w=IMIN(Px(1800),IMAX(Px(600),(int)(w*0.86)));
+    int ml_top=oy+Px(44)+Px(16), ml_bottom=oy+h-Px(48)-Px(12)-Px(16);   // sb_h, cb_h, cb_m, BOTTOM_SAFE_PX=0
+    int ml_h=IMAX(Px(440),ml_bottom-ml_top);
+    if(ml_top+ml_h>oy+h) ml_top=oy+IMAX(0,(h-ml_h)/2);
+    m_lib.MoveWindow(ox+(w-ml_w)/2,ml_top,ml_w,ml_h); m_lib.Metrics(ml_w); m_lib.ClampScroll();
+    m_lib.Invalidate(FALSE); }
+  void BringUiTop(){ CWnd* p[6]={&m_top,&m_status,&m_settings,&m_bar,&m_lib,&m_splash};
+    for(CWnd*c:p) if(c->GetSafeHwnd()&&c->IsWindowVisible()) c->SetWindowPos(&CWnd::wndTop,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); }
+  // The WHOLE chrome leaves after an idle period — bars, status, settings and any
+  // edge-opened pane together, in one transition (SetUi). The idle deadline is a
+  // real timer (TID_CHROME) that every activity re-arms; nothing else hides the
+  // chrome on its own. Guards that remain: only while something plays (VP or a
+  // file), never with the library up, never over a card, and never during a
+  // seek/volume drag — those RE-ARM rather than return, so a transient condition
+  // delays the hide instead of cancelling it for good.
+  // True while the pointer is inside ANY visible pane (strip, bar or either rail).
+  // Used by the cursor rule: over UI the pointer is always visible. The rails are
+  // ordinary user panels now, so a hidden cursor over a rail being used would read
+  // as a broken window.
+  bool OverChrome(){
+    POINT p{}; if(!::GetCursorPos(&p)) return false;
+    CWnd* panes[4]={&m_top,&m_bar,&m_status,&m_settings};
+    for(CWnd* c: panes){
+      if(!c->GetSafeHwnd() || !c->IsWindowVisible()) continue;
+      POINT q=p; ::ScreenToClient(c->GetSafeHwnd(),&q);
+      CRect r; c->GetClientRect(&r);
+      if(r.PtInRect(q)) return true; }
+    return false; }
+  // The bottom DOCK ZONE, not just the bar's own rect: MPC-HC keeps the bottom
+  // controls shown while the cursor is anywhere in the dock band and only starts
+  // the hide deadline once it leaves (MainFrmControls.cpp shows/hides by DockZone).
+  // Same rule here, in one place: the band is the bar's height plus its margins.
+  bool InBottomDock(){
+    CRect cr; GetClientRect(&cr);
+    if(cr.IsRectEmpty()) return false;
+    POINT p{}; if(!::GetCursorPos(&p)) return false;
+    ::ScreenToClient(m_hWnd,&p);
+    const int band=Px(48)+Px(12)+Px(12);
+    return p.y>=cr.bottom-band && p.x>=cr.left && p.x<cr.right; }
+  // True while the pointer is inside the STRIP or the TRANSPORT BAR. The idle timer
+  // must not pull the bar out from under someone using it. The rails are deliberately
+  // NOT consulted: they are permanent user panels now, so a pointer resting over one
+  // of them must not keep the auto-hiding bars on screen forever.
+  bool OverBars(){
+    POINT p{}; if(!::GetCursorPos(&p)) return false;
+    CWnd* bars[2]={&m_top,&m_bar};
+    for(CWnd* c: bars){
+      if(!c->GetSafeHwnd() || !c->IsWindowVisible()) continue;
+      POINT q=p; ::ScreenToClient(c->GetSafeHwnd(),&q);
+      CRect r; c->GetClientRect(&r);
+      if(r.PtInRect(q)) return true; }
+    return false; }
+  // The 300 ms poll keeps only what is genuinely periodic: the preset picker's
+    // click-outside dismissal. It neither reads the pointer for the UI nor hides
+    // anything — the sampler owns pointer state, the idle timer owns hiding.
+  void PollTick(){
+    // A click-anywhere-else dismissal for the preset picker. Focus loss alone is
+    // not enough while another application owns the foreground, so the click is
+    // checked directly: clicking the rails must not leave the card hanging.
+    if(m_presets.IsWindowVisible() && (::GetAsyncKeyState(VK_LBUTTON)&0x8000)){
+      POINT p{}; CRect r;
+      if(::GetCursorPos(&p) && m_presets.GetSafeHwnd()){
+        m_presets.GetWindowRect(&r);
+        if(!r.PtInRect(p)){ LogF("preset picker closed (click outside)"); m_presets.HideCard(); } } }
+  }
+  // THE pointer sample. Runs on TID_POINTER every 100 ms and is the only place
+  // that decides (a) the pointer moved, (b) the edge gesture, (c) cursor
+  // visibility. Everything it learns comes from the OS, so no window can
+  // disagree with any other about where the pointer is.
+  void PointerSample(){
+    POINT p{}; if(!::GetCursorPos(&p)) return;
+    if(!g_ptrValid || p.x!=g_ptrPt.x || p.y!=g_ptrPt.y){
+      g_ptrValid=true; g_ptrPt=p;
+      POINT q=p; ::ScreenToClient(m_hWnd,&q);
+      CRect cr; GetClientRect(&cr);
+      if(cr.PtInRect(q) && PointIsOurs(p)){
+        UiActivity();                 // shows the cursor, resets the bar deadline
+        EdgeCheck(q);                 // the bar gesture, from the same point
+      } else { m_hotBottom=false; }
+    }
+    // The cursor is DERIVED here and re-asserted on every sample: hidden only
+    // while something plays, no card is up, and neither pointer nor keyboard has
+    // been used for 2.5 s. Being re-asserted is the point — a hidden cursor can no
+    // longer get stuck for want of a message, which is what made the pointer
+    // invisible over the video until the user left the app.
+    const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
+                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible();
+    if((m_vp || InFilePlayback()) && !card && UiIdleMs()>=2500 && !OverChrome()) CursorHide();
+    else CursorShow();
+  }
+  // The idle deadline expired: this is the ONLY path that auto-hides the bars.
+  // The guards re-arm instead of hiding and re-check on the next expiry, so a
+  // transient condition (a drag, a card, the library) can never cancel the hide
+  // for good — the earlier design returned and nothing ever tried again.
+  //
+  // Only the STRIP and the TRANSPORT BAR are auto-hiding. The status and settings
+  // rails are ordinary user panels now: their visibility is the saved ui.showInfo /
+  // ui.showSettings preference (and the Info/Settings buttons), and this timer
+  // never touches them.
+  void OnChromeIdle(){
+    if(!m_uiUp){ ChromeTimerStop(); return; }
+    const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
+                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible();
+    // Mode-agnostic: VP is always "showing something", media needs a file loaded.
+    if(!(m_vp || InFilePlayback()) || m_lib.IsWindowVisible() || card){
+      ChromeTimerArm(CHROME_IDLE_MS); return; }
+    if(m_bar.Busy() || OverBars() || InBottomDock()){
+      // Held open: push the deadline out by the FULL timeout each time, exactly as
+      // MPC-HC retriggers m_zoneHideTicks on every update while the cursor is in the
+      // zone. Re-arming with a short delay instead made the bars vanish ~1 s after
+      // the cursor left the dock, instead of after the configured timeout.
+      ChromeTimerArm(CHROME_IDLE_MS); return; }
+    LogF("chrome: idle timer -> hide ALL panes (info=%d settings=%d before hide)",
+         (int)m_status.IsWindowVisible(),(int)m_settings.IsWindowVisible());
+    SetUi(false);
+    // SetUi does not touch a card/help window that was shown independently of the
+    // panes; clear them here so "auto-hide" is unconditional.
+    m_help.HideCard(); UiTipHide(); m_bar.HideOverlay();
+  }
+  void SetUi(bool up,bool full=true){
+    // THE one chrome transition. Everything visible about the chrome changes here:
+    // panes shown/hidden, the overlay's region recomputed from them, and the idle
+    // deadline armed or disarmed. Nothing else may show/hide the overlay window.
+    if(up){ g_chromeTimerOn=true; ChromeTimerArm(CHROME_IDLE_MS); }
+    else ChromeTimerStop();
+    if(m_uiUp==up&&m_fullUi==full)return;
+    m_uiUp=up; m_fullUi=full;
+    if(up) UiActivity();     // the idle clock starts when the bars appear
+    if(!up){ m_settings.ClearKeyFocus(); m_presets.HideCard(); m_bar.HideOverlay(); }
+    // The hover tip is its own top-level window, so hiding the pane it belongs to
+    // does NOT send the pane a mouse-leave: Up with the pointer over Min/Close
+    // left a "Minimize" card floating over the video with nothing to dismiss it.
+    // Any chrome visibility change clears it; it reappears on the next hover.
+    UiTipHide();
+    // THE RAILS ARE NOT PART OF THE AUTO-HIDING CHROME. The strip and the transport
+    // bar are transient (they come and go with activity); the status and settings
+    // rails are ordinary user panels whose visibility is the saved ui.showInfo /
+    // ui.showSettings preference, toggled by the Info and Settings buttons. Hiding
+    // the bars therefore leaves them exactly as they are, and raising the bars
+    // applies the preference. Nothing force-hides them except the library screen
+    // (m_suppressPanels) and app start, where every pane begins hidden.
+    if(up){
+      const bool wantInfo=g_showInfo&&!m_suppressPanels, wantSet=g_showSettings&&!m_suppressPanels;
+      m_status.ShowWindow(wantInfo?SW_SHOW:SW_HIDE);
+      m_settings.ShowWindow(wantSet?SW_SHOW:SW_HIDE); }
+    else {
+      // AUTO-HIDE HIDES EVERY PANE, rails included. The rails used to be exempt -
+      // they outlived every chrome transition - so a settings rail left open when
+      // the idle deadline expired stayed on screen while the strip and the transport
+      // bar went away, which reads as a half-hidden window. The saved preference is
+      // untouched: SetUi(true) re-applies ui.showInfo / ui.showSettings, so raising
+      // the chrome brings back exactly the rails the user had enabled.
+      m_status.ShowWindow(SW_HIDE);
+      m_settings.ShowWindow(SW_HIDE); }
+    m_top.ShowWindow(up?SW_SHOW:SW_HIDE); m_bar.ShowWindow(up?SW_SHOW:SW_HIDE);
+    m_top.infoOn=m_status.IsWindowVisible()!=FALSE;
+    m_top.settingsOn=m_settings.IsWindowVisible()!=FALSE;
+    m_top.Invalidate(FALSE);
+    if(!m_settings.IsWindowVisible()) m_help.HideCard();
+    // The region is recomputed from the panes' own visibility, so it cannot
+    // disagree with them.
+    LogF("ui: bars %s full=%d rails info=%d settings=%d",up?"up":"down",(int)full,
+         (int)m_status.IsWindowVisible(),(int)m_settings.IsWindowVisible());
+    Layout();   // bars and/or rails changed: the video rect follows them
+    // NO ApplyVpLayout here. It moves the capture host and calls into the engine
+    // ("resize"); doing that from a chrome toggle on the UI thread froze the app
+    // during a live DeckLink signal. The VP layout is set once when the capture
+    // starts and on window resize, and the chrome floats over the picture.
+    // The setting means the context card is persistent while the settings rail
+    // is visible; it appears even before the pointer first touches a row.
+    if(up&&m_settings.IsWindowVisible()&&!m_lib.IsWindowVisible()) m_settings.ShowRememberedHelp();
+    if(up){ RECT tr={0,0,0,0},hr2={0,0,0,0}; HWND top=::GetTopWindow(m_hWnd);
+      if(m_top.GetSafeHwnd())::GetWindowRect(m_top.GetSafeHwnd(),&tr);
+      if(g_host)::GetWindowRect(g_host,&hr2);
+      RECT wr; ::GetWindowRect(m_hWnd,&wr);
+      LogF("chrome up: topChild=%p topPane=(%d,%d,%d,%d) vis=%d host=(%d,%d,%d,%d) frame=(%d,%d,%d,%d)",
+           top,tr.left,tr.top,tr.right,tr.bottom,(int)m_top.IsWindowVisible(),
+           hr2.left,hr2.top,hr2.right,hr2.bottom,wr.left,wr.top,wr.right,wr.bottom); } }   // log BEFORE Layout: a crash inside
+  void PollStats(){ static char st[131072]; int nn=s3_stats(st,sizeof(st));
+    { static int fails=0; if(nn<=0&&fails++<3) LogF("stats rc=%d",nn); }
+    // The z-order heal MUST run before the stats early-return. In video processor
+    // mode, before a graph exists, s3_stats returns nothing - and with the heal
+    // behind that return the capture renderer window stayed above the chrome, so
+    // Up "did nothing" and the user had no way to reach the controls or close.
+    double gen=-1; if(nn>0) JNum(st,"gen",gen);
+    // The chrome no longer needs a z-order heal: it is a WS_EX_TOPMOST overlay
+    // window, and the capture surface that used to sit above the panes cannot
+    // cover a topmost window that overlaps it. BringUiTop is kept only for the
+    // panes' relative order inside the overlay after a graph rebuild.
+    if(gen!=m_gen){ m_gen=gen; BringUiTop(); LogF("gen change -> re-top");
+      // 1.3.0 re-pushes the whole settings set on every graph generation
+      // (MainWindow._on_s3_status -> push_all). A rebuild creates a NEW renderer
+      // that starts from registry defaults, so without this every control the user
+      // set is silently lost on the next re-open. gen>=1 guards the pre-graph poll.
+      //
+      // BEFORE the first push, APPLY THE RECORDED PRESET. PresetInitFromIni only
+      // remembered WHICH preset was active; the rows still held whatever the base
+      // ini loaded, so what PushAll sent depended on that disagreement. Measured
+      // 30 Oct: identical launches pushed ml.mode=2, 0, 2, 0 with no user input,
+      // because the preset said 0 and the base ini said 2 - and the ML grade was
+      // inert for the whole of the sessions that pushed 0. Applying it here makes
+      // the first push deterministic and equal to the preset the operator sees.
+      if(gen>=1){
+        static bool s_presetApplied=false;
+        if(!s_presetApplied){ s_presetApplied=true;
+          if(!g_activePreset.empty()&&_wcsicmp(g_activePreset.c_str(),L"Default")!=0){
+            LogF("startup: hard-apply recorded preset '%s'",Narrow(g_activePreset).c_str());
+            ApplyPreset(g_activePreset); } }
+        PushAll(); } }
+    // The confirm card no longer needs re-raising here: it is a WS_EX_TOPMOST
+    // owned window, so no pane in this frame can ever cover it.
+    if(nn<=0) return;     // heal above this line, parsing below: st is only valid
+                          // when s3_stats actually filled it
+    double p100=0,d100=0,vol=100,mut=0,amode=0; JNum(st,"pos",p100); JNum(st,"dur",d100); JNum(st,"vol",vol); JNum(st,"muted",mut);
+    const char* ab=Sect(st,"audio"); JNumAt(ab,"mode",amode); m_bitstream=(amode!=0);
+    const char* rr=Sect(st,"render"); if(rr){ JNumAt(rr,"draw",m_drawn); JNumAt(rr,"recv",m_recv); }
+    const char* dl=Sect(st,"dl"),*sg=Sect(st,"signal"); double eotf=0,locked=0;
+    if(dl) JNumAt(dl,"eotf",eotf); if(sg) JNumAt(sg,"locked",locked);
+    m_liveEotf=(int)eotf; m_liveLocked=(int)locked;
+    const bool file=InFilePlayback();
+    if(file){ m_pos=p100/1e7; m_dur=d100/1e7; if(m_pos<0||m_pos>1e6)m_pos=0; if(m_dur<0||m_dur>1e6)m_dur=0; }
+    else { m_pos=0; m_dur=0; }
+    char stt[32]=""; { const char* s2=strstr(st,"\"state\":\""); if(s2){ s2+=9; int i=0; while(s2[i]&&s2[i]!='"'&&i<31){stt[i]=s2[i];i++;} stt[i]=0; } }
+    m_paused=(strcmp(stt,"paused")==0);
+    if(m_mediaState!=stt){ std::string prev=m_mediaState; m_mediaState=stt;
+      if(!strcmp(stt,"ended")&&prev!="ended"&&m_appMode==L"media_player"&&g_autoNext
+         &&!m_mediaPath.empty()&&m_lib.CtxValidFor(m_mediaPath)) BeginAutoNext(); }
+    { wchar_t ub[32]; int i=0; for(;stt[i]&&i<31;++i) ub[i]=towupper((unsigned char)stt[i]); ub[i]=0;
+      if(wcscmp(m_top.state,ub)!=0){ wcscpy_s(m_top.state,ub); m_top.Invalidate(FALSE); } }
+    m_chaps.clear();
+    // A stopped graph still reports its old chapters/position. Only the file
+    // that is actually open owns the transport timeline; otherwise clear it.
+    if(file){ const char* cp=strstr(st,"\"chapters\":[");
+      if(cp){ const char* p=cp; while((p=strstr(p,"\"t\":"))!=nullptr){
+        Chap c; c.t=strtod(p+4,nullptr);
+        const char* q=strstr(p,"\"name\":\"");
+        if(q&&q<p+220){ q+=8; std::string nm;
+          while(*q&&*q!='"'&&nm.size()<160){ if(*q=='\\'&&q[1]) ++q; nm+=*q++; }
+          c.name=Widen(nm); }
+        m_chaps.push_back(c); p+=4; if(m_chaps.size()>2000) break; } } }
+    m_vol=(int)(vol+0.5); m_muted=(mut!=0);
+    bool changed=false;
+    for(int i=0;i<NROWS;++i){
+      if(g_rows[i].kind==5){ std::vector<std::wstring> nm; int act=0; ParseTracks(st,"audio",nm,act);
+        for(auto&w:nm)w=CleanName(w,true);
+        if(!nm.empty()&&nm!=g_rows[i].names){ g_rows[i].names=nm; g_rows[i].opt=act; changed=true; } }
+      if(g_rows[i].kind==7){ std::vector<std::wstring> nm; int act=0; ParseTracks(st,"subtitle",nm,act);
+        for(auto&w:nm)w=CleanName(w,false); nm.insert(nm.begin(),L"Off");
+        if(nm.size()>1&&nm!=g_rows[i].names){ g_rows[i].names=nm; g_rows[i].opt=act+1; changed=true; } } }
+    if(changed){ m_settings.Invalidate(FALSE);
+      const wchar_t* a=L"-"; const wchar_t* s2=L"-";
+      for(auto&r:g_rows){ if(r.kind==5&&!r.names.empty())a=r.names[r.opt].c_str(); if(r.kind==7&&!r.names.empty())s2=r.names[r.opt].c_str(); }
+      LogF("POPULATED audio='%s' sub='%s'",Narrow(a).c_str(),Narrow(s2).c_str()); }
+    if(g_seekWant>=0 && GetTickCount64()-g_seekT<2500 && fabs(m_pos-g_seekWant)<2.0){ LogF("seek APPLIED want=%.2f got=%.2f",g_seekWant,m_pos); g_seekWant=-1; }
+    if(m_appMode==L"media_player"&&!m_mediaPath.empty()&&!m_paused&&m_pos>0
+       &&GetTickCount64()>=m_nextHistory){
+      m_nextHistory=GetTickCount64()+10000;
+      m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
+    }
+    m_status.Refresh(st); m_bar.SetAppMode(m_appMode==L"video_processor");
+    m_bar.SetMedia(file);
+    m_bar.SetState(m_pos,m_dur,(int)vol,mut>0,file?m_paused:true,file?m_bitstream:false);
+    { Row* nr=FindRow("geo.nls"); m_bar.SetNls(nr&&nr->on); }   // button reflects the row
+    m_bar.SetChaps(m_chaps); }
+  // ---- auto-next (SYSTEM: Play next item automatically) ----------------------
+  void BeginAutoNext(){
+    if(!m_nextPath.empty()) return;
+    m_lib.WriteHistory(m_mediaPath,m_dur>0?m_dur:m_pos,m_dur);   // mark finished watched
+    std::wstring p,label; double r=0;
+    if(!m_lib.NextAfter(p,r,label)){ LogF("auto-next: nothing after '%s'",Narrow(m_mediaPath).c_str()); return; }
+    m_nextPath=p; m_nextResume=r; m_nextLabel=label; m_nextLeft=5; m_nextAt=GetTickCount64();
+    wchar_t item[256]; swprintf_s(item,L"%s",label.c_str());
+    m_confirm.ShowNext(item); SetTimer(6,1000,nullptr);
+    LogF("auto-next: '%s' in 5s (next '%s' resume=%.1fs)",Narrow(m_mediaPath).c_str(),
+         Narrow(p).c_str(),r); }
+  void ClearNext(){ m_nextPath.clear(); m_nextLabel.clear(); m_nextResume=0; m_nextAt=0; m_nextLeft=0; }
+  void CancelAutoNext(const char* why){ if(m_nextPath.empty()) return;
+    LogF("auto-next: cancelled (%s)",why); KillTimer(6); ClearNext(); m_confirm.HideCard(); }
+  void PlayContextPath(const std::wstring& p,double r,const std::wstring& label,const char* why){
+    if(p.empty()){ ShowToast(L"No item",1400); return; }
+    if(!m_mediaPath.empty()&&m_pos>0) m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
+    CancelAutoNext(why);
+    KillTimer(6); ClearNext(); m_confirm.HideCard();
+    // Switching while the old graph is still playing hung inside Open's teardown.
+    // Stop/detach it first; the new open then builds into a clean host.
+    int sg=Cmd("{\"a\":\"stopgraph\"}");
+    LogF("item switch: stopgraph rc=%d",sg);
+    std::string u8=Narrow(p), esc; for(char c:u8){ if(c=='\\') esc+="\\\\"; else esc+=c; }
+    char cmd[2048]; snprintf(cmd,sizeof(cmd),"{\"a\":\"open\",\"url\":\"%s\"}",esc.c_str());
+    g_openUrl=cmd; g_openResumeSec=r; m_lib.lastPlayed=p; m_lib.lastPlayedSession=true;
+    LogF("%s '%s' resume=%.1fs",why,Narrow(label).c_str(),r);
+    PostMessageW(WM_APP+1,0,0); }
+  void StartNext(){
+    if(m_nextPath.empty()) return;
+    std::wstring p=m_nextPath; double r=m_nextResume;
+    KillTimer(6); ClearNext(); m_confirm.HideCard();
+    std::string u8=Narrow(p), esc; for(char c:u8){ if(c=='\\') esc+="\\\\"; else esc+=c; }
+    char cmd[2048]; snprintf(cmd,sizeof(cmd),"{\"a\":\"open\",\"url\":\"%s\"}",esc.c_str());
+    g_openUrl=cmd; g_openResumeSec=r; m_lib.lastPlayed=p; m_lib.lastPlayedSession=true;
+    LogF("auto-next: playing '%s' resume=%.1fs",esc.c_str(),r);
+    PostMessageW(WM_APP+1,0,0); }
+  afx_msg LRESULT OnPrevItem(WPARAM,LPARAM){
+    if(!InFilePlayback()) return 0;
+    std::wstring p,l; double r=0;
+    if(!m_lib.PrevBefore(p,r,l)) ShowToast(L"No previous item",1400);
+    else { ShowToast((m_lib.TvContext()?L"Previous episode: ":L"Previous item: ")+l,2200);
+           PlayContextPath(p,0,l,"previous item (from start)"); }
+    return 0; }
+  afx_msg LRESULT OnNextItem(WPARAM,LPARAM){
+    if(!InFilePlayback()) return 0;
+    std::wstring p,l; double r=0;
+    if(!m_lib.NextAfter(p,r,l)) ShowToast(L"No next item",1400);
+    else { ShowToast((m_lib.TvContext()?L"Next episode: ":L"Next item: ")+l,2200);
+           PlayContextPath(p,0,l,"next item (from start)"); }
+    return 0; }
+  afx_msg LRESULT OnSeekBack(WPARAM,LPARAM){
+    if(InFilePlayback()) SeekTo(m_pos-30.0,L"-30 s"); return 0; }
+  afx_msg LRESULT OnSeekForward(WPARAM,LPARAM){
+    if(InFilePlayback()) SeekTo(m_pos+30.0,L"+30 s"); return 0; }
+  afx_msg LRESULT OnSeekActivity(WPARAM,LPARAM){ ShowTitlePanel(); return 0; }
+  afx_msg LRESULT OnNextNow(WPARAM,LPARAM){ LogF("auto-next: Play now pressed"); StartNext(); return 0; }
+  afx_msg LRESULT OnNextCancel(WPARAM,LPARAM){ CancelAutoNext("dialog cancelled"); return 0; }
+  afx_msg LRESULT OnStopPressed(WPARAM,LPARAM){
+    LogF("stop button pressed"); if(InFilePlayback()) StopToLibrary("button"); return 0; }
+  afx_msg LRESULT OnPresetManager(WPARAM,LPARAM){
+    if(m_presets.IsWindowVisible()){ LogF("preset picker close (toggle)"); m_presets.HideCard(); }
+    // Opened by the USER, so this is the moment the Default-is-read-only warning
+    // belongs: the card's create-preset header explains why changes are not being
+    // saved. It is never opened for them — see CTopStrip::presetDirty.
+    else if(g_presetDirty&&_wcsicmp(g_activePreset.c_str(),L"Default")==0){
+      LogF("preset picker open (dirty on Default -> create-preset header)");
+      m_presets.ShowWarning(); }
+    else { LogF("preset picker open"); m_presets.Show(); }
+    return 0; }
+  afx_msg LRESULT OnPresetDirty(WPARAM w,LPARAM){
+    m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
+    m_top.Invalidate(FALSE);
+    if(w) LogF("preset: Default changed -> top-strip marker only (no auto-open)");
+    else if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
+    return 0; }
+  afx_msg LRESULT OnPresetState(WPARAM,LPARAM){
+    m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
+    m_top.Invalidate(FALSE);
+    if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
+    return 0; }
+  afx_msg LRESULT OnPresetAutoSave(WPARAM,LPARAM){ SetTimer(12,300,nullptr); return 0; }
+  afx_msg LRESULT OnAppOpen(WPARAM,LPARAM){
+    if(!m_nextPath.empty()) CancelAutoNext("new open");
+    LogF("open dispatching url=%s", g_openUrl.c_str());
+    m_mediaPath=JStr(g_openUrl,"url");
+    m_suppressPanels=false;                    // a title is playing again: panels may show
+    m_hotBottom=false;
+    m_lib.ShowLib(false); SetUi(false);        // playback takes the screen (1.3.0)
+    ShowTitlePanel();
+    // MUST stay on the UI thread. Running this on a detached worker caused the
+    // black-screen-with-audio regression: MPCVR creates its DirectX child on the
+    // thread that builds the graph, and that thread exited as soon as Open returned,
+    // so the renderer's window was orphaned with no pump and never presented a frame.
+    // The UI pump stops for the ~1.2 s of graph build; the splash now covers the part
+    // of startup that used to spin, which is the price of a live picture.
+    DWORD t0=GetTickCount(); int rc=Cmd(g_openUrl.c_str());
+    LogF("open rc=%d took=%lums",rc,(unsigned long)(GetTickCount()-t0));
+    if(rc==0){
+      m_graphRan=true;      // a graph has run: mode switches must restart now
+      m_nextHistory=GetTickCount64()+10000;
+      if(g_openResumeSec>0){ char b[128];
+        snprintf(b,sizeof(b),"{\"a\":\"seek\",\"pos\":%lld}",(long long)(g_openResumeSec*1e7));
+        int sr=Cmd(b); LogF("history resume %.1fs rc=%d",g_openResumeSec,sr);
+        g_openResumeSec=0; }
+    } else HideTitlePanel();
+    return 0; }
+  // WM_APP+4 raises the non-modal confirm; WM_APP+5 is its Yes button.
+  afx_msg LRESULT OnConfirmToggle(WPARAM,LPARAM){ m_confirm.ShowClose(); return 0; }
+  afx_msg LRESULT OnZionResetAsk(WPARAM,LPARAM){ m_confirm.ShowZionReset(); return 0; }
+  afx_msg LRESULT OnZionReset(WPARAM,LPARAM){
+    // reset_group_defaults(3): restore every ZION row to its build_rows value and
+    // push/persist ONLY the rows that actually moved, after confirmation.
+    int changed=0;
+    for(auto&r:g_rows){ if(r.grp!=3) continue; bool moved=false;
+      if(r.kind==1&&r.val!=r.defVal){ r.val=r.defVal; moved=true; }
+      else if(r.kind==0&&r.on!=r.defOn){ r.on=r.defOn; moved=true; }
+      else if(r.kind==2&&r.opt!=r.defOpt){ r.opt=r.defOpt; moved=true; }
+      if(moved){ PushRow(r); ++changed; } }
+    m_settings.Invalidate(FALSE); LogF("zion reset: %d rows restored",changed); return 0; }
+  afx_msg LRESULT OnRendererResetAsk(WPARAM,LPARAM){ m_confirm.ShowRendererReset(); return 0; }
+  afx_msg LRESULT OnRendererReset(WPARAM,LPARAM){
+    int rc=Cmd("{\"a\":\"resetrenderer\"}"); LogF("renderer registry reset rc=%d",rc);
+    PushAll();   // 1.3.0: re-apply rail values to the LIVE instance immediately
+    return 0; }
+  void PickCubeLut(){
+    Row* lut=FindRow("out.cubeLut"); if(!lut) return;
+    wchar_t path[MAX_PATH]={};
+    if(!lut->file.empty()) wcscpy_s(path,lut->file.c_str());
+    wchar_t home[MAX_PATH]; GetEnvironmentVariableW(L"USERPROFILE",home,MAX_PATH);
+    std::wstring initial=home;
+    if(!lut->file.empty()){ initial=lut->file; size_t p=initial.find_last_of(L"\\/");
+      if(p!=std::wstring::npos) initial=initial.substr(0,p); }
+    OPENFILENAMEW ofn={}; ofn.lStructSize=sizeof(ofn); ofn.hwndOwner=m_hWnd;
+    ofn.lpstrFile=path; ofn.nMaxFile=MAX_PATH; ofn.lpstrInitialDir=initial.c_str();
+    ofn.lpstrFilter=L"CUBE files (*.cube)\0*.cube\0\0"; ofn.lpstrDefExt=L"cube";
+    ofn.lpstrTitle=L"Choose display calibration LUT";
+    ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST;
+    if(!GetOpenFileNameW(&ofn)){ LogF("lut picker cancelled"); return; }
+    lut->file=path; PushRow(*lut); m_settings.Invalidate(FALSE);
+    LogF("lut selected '%S'",lut->file.c_str());
+  }
+  // One engine grab -> PNG. Shared by the OUTPUT row (which asks where) and the
+// Ctrl+S quick capture (which does not).
+  bool GrabFrameToPng(const std::wstring& out){
+    wchar_t temp[MAX_PATH]; GetTempPathW(MAX_PATH,temp);
+    wchar_t bmp[MAX_PATH]; swprintf_s(bmp,L"%Sunplugged_frame_%lu.bmp",temp,(unsigned long)GetTickCount());
+    std::string cmd=std::string("{\"a\":\"grab\",\"file\":\"")+JsonEscape(Narrow(bmp))+"\"}";
+    const int rc=Cmd(cmd.c_str());
+    if(rc!=0){ LogF("frame grab failed rc=0x%08X",(unsigned)rc); DeleteFileW(bmp); return false; }
+    EnsureGdiplus();
+    Gdiplus::Bitmap* img=Gdiplus::Bitmap::FromFile(bmp,FALSE);
+    CLSID png={}; bool ok=false;
+    if(img&&img->GetLastStatus()==Gdiplus::Ok&&PngEncoderClsid(png))
+      ok=(img->Save(out.c_str(),&png,nullptr)==Gdiplus::Ok);
+    if(!ok) LogF("frame PNG conversion FAILED -> %S",out.c_str());
+    delete img; DeleteFileW(bmp);
+    return ok;
+  }
+  // Quick capture target: Pictures\Unplugged\<date>\frame_NNNN.png. The date
+  // folder orders by date by construction, and the counter is scanned from what
+  // is already there, so captures never overwrite each other across sessions.
+  std::wstring CaptureFolder(){
+    wchar_t up[MAX_PATH]={};
+    if(!GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH)||!*up) return L"";
+    const std::wstring base=std::wstring(up)+L"\\Pictures\\Unplugged";
+    ::CreateDirectoryW(base.c_str(),nullptr);
+    SYSTEMTIME st{}; GetLocalTime(&st);
+    wchar_t day[64]; swprintf_s(day,L"%04u-%02u-%02u",st.wYear,st.wMonth,st.wDay);
+    const std::wstring d=base+L"\\"+day;
+    if(!::CreateDirectoryW(d.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS){
+      LogF("capture folder create failed (%lu) for %S",(unsigned long)GetLastError(),d.c_str()); return L""; }
+    return d; }
+  int NextCaptureIndex(const std::wstring& dir){
+    int best=0; WIN32_FIND_DATAW fd{};
+    const std::wstring pat=dir+L"\\frame_*.png";
+    HANDLE h=::FindFirstFileW(pat.c_str(),&fd);
+    if(h!=INVALID_HANDLE_VALUE){
+      do { int v=0;
+        if(swscanf_s(fd.cFileName,L"frame_%d.png",&v)==1 && v>best) best=v;
+      } while(::FindNextFileW(h,&fd));
+      ::FindClose(h); }
+    return best+1; }
+  void SaveFrameQuick(){
+    const std::wstring dir=CaptureFolder();
+    if(dir.empty()){ ShowToast(L"Could not create the capture folder",2000); return; }
+    wchar_t name[64]; swprintf_s(name,L"frame_%04d.png",NextCaptureIndex(dir));
+    const std::wstring out=dir+L"\\"+name;
+    if(GrabFrameToPng(out)){
+      LogF("frame saved -> %S",out.c_str());
+      wchar_t t[128]; swprintf_s(t,L"Saved %s",name);
+      ShowToast(t,2200);
+    } else ShowToast(L"Frame capture failed",2200); }
+  void SaveFramePng(){
+    wchar_t home[MAX_PATH]; GetEnvironmentVariableW(L"USERPROFILE",home,MAX_PATH);
+    wchar_t path[MAX_PATH]; swprintf_s(path,L"%S\\unplugged_frame.png",home);
+    OPENFILENAMEW ofn={}; ofn.lStructSize=sizeof(ofn); ofn.hwndOwner=m_hWnd;
+    ofn.lpstrFile=path; ofn.nMaxFile=MAX_PATH; ofn.lpstrDefExt=L"png";
+    ofn.lpstrFilter=L"PNG images (*.png)\0*.png\0\0"; ofn.lpstrTitle=L"Save frame as PNG";
+    ofn.Flags=OFN_PATHMUSTEXIST|OFN_OVERWRITEPROMPT;
+    if(!GetSaveFileNameW(&ofn)){ LogF("frame save cancelled"); return; }
+    std::wstring out=path;
+    if(out.size()<4||_wcsicmp(out.c_str()+out.size()-4,L".png")!=0) out+=L".png";
+    if(GrabFrameToPng(out)){ wchar_t msg[512]; swprintf_s(msg,L"Frame saved to:\n%S",out.c_str());
+      MessageBoxW(msg,L"Save frame as PNG",MB_OK|MB_ICONINFORMATION);
+      LogF("frame saved -> %S",out.c_str());
+    } else MessageBoxW(L"Could not save the renderer frame as PNG.",L"Save frame as PNG",MB_OK|MB_ICONERROR);
+  }
+  afx_msg LRESULT OnToggleNls(WPARAM,LPARAM){
+    // One action, one setting: flip geo.nls and push it. Geometry forcing (Fill
+    // while NLS is on) is ResizeVideo's job, not this handler's.
+    Row* r=FindRow("geo.nls");
+    if(!r) return 0;
+    if(_wcsicmp(g_activePreset.c_str(),L"Default")==0){
+      ShowToast(L"Default is read-only — switch to a preset to change this",3000);
+      LogF("NLS toggle refused (Default is read-only)"); return 0; }
+    r->on=!r->on;
+    PushRow(*r);
+    m_bar.SetNls(r->on);
+    m_settings.Invalidate(FALSE);
+    ShowToast(r->on?L"Non-linear stretch: on":L"Non-linear stretch: off",1400);
+    LogF("NLS toggled %s (transport button / N key)", r->on?"ON":"OFF");
+    return 0; }
+  afx_msg LRESULT OnDismissPopups(WPARAM,LPARAM){
+    if(m_presets.IsWindowVisible()){ LogF("preset picker closed (click on chrome)"); m_presets.HideCard(); }
+    return 0; }
+  afx_msg LRESULT OnToastText(WPARAM,LPARAM){
+    if(!g_toastText.empty()) ShowToast(g_toastText.c_str(),4000);
+    return 0; }
+  afx_msg LRESULT OnCapFrame(WPARAM,LPARAM){ SaveFramePng(); return 0; }
+  afx_msg LRESULT OnPickLut(WPARAM,LPARAM){ PickCubeLut(); return 0; }
+  // WM_APP+7 acquire retry, +8 overlay->media player, +9 library->video processor.
+  afx_msg LRESULT OnAcqRetry(WPARAM,LPARAM){ m_acq.Stop(); KillTimer(5); StartVp(); return 0; }
+  afx_msg LRESULT OnToMedia(WPARAM,LPARAM){ RequestModeSwitch(L"media_player"); return 0; }
+  afx_msg LRESULT OnToVp(WPARAM,LPARAM){ RequestModeSwitch(L"video_processor"); return 0; }
+  // 1.3.0 _switch_mode: if a graph has EVER run in this process, switching modes
+  // RESTARTS the app rather than transitioning - the two modes own different
+  // graphs and "carrying one into the other ... is where the crashes live".
+  // Before anything has run the switch is in place (that is the first-run path).
+  void RelaunchProcess(){
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+    std::wstring cmd=L"cmd.exe /c ping -n 3 127.0.0.1 >nul & start \"\" \""; cmd+=exe; cmd+=L"\"";
+    STARTUPINFOW si={sizeof(si)}; PROCESS_INFORMATION pi={};
+    if(CreateProcessW(nullptr,(LPWSTR)cmd.c_str(),nullptr,nullptr,FALSE,DETACHED_PROCESS,nullptr,nullptr,&si,&pi)){
+      CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    PostMessageW(WM_APP+5,0,0);
+  }
+  void RequestModeSwitch(const wchar_t* mode){
+    if(m_appMode==mode){ LogF("mode change ignored (already %S)",mode); return; }
+    // A mode switch always warns: it replaces the live surface and may stop
+    // playback/capture. (User requirement — not conditional on current state.)
+    m_pendingMode=mode; m_pendingInputUrl.clear();
+    const wchar_t* to=(!wcscmp(mode,L"video_processor"))?L"Video Processor":L"Media Player";
+    const wchar_t* from=(m_appMode==L"video_processor")?L"live capture":L"playback";
+    wchar_t msg[256]; swprintf_s(msg,L"Unplugged restarts to switch to %s.\nThe current %s will stop.",to,from);
+    m_confirm.ShowInputSwitch(L"Switch Mode?",msg);
+  }
+  void RestartWithInput(const std::wstring& url){
+    if(url.empty()) return;
+    LogF("SOURCE select -> restart with '%S'",url.c_str());
+    WriteActiveInput(url); WriteMode(L"video_processor"); RelaunchProcess();
+  }
+  void SwitchMode(const wchar_t* mode){
+    std::wstring want=mode; if(m_appMode==want){ LogF("mode change ignored (already %S)",want.c_str()); return; }
+    LogF("mode change %S -> %S",m_appMode.c_str(),want.c_str());
+    WriteMode(mode); m_appMode=want;
+    if(m_graphRan){ LogF("mode switch after a graph ran -> restarting process"); RelaunchProcess(); return; }
+    if(m_appMode==L"video_processor"){ m_lib.ShowLib(false); StartVp(); }
+    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; GoLibrary(); } }
+  afx_msg LRESULT OnSourceSelect(WPARAM,LPARAM){
+    const std::wstring url=g_sourceUrl; if(url.empty()) return 0;
+    m_pendingMode.clear();
+    if(m_graphRan&&!m_vpAcq&&!wcscmp(m_top.state,L"PLAYING")){
+      m_pendingInputUrl=url;
+      if(m_appMode==L"video_processor"){
+        wchar_t msg[320]; swprintf_s(msg,L"Switching the input to \x201C%S\x201D.\n\nUnplugged restarts to make the change.\nThe current source will stop.",LabelFor(url).c_str());
+        m_confirm.ShowInputSwitch(L"Change input?",msg);
+      } else {
+        m_confirm.ShowInputSwitch(L"Switch Mode?",L"Unplugged restarts to switch to Video Processor.\nThe current playback will stop.");
+      }
+    } else RestartWithInput(url);
+    return 0;
+  }
+  afx_msg LRESULT OnInputSwitchAccepted(WPARAM,LPARAM){
+    if(!m_pendingMode.empty()){ std::wstring mode=m_pendingMode; m_pendingMode.clear(); SwitchMode(mode.c_str()); }
+    else RestartWithInput(m_pendingInputUrl);
+    return 0; }
+  afx_msg LRESULT OnSourceRescan(WPARAM,LPARAM){ RefreshSourcePorts(true); return 0; }
+  afx_msg LRESULT OnSetupAsk(WPARAM,LPARAM){ m_confirm.ShowSetup(); return 0; }
+  afx_msg LRESULT OnSetupRelaunch(WPARAM,LPARAM){ WriteFirstRun(true); RelaunchProcess(); return 0; }
+  afx_msg LRESULT OnFirstRunComplete(WPARAM,LPARAM){
+    m_firstRun=false; WriteFirstRun(false); WriteSeenSetupMarker();
+    if(!g_setupUrl.empty()){ m_inputUrl=g_setupUrl; m_inputLabel=InputLabel(m_inputUrl); WriteActiveInput(m_inputUrl); }
+    LogF("first-run complete mode='%S' input='%S'",g_setupMode.c_str(),m_inputUrl.c_str());
+    if(g_setupMode!=m_appMode){ WriteMode(g_setupMode.c_str()); RelaunchProcess(); }
+    else if(g_setupMode==L"video_processor"){ m_lib.ShowLib(false); StartVp(); }
+    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; GoLibrary(); }
+    return 0;
+  }
+  afx_msg LRESULT OnRenameInputs(WPARAM,LPARAM){ m_setup.ShowRename(); return 0; }
+  afx_msg LRESULT OnEditFolders(WPARAM,LPARAM){ m_folders.Show(); return 0; }
+  afx_msg LRESULT OnFoldersSaved(WPARAM,LPARAM){
+    auto roots=m_lib.lib.Roots();
+    if(!roots.empty()) m_mediaFolder=roots[0];
+    m_lib.Reload(); m_lib.StartScan();
+    LogF("library folders saved: %d root(s), scan started",(int)roots.size());
+    return 0; }
+  afx_msg LRESULT OnRenameSave(WPARAM,LPARAM){
+    SaveInputLabels();
+    if(!g_setupUrl.empty()&&g_setupUrl!=m_inputUrl) RestartWithInput(g_setupUrl);
+    else RefreshSourcePorts(true);
+    return 0;
+  }
+  afx_msg LRESULT OnConfirmYes(WPARAM,LPARAM){ LogF("close confirmed");
+    // Shutdown BEFORE the window dies: MPCVR's destructor SendMessage(WM_CLOSE)s
+    // its own window, which belongs to this thread -- s3_shutdown services those
+    // sent messages while it waits (see docs/ISSUE-mpcaudiorenderer-silence.md),
+    // but a destroyed frame cannot be serviced at all.
+    if(!m_shutdown){ m_shutdown=true; LogF("s3_shutdown begin"); s3_shutdown(); LogF("s3_shutdown returned"); }
+    PostMessageW(WM_CLOSE); return 0; }
+protected:
+  int OnCreate(LPCREATESTRUCT cs){ if(CFrameWnd::OnCreate(cs)<0)return -1;
+    // The white corners were NOT our paint: Windows 11 rounds the corners of a
+    // borderless top-level, so the DESKTOP shows through all four corners of a
+    // full-monitor WS_POPUP. Qt's showFullScreen() suppresses that; this asks DWM
+    // for the same thing (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_DONOTROUND = 2).
+    DWORD round=DWMWCP_DONOTROUND;                       // 1, NOT 2 (2 = ROUND)
+    HRESULT dh=DwmSetWindowAttribute(m_hWnd,DWMWA_WINDOW_CORNER_PREFERENCE,&round,sizeof(round));
+    // ...and the actual "white border": Windows 11's DWM paints a 1-2px light
+    // window border on every top-level (measured 255/227 at x=3439, 160/105 at
+    // y=0). Removing it is DWMWA_BORDER_COLOR (34) with DWMWA_COLOR_NONE.
+    COLORREF noborder=0xFFFFFFFE;                        // DWMWA_COLOR_NONE
+    HRESULT bh=DwmSetWindowAttribute(m_hWnd,34 /*DWMWA_BORDER_COLOR*/,&noborder,sizeof(noborder));
+    LogF("corner hr=0x%08X border hr=0x%08X",dh,bh);
+    Create2(); return 0; }
+  // The white border at startup was the frame's CLASS background brush: MFC registers
+  // the popup frame class with COLOR_WINDOW (white), so Windows paints the whole
+  // client white before our first WM_PAINT. Register it with the app background
+  // instead - the window is already full-monitor WS_POPUP, i.e. fullscreen.
+  BOOL PreCreateWindow(CREATESTRUCT& cs) override{
+    if(!cs.lpszClass){ static HBRUSH dark=CreateSolidBrush(RGB(10,10,12));
+      cs.lpszClass=AfxRegisterWndClass(CS_HREDRAW|CS_VREDRAW|CS_DBLCLKS,
+        ::LoadCursor(nullptr,IDC_ARROW),dark,nullptr); }
+    return CFrameWnd::PreCreateWindow(cs); }
+  void OnDisplayChange(UINT,int,int){
+    // A display-mode change does NOT resize a WS_POPUP window: the frame kept the
+    // monitor size it was created with, so after switching 4K -> 1440p its right
+    // and bottom edges sat off-screen and the picture looked cut. Re-place to the
+    // primary monitor; WM_SIZE then resizes the host, the overlay and the engine.
+    MONITORINFO mi={sizeof(mi)};
+    if(GetMonitorInfoW(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY),&mi)){
+      const RECT&sr=mi.rcMonitor;
+      LogF("display change -> re-place to %ldx%ld",(long)(sr.right-sr.left),(long)(sr.bottom-sr.top));
+      SetWindowPos(nullptr,sr.left-Px(EDGE_BLEED),sr.top-Px(EDGE_BLEED),
+                   (sr.right-sr.left)+2*Px(EDGE_BLEED),(sr.bottom-sr.top)+2*Px(EDGE_BLEED),
+                   SWP_NOZORDER|SWP_NOACTIVATE);
+    } }
+  void OnSize(UINT t,int cx,int cy){ CFrameWnd::OnSize(t,cx,cy);
+    // The window changed size, so every band and the video rect must be recomputed -
+    // Layout() also tells the engine (PlaceVideo), which is the single resize path.
+    m_splash.Place(); Layout(); if(m_lib.IsWindowVisible())PlaceLib();
+    if(m_vp) ApplyVpLayout(); }
+  void OnTimer(UINT_PTR id){ if(id==2){ PollStats();
+      if(GetTickCount64()>=m_nextPortPoll){ m_nextPortPoll=GetTickCount64()+2500; RefreshSourcePorts(); }
+      { // storage can come and go while the library is open
+        static ULONGLONG s_avail=0;
+        if(m_lib.IsWindowVisible() && GetTickCount64()-s_avail>5000){ s_avail=GetTickCount64(); m_lib.RefreshAvailability(); } }
+      PollTick(); }
+    // THE chrome hide. Armed by SetUi(true) and re-armed by UiActivity; expiring
+    // here is the only way the chrome leaves on its own.
+    if(id==TID_CHROME){ OnChromeIdle(); }
+    // The pointer sampler. One read of GetCursorPos decides the edge gesture and
+    // cursor visibility; messages are only an accelerator for it.
+    if(id==TID_POINTER){ PointerSample(); }
+    // Timer 3 used to hide the cursor here; the 300 ms poll now owns cursor
+    // visibility (see CursorHide/CursorShow) so the ShowCursor counter can never
+    // be left unbalanced by a move that landed in the overlay panes.
+    // 1.3.0 ordering: the splash's QTimer is the only thing that ends it, and the
+    // next screen is shown from its finished signal -- not before.
+    if(id==4){ KillTimer(4); m_splash.HideSplash();
+      // 1.3.0: splash finished -> first-run wizard when first_run/SeenSetup says so;
+      // otherwise branch on the saved mode.
+      if(m_firstRun){ LogF("splash finished -> first-run setup"); m_setup.ShowFirstRun(); }
+      else if(m_appMode==L"media_player"){ DWORD a=GetTickCount();
+        // The media browser is a full-screen surface; the live status and settings
+        // rails are ON-DEMAND panels, so a launch never opens them even when the
+        // saved layout says they are enabled. Browsing and the transport bar are
+        // what the user needs at this point. (This path used to skip GoLibrary,
+        // which is where the suppression flag is set.)
+        m_suppressPanels=true;
+        PlaceLib(); m_lib.ShowLib(true); DWORD b=GetTickCount();
+        SetUi(true,false);
+        PlaceLib();
+        LogF("splash finished -> library: place+reload=%lums chrome+repaint=%lums",
+             (unsigned long)(b-a),(unsigned long)(GetTickCount()-b)); }
+      else if(m_appMode==L"video_processor"){ LogF("splash finished -> vp capture"); StartVp(); }
+      else { LogF("splash finished -> library (no saved mode)"); GoLibrary(); } }
+    // A file handed to the app on the command line is opened here, behind the
+    // splash. InitInstance sets the intent and deliberately does NOT post it (the
+    // splash must own the first seconds), but the post itself had gone missing:
+    // the app came up on the library and sat there, which reads as a hang. Only
+    // a launch intent is pending at this point - a library click posts its own
+    // WM_APP+1 immediately.
+    if(id==4 && !m_firstRun && !g_openUrl.empty() && m_mediaPath.empty()){
+      LogF("splash finished -> open the launch file");
+      PostMessageW(WM_APP+1,0,0); }
+    // Acquisition check tick. The overlay is dismissed on frames DRAWN, not frames
+    // delivered - the self-heal lesson from the Qt app was that "delivering" and
+    // "showing" are different things and only the latter means the user sees video.
+    if(id==5&&m_vpAcq){
+      if(m_drawn>0){ KillTimer(5); m_vpAcq=false; m_acq.Stop();
+        LogF("vp: signal acquired (%d frames drawn) - overlay dismissed",(int)m_drawn); }
+      else { m_acq.Attempt(m_attempt+1,VP_MAX_RETRY);
+        if(++m_attempt>=VP_MAX_RETRY){ KillTimer(5); m_vpAcq=false; m_acq.Fail(); } } }
+    if(id==6){
+      if(m_nextPath.empty()) KillTimer(6);
+      else { int left=5-(int)((GetTickCount64()-m_nextAt)/1000); if(left<0) left=0;
+        if(left!=m_nextLeft){ m_nextLeft=left; m_confirm.SetNextCountdown(left); }
+        if(left<=0) StartNext(); } }
+    if(id==7){
+      if(!m_seekHeld||!InFilePlayback()||!ArrowHeld(m_seekDir)){
+        m_seekHeld=false; KillTimer(7); }
+      else {
+        ULONGLONG el=GetTickCount64()-m_seekStart; int stage=-1; double step=0;
+        if(m_paused){
+          if(el>=4500){stage=4;step=60;} else if(el>=3200){stage=3;step=30;}
+          else if(el>=2000){stage=2;step=10;} else if(el>=1200){stage=1;step=5;}
+          else if(el>=600){stage=0;step=1;}
+        } else {
+          if(el>=2600){stage=2;step=60;} else if(el>=1500){stage=1;step=30;}
+          else if(el>=600){stage=0;step=10;}
+        }
+        if(stage>=0){ m_seekStage=stage; m_seekTarget+=m_seekDir*step;
+          wchar_t lab[32]; swprintf(lab,32,m_seekDir>0?L"+%.0f s":L"-%.0f s",step);
+          SeekTo(m_seekTarget,lab); } } }
+    if(id==8){ KillTimer(8); m_toast.Hide(); }
+    if(id==10){ KillTimer(10); m_titlePanel.Hide(); }
+    if(id==12){ KillTimer(12); PresetFlushPending(); }
+    CFrameWnd::OnTimer(id); }
+  // The taskbar (Shell_TrayWnd) is itself a topmost appbar, so a full-monitor
+  // WS_POPUP does not cover it and the light-theme bar showed as a white strip
+  // along the bottom - the "white border" at startup. The shell only auto-hides
+  // for a window it classifies as real fullscreen, which a borderless popup is
+  // not. So: topmost WHILE we are the active app, normal the moment focus goes,
+  // which is what keeps it from hovering over other software after Alt+Tab.
+  afx_msg void OnActivate(UINT state,CWnd* other,BOOL minimized){
+    bool on=(state!=WA_INACTIVE);
+    // Topmost only while we are the active app: a fullscreen player that stayed
+    // topmost after Alt-Tab would sit over the user's browser forever.
+    // Applied BEFORE the layout below, because Layout() asks whether we are topmost
+    // to decide the taskbar band (TaskbarReserve). Laying out first measured the
+    // previous state, so the first activation after startup still reserved 48 px.
+    SetWindowPos(on?&CWnd::wndTopMost:&CWnd::wndNoTopMost,0,0,0,0,
+                 SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    // Coming back from Alt-Tab must always land on a usable screen. Two states
+    // were observed: the frame left at -32000 (minimised) with nothing usable,
+    // and a topmost overlay whose region could swallow clicks while the chrome
+    // was logically down. Both are repaired here, on the activation that matters.
+    if(on){
+      if(::IsIconic(m_hWnd)){
+        LogF("activate: frame was iconic -> restore");
+        ShowWindow(SW_RESTORE);
+        MONITORINFO mi={sizeof(mi)};
+        if(GetMonitorInfoW(MonitorFromWindow(m_hWnd,MONITOR_DEFAULTTONEAREST),&mi)){
+          const RECT&sr=mi.rcMonitor;
+          SetWindowPos(nullptr,sr.left-Px(EDGE_BLEED),sr.top-Px(EDGE_BLEED),
+                       (sr.right-sr.left)+2*Px(EDGE_BLEED),(sr.bottom-sr.top)+2*Px(EDGE_BLEED),
+                       SWP_NOZORDER|SWP_NOACTIVATE); } }
+      // Re-place everything on the activation that matters: a monitor change or a
+      // restore can leave the bands (and therefore the video rect) stale.
+      Layout();
+    }
+    LogF("activate state=%u topmost=%d",(unsigned)state,(int)on);
+    CFrameWnd::OnActivate(state,other,minimized); }
+  // ONE instrument for "the chrome is visible but dead". A press that reaches this
+  // pump is logged with the window Windows actually handed it to, the class of the
+  // window under the cursor at that moment, and whether that window is ours. It
+  // settles in a single click what otherwise takes three guesses: did the press
+  // arrive at all, did it arrive at the wrong window, or did the right window get
+  // it and ignore it. Hover proves nothing here - moves and presses are separate
+  // decisions in the window manager.
+  BOOL PreTranslateMessage(MSG* m) override {
+    if(m->message==WM_LBUTTONDOWN||m->message==WM_LBUTTONUP){
+      HWND under=::WindowFromPoint(m->pt); DWORD pid=0;
+      wchar_t ucls[64]={0},tcls[64]={0};
+      if(under){ ::GetWindowThreadProcessId(under,&pid); ::GetClassNameW(under,ucls,64); }
+      if(m->hwnd) ::GetClassNameW(m->hwnd,tcls,64);
+      LogF("[press] %s target=%p(%S) underCursor=%p(%S) underIsOurs=%d fg=%p frame=%p uiUp=%d",
+           m->message==WM_LBUTTONDOWN?"down":"up",(void*)m->hwnd,tcls,(void*)under,ucls,
+           (int)(pid==::GetCurrentProcessId()),(void*)::GetForegroundWindow(),(void*)m_hWnd,(int)m_uiUp); }
+    return CFrameWnd::PreTranslateMessage(m); }
+  void OnClose(){ LogF("WM_CLOSE");
+    PresetFlushPending();
+    if(!m_mediaPath.empty()&&m_pos>0) m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
+    if(!m_shutdown){ m_shutdown=true; LogF("s3_shutdown begin (window close)"); s3_shutdown(); LogF("s3_shutdown returned"); }
+    CFrameWnd::OnClose(); }
+  // ---- playback keys (media player) ------------------------------------------
+  bool InFilePlayback(){ return m_appMode==L"media_player"&&!m_mediaPath.empty(); }
+  void ShowTitlePanel(){
+    if(!InFilePlayback()||g_openTitleMain.empty()) return;
+    m_titlePanel.ShowTitle(g_openTitleMain,g_openTitleMeta);
+    SetTimer(10,4200,nullptr); }   // reset on every seek-bar interaction
+  void HideTitlePanel(){ KillTimer(10); m_titlePanel.Hide(); }
+  void ShowToast(const std::wstring& s,int ms=1800){
+    if(!m_toast.GetSafeHwnd()) return; m_toast.ShowText(s); SetTimer(8,ms,nullptr); }
+  void SeekTo(double t,const std::wstring& label){
+    if(m_dur>0){ if(t<0)t=0; if(t>m_dur-0.2)t=m_dur-0.2; }
+    m_seekTarget=t; char b[128];
+    snprintf(b,sizeof(b),"{\"a\":\"seek\",\"pos\":%lld}",(long long)(t*1e7)); Cmd(b);
+    g_seekWant=t; g_seekT=GetTickCount64();
+    LogF("seek %.2f (%s)",t,Narrow(label).c_str());
+    if(!label.empty()) ShowToast(label); }
+  void TogglePause(){
+    Cmd(m_paused?"{\"a\":\"play\"}":"{\"a\":\"pause\"}");
+    ShowToast(m_paused?L"Paused":L"Playing",900); }
+  void StepFrameKey(int dir){
+    Cmd(dir>0?"{\"a\":\"step\",\"dir\":1}":"{\"a\":\"step\",\"dir\":-1}");
+    LogF("frame step dir=%d",dir);
+    ShowToast(dir>0?L"Frame +1":L"Frame -1",900); }
+  void VolumeDelta(int d){
+    int v=m_vol+d; if(v<0)v=0; if(v>100)v=100;
+    char b[64]; snprintf(b,sizeof(b),"{\"a\":\"volume\",\"percent\":%d}",v); Cmd(b);
+    wchar_t t[48]; swprintf(t,48,L"Volume %d%%",v); ShowToast(t,900); }
+  void ToggleMute(){
+    Cmd(m_muted?"{\"a\":\"mute\",\"on\":0}":"{\"a\":\"mute\",\"on\":1}");
+    ShowToast(m_muted?L"Unmuted":L"Muted",900); }
+  void ChapterJump(int dir){
+    if(m_chaps.empty()){ ShowToast(L"No chapters",1200); return; }
+    int n=(int)m_chaps.size(),idx=-1;
+    if(dir>0){ for(int i=0;i<n;++i) if(m_chaps[i].t>m_pos+0.5){ idx=i; break; } }
+    else { for(int i=n-1;i>=0;--i) if(m_chaps[i].t<m_pos-1.0){ idx=i; break; } }
+    if(idx<0){ ShowToast(dir>0?L"No next chapter":L"No previous chapter",1400); return; }
+    Cmd(dir>0?"{\"a\":\"chapter\",\"dir\":1}":"{\"a\":\"chapter\",\"dir\":-1}");
+    LogF("chapter jump dir=%d -> %d/%d t=%.2f '%s'",dir,idx+1,n,m_chaps[idx].t,
+         Narrow(m_chaps[idx].name).c_str());
+    wchar_t b[96]; swprintf(b,96,L"Chapter %d of %d",idx+1,n); std::wstring s=b;
+    if(!m_chaps[idx].name.empty()&&!GenericChapterName(m_chaps[idx].name))
+      s+=L"  \x00B7  "+m_chaps[idx].name;
+    ShowToast(s,1600); }
+  void StopToLibrary(const char* why){
+    if(m_seekHeld){ m_seekHeld=false; KillTimer(7); }
+    CancelAutoNext("stop");
+    if(!m_mediaPath.empty()&&m_pos>0) m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
+    // Pause kept the renderer's last frame parented in the host, so the stopped
+    // picture stayed visible around/behind the library. File playback uses the
+    // real Stop (detaches the renderer), then repaint the host to its wallpaper.
+    int src=Cmd("{\"a\":\"stopgraph\"}");
+    if(g_host&&::IsWindow(g_host)){
+      ::InvalidateRect(g_host,nullptr,TRUE); ::UpdateWindow(g_host); }
+    LogF("stop (%s) pos=%.1f dur=%.1f -> library (stopgraph rc=%d)",why,m_pos,m_dur,src);
+    m_mediaPath.clear(); m_mediaState.clear(); m_paused=true;
+    m_bar.HideOverlay();
+    ShowToast(L"Stopped",1200);
+    GoLibrary(); }
+  bool ArrowHeld(int dir){
+    return (GetAsyncKeyState(dir>0?VK_RIGHT:VK_LEFT)&0x8000)!=0; }
+  void BeginSeekHold(int dir){
+    m_seekHeld=true; m_seekDir=dir; m_seekStart=GetTickCount64(); m_seekStage=-1;
+    m_seekTarget=m_pos; SetTimer(7,200,nullptr); }
+  void OnKeyDown(UINT vk,UINT rep,UINT fl){ LogF("KEY vk=%02X",vk);
+    if(!m_nextPath.empty()&&(vk==VK_ESCAPE||vk==VK_BACK)){ CancelAutoNext("Esc/Back"); return; }
+    // A keypress reaches this frame TWICE in video processor mode: once directly,
+    // and once drained out of MPCVR (put_MessageDrain -> video host -> HostProc
+    // forwards it up). SetUi(!m_uiUp) then toggled up and immediately back down,
+    // so the chrome never appeared and Up looked dead. The 50ms dedupe in HostProc
+    // cannot catch this - it only compares messages that arrive at the host.
+    // Compare here, where both copies land.
+    { static UINT pk=0; static DWORD pt=0; DWORD now=GetTickCount();
+      if(vk==pk && now-pt<60){ LogF("  dup key suppressed vk=%02X",vk); return; }
+      pk=vk; pt=now; }
+    // The confirm card is non-modal but keyboard-first: Esc dismisses it rather
+    // than toggling chrome, Enter is the Yes button.
+    if(m_confirm.IsWindowVisible()){
+      if(vk==VK_ESCAPE){ LogF("confirm dismissed by Esc"); m_confirm.Dismiss(); return; }
+      if(vk==VK_RETURN){ LogF("confirm accepted by Enter"); m_confirm.Accept(); return; } }
+    // GLOBAL SHORTCUTS FIRST, before any panel gets a say. Mode switching and capture
+  // restart are frame-level actions: they must work whatever has key focus - a
+  // settings row, a rail, a card. (Measured the hard way: F2 was consumed by the
+  // settings rail's key focus and the mode switch silently did nothing.)
+  switch(vk){
+  case VK_F2: RequestModeSwitch(L"video_processor"); return;
+  case VK_F3: RequestModeSwitch(L"media_player"); return;
+  case VK_F5: if(m_appMode==L"video_processor"){ LogF("F5 restart capture"); m_acq.Stop();
+                KillTimer(5); StartVp(); } return; }
+    // While the library is up the grid owns the navigation keys - this is the
+    // contextual Up 1.3.0 has (focus on a navigable widget means Up scrolls it,
+    // it does not toggle chrome).
+    if(m_lib.IsWindowVisible()&&m_lib.Key(vk)) return;
+    if(m_uiUp&&m_settings.IsWindowVisible()&&m_settings.KeyFocused()&&m_settings.Key(vk)){
+      // Logged so a swallowed key is never invisible again: this line next to a
+      // "KEY vk=26" with no following "ui:" line is what diagnosed Up being dead
+      // after a click in the settings rail.
+      LogF("settings rail consumed key vk=%02X",vk); return; }
+    switch(vk){
+    case VK_UP:
+      // Backward compatibility: Up still brings up the FULL chrome (status +
+      // settings). The new bar-only default is reached by Info/Settings toggles.
+      if(!m_uiUp) SetUi(true,true); else SetUi(false);
+      return;
+    case VK_DOWN: if(InFilePlayback()){ VolumeDelta(-5); return; } break;
+    case VK_F1:
+      if(!m_uiUp) SetUi(true,true); else SetUi(false);
+      return;                                            // explicit full-chrome toggle
+    case VK_ESCAPE:
+      if(m_uiUp){ SetUi(false); return; }              // ladder: chrome first
+      if(InFilePlayback()){ StopToLibrary("Esc"); return; }  // then stop -> library
+      if(m_lib.IsWindowVisible()){ SetUi(true); return; }    // media selection: recover chrome
+      return;
+    case VK_SPACE: case VK_RETURN:
+      if(InFilePlayback()){ TogglePause(); return; } break;
+    case VK_LEFT: case VK_RIGHT: {
+      if(!InFilePlayback()) return;
+      int dir=(vk==VK_RIGHT)?1:-1;
+      if(m_seekHeld) return;                           // auto-repeat: timer owns the ramp
+      if(fl&VK_SHIFT){ SeekTo(m_pos+dir*60.0,dir>0?L"+60 s":L"-60 s"); return; }
+      if(m_paused){ StepFrameKey(dir); m_seekTarget=m_pos+dir*0.04; }
+      else SeekTo(m_pos+dir*10.0,dir>0?L"+10 s":L"-10 s");
+      BeginSeekHold(dir); return; }
+    case VK_PRIOR: if(InFilePlayback()){ ChapterJump(-1); return; } break;
+    case VK_NEXT:  if(InFilePlayback()){ ChapterJump(1); return; } break;
+    case VK_HOME:  if(InFilePlayback()){ SeekTo(0,L"Start"); return; } break;
+    case VK_END:   if(InFilePlayback()){ SeekTo(m_dur>0?m_dur-1.0:0,L"End"); return; } break;
+    // Ctrl+S saves the CURRENT frame. Deliberately paused-only: a "save" that
+// silently grabs whichever frame the decoder happened to be showing is a
+// coin toss, so while playing the shortcut explains itself instead of acting.
+    case 'S':
+      if(::GetKeyState(VK_CONTROL)&0x8000){
+        if(!InFilePlayback()) break;
+        if(m_paused) SaveFrameQuick();
+        else ShowToast(L"Pause the picture to save a frame",1800);
+        return; }
+      if(InFilePlayback()){ StopToLibrary("S"); return; } break;
+    case 'M': if(InFilePlayback()){ ToggleMute(); return; } break;
+    case 'N': OnToggleNls(0,0); return;   // same action as the transport button
+    case VK_ADD: case VK_OEM_PLUS:
+      if(InFilePlayback()){ VolumeDelta(5); return; } break;
+    case VK_SUBTRACT: case VK_OEM_MINUS:
+      if(InFilePlayback()){ VolumeDelta(-5); return; } break; }
+    if(InFilePlayback()&&vk>='0'&&vk<='9'&&m_dur>0){
+      int pct=(vk-'0')*10; wchar_t lab[32]; swprintf(lab,32,L"%d%%",pct);
+      SeekTo(m_dur*pct/100.0,lab); return; }
+    CFrameWnd::OnKeyDown(vk,rep,fl); }
+  void OnSysKeyDown(UINT vk,UINT rep,UINT fl){
+    if(vk==VK_F4){ LogF("Alt+F4 -> raise confirm"); PostMessageW(WM_APP+4,0,0); return; }
+    CFrameWnd::OnSysKeyDown(vk,rep,fl); }
+  // The BAR gesture, evaluated from the SAMPLED pointer position. Only the bottom
+// edge does anything now: the rails are not transient panels any more, so there is
+// nothing to "reveal" at the sides — they are shown or hidden by their own saved
+// preference and the Info/Settings buttons.
+//
+// The bottom strip is ~2.5 % of the height, centred on the middle 80 % of the
+// width, so ordinary mouse travel across the picture never pops the bars. If the
+// bars are already down, resting in the strip is itself the request (an entry
+// never follows when the pointer is already there).
+//
+// The point arrives in this frame's client coordinates, already converted by
+// PointerSample from the desktop cursor — the same value that decides the cursor
+// rule, so gesture and cursor can never disagree about where the pointer is.
+  void EdgeCheck(CPoint p){
+    if(!(m_vp || InFilePlayback())){ m_hotBottom=false; return; }
+    CRect cr; GetClientRect(&cr);
+    const int W=cr.Width(), H=cr.Height();
+    if(W<=0||H<=0) return;
+    const int zoneH=max(Px(28), H/34);
+    const bool hit = p.y>=H-zoneH && abs(p.x-W/2)<=W*40/100;
+    if(hit!=m_hotBottom) LogF("bottom edge %s at (%d,%d) of %dx%d", hit?"entered":"left",p.x,p.y,W,H);
+    if(hit==m_hotBottom) return;
+    m_hotBottom=hit;
+    if(hit && !m_uiUp){ LogF("bottom edge -> reveal bars"); SetUi(true,false); } }
+  // Video-area mouse move: an accelerator for the sampler, nothing more. It makes
+// the cursor reappear and the idle deadline reset on the message itself instead of
+// on the next tick; the sampler decides everything else.
+  void OnMouseMove(UINT f,CPoint p){ UiActivity(); }
+  void OnLButtonDown(UINT,CPoint){ UiActivity(); OnDismissPopups(0,0); }   // click on the video
+  void OnLButtonDblClk(UINT f,CPoint p){
+    if(!m_uiUp) SetUi(true,true); else SetUi(false); }
+  BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc); dc->FillSolidRect(rc,RGB(10,10,12)); return TRUE; }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); dc.FillSolidRect(rc,RGB(10,10,12)); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
+  ON_WM_CREATE() ON_WM_SIZE() ON_WM_TIMER() ON_WM_KEYDOWN() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDBLCLK()
+  ON_WM_LBUTTONDOWN()
+  ON_WM_DISPLAYCHANGE()
+  ON_WM_ERASEBKGND() ON_WM_PAINT() ON_WM_CLOSE() ON_WM_SYSKEYDOWN() ON_WM_ACTIVATE()
+  ON_MESSAGE(WM_APP+1, &CMainFrame::OnAppOpen)
+  ON_MESSAGE(WM_APP+4, &CMainFrame::OnConfirmToggle)
+  ON_MESSAGE(WM_APP+5, &CMainFrame::OnConfirmYes)
+  ON_MESSAGE(WM_APP+7, &CMainFrame::OnAcqRetry)
+  ON_MESSAGE(WM_APP+8, &CMainFrame::OnToMedia)
+  ON_MESSAGE(WM_APP+9, &CMainFrame::OnToVp)
+  ON_MESSAGE(WM_APP+10, &CMainFrame::OnZionReset)
+  ON_MESSAGE(WM_APP+11, &CMainFrame::OnZionResetAsk)
+  ON_MESSAGE(WM_APP+12, &CMainFrame::OnRendererResetAsk)
+  ON_MESSAGE(WM_APP+13, &CMainFrame::OnRendererReset)
+  ON_MESSAGE(WM_APP+14, &CMainFrame::OnCapFrame)
+  ON_MESSAGE(WM_APP+15, &CMainFrame::OnPickLut)
+  ON_MESSAGE(WM_APP+16, &CMainFrame::OnSetupAsk)
+  ON_MESSAGE(WM_APP+17, &CMainFrame::OnSetupRelaunch)
+  ON_MESSAGE(WM_APP+18, &CMainFrame::OnInputSwitchAccepted)
+  ON_MESSAGE(WM_APP+19, &CMainFrame::OnSourceRescan)
+  ON_MESSAGE(WM_APP+20, &CMainFrame::OnRenameInputs)
+  ON_MESSAGE(WM_APP+21, &CMainFrame::OnSourceSelect)
+  ON_MESSAGE(WM_APP+22, &CMainFrame::OnFirstRunComplete)
+  ON_MESSAGE(WM_APP+23, &CMainFrame::OnRenameSave)
+  ON_MESSAGE(WM_APP+24, &CMainFrame::OnFoldersSaved)
+  ON_MESSAGE(WM_APP+26, &CMainFrame::OnEditFolders)
+  ON_MESSAGE(WM_APP+29, &CMainFrame::OnNextNow)
+  ON_MESSAGE(WM_APP+30, &CMainFrame::OnNextCancel)
+  ON_MESSAGE(WM_APP+31, &CMainFrame::OnStopPressed)
+  ON_MESSAGE(WM_APP+37, &CMainFrame::OnPresetManager)
+  ON_MESSAGE(WM_APP+38, &CMainFrame::OnPresetDirty)
+  ON_MESSAGE(WM_APP+40, &CMainFrame::OnPresetState)
+  ON_MESSAGE(WM_APP+41, &CMainFrame::OnPrevItem)
+  ON_MESSAGE(WM_APP+42, &CMainFrame::OnNextItem)
+  ON_MESSAGE(WM_APP+43, &CMainFrame::OnSeekBack)
+  ON_MESSAGE(WM_APP+44, &CMainFrame::OnSeekForward)
+  ON_MESSAGE(WM_APP+45, &CMainFrame::OnSeekActivity)
+  ON_MESSAGE(WM_APP+46, &CMainFrame::OnToggleInfo)
+  ON_MESSAGE(WM_APP+47, &CMainFrame::OnToggleSettings)
+  ON_MESSAGE(WM_APP+48, &CMainFrame::OnPresetAutoSave)
+  ON_MESSAGE(WM_APP+51, &CMainFrame::OnToastText)
+  ON_MESSAGE(WM_APP+52, &CMainFrame::OnDismissPopups)
+  ON_MESSAGE(WM_APP+53, &CMainFrame::OnToggleNls)
+END_MESSAGE_MAP()
+
+class CNativeUiApp : public CWinApp {
+public:
+  BOOL InitInstance() override{
+    // The product identity, not the project name: this is what the taskbar groups
+    // under and what an upgrade must preserve from 1.3.0. The icon itself comes
+    // from the executable's resource (Unplugged.rc), set on the frame below so the
+    // taskbar and Alt-Tab show it for a WS_POPUP window too.
+    ::SetCurrentProcessExplicitAppUserModelID(L"Unplugged.Desktop.2");
+    // ONE INSTANCE, enforced by the kernel. Two copies cannot coexist here: only
+    // one may hold the DeckLink input (the second gets EnableVideoInput
+    // 0x80004005 and a black picture), and two always-on-top overlay windows stack
+    // in a way no user can untangle. A second launch therefore brings the running
+    // window forward and exits. The handle is deliberately leaked: it must outlive
+    // the message loop for as long as the process lives.
+    { static HANDLE once=::CreateMutexW(nullptr,TRUE,L"Unplugged.Desktop.2.Single");
+      if(once && ::GetLastError()==ERROR_ALREADY_EXISTS){
+        HWND prev=::FindWindowW(nullptr,L"Unplugged");
+        if(prev){ if(::IsIconic(prev)) ::ShowWindow(prev,SW_RESTORE);
+          ::SetForegroundWindow(prev); ::BringWindowToTop(prev); }
+        LogF("second instance -> activated existing window %p, exiting",prev);
+        return FALSE; } }
+    CMainFrame* f=new CMainFrame(); m_pMainWnd=f;
+    HMONITOR hm=MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi={sizeof(mi)}; GetMonitorInfo(hm,&mi); RECT sr=mi.rcMonitor;
+    // Bleed past the monitor by EDGE_BLEED so DWM's light window ring is off-screen.
+    f->Create(nullptr,L"Unplugged",WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,
+              CRect(sr.left-EDGE_BLEED,sr.top-EDGE_BLEED,sr.right+EDGE_BLEED,sr.bottom+EDGE_BLEED));
+    f->ShowWindow(SW_SHOW); f->UpdateWindow(); f->SetFocus();
+    { // Icon from our own resource (Unplugged.rc), both sizes: WM_SETICON is what
+      // the taskbar and Alt-Tab read for a WS_POPUP frame.
+      HINSTANCE inst=::GetModuleHandleW(nullptr);
+      HICON icoBig  =(HICON)::LoadImageW(inst,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,LR_DEFAULTCOLOR);
+      HICON icoSmall=(HICON)::LoadImageW(inst,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,16,16,LR_DEFAULTCOLOR);
+      if(icoBig)   f->SetIcon(icoBig,TRUE);
+      if(icoSmall) f->SetIcon(icoSmall,FALSE); }
+    // Only a file actually named on the command line is a launch intent. This
+    // used to default to D:\Movies\Dune.2021.mkv, which meant every launch
+    // carried an open intent nobody asked for - the reason the post below could
+    // not simply be restored: it would have opened Dune on every start.
+    std::string url;
+    if(__argc>1){ int n=WideCharToMultiByte(CP_UTF8,0,__wargv[1],-1,nullptr,0,nullptr,nullptr);
+      std::string u(n,0); WideCharToMultiByte(CP_UTF8,0,__wargv[1],-1,&u[0],n,nullptr,nullptr);
+      url.clear(); for(char c:u){ if(c=='\\')url+="\\\\"; else if(c)url+=c; } }
+    if(!url.empty()){
+      char cmd[512]; snprintf(cmd,sizeof(cmd),"{\"a\":\"open\",\"url\":\"%s\"}",url.c_str());
+      g_openUrl=cmd;
+    }
+    // The open is NOT posted here: 1.3.0 shows the splash first and acts on its
+    // finished signal (timer 4 in CMainFrame::OnTimer posts WM_APP+1).
+    return TRUE; }
+};
+CNativeUiApp theApp;

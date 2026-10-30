@@ -1,0 +1,24 @@
+﻿launched pid=9220 (screen goes fullscreen ~9s)
+frame up, rect=0,0,3440,1440
+sent VK_UP (the keypress that crashed the last two builds)
+AFTER UP: process alive=True exitcode=-
+leftover native_ui processes=0
+--- log lines from this run ---
+  19:24:11.813 t=0 attach rc=0 host=788408 took=0ms
+  19:24:11.814 t=0 splash shown 520x400
+  19:24:11.817 t=0 splash env ok
+  19:24:11.820 t=0 splash controller requested hr=0x00000000
+  19:24:11.820 t=0 splash env begin hr=0x00000000
+  19:24:12.016 t=204 splash controller bg hr=0x00000000
+  19:24:12.016 t=204 splash nav handler hr=0x00000000
+  19:24:12.017 t=204 splash loading 'C:\code\unplugged-mpc-hc\src\unplugged-ui\assets\brand\animations\splash-A-release.html' bytes=5749
+  19:24:12.017 t=204 splash NavigateToString hr=0x00000000
+  19:24:12.073 t=250 splash NavigationCompleted success=1
+  19:24:16.822 t=5000 splash dismissed (5 s)
+  19:24:16.822 t=5000 splash finished -> open
+  19:24:16.822 t=5000 open dispatching url={"a":"open","url":"D:\\Movies\\Dune.2021.mkv"}
+  19:24:17.990 t=6172 open rc=0 took=1172ms
+  19:24:20.047 t=8235 KEY vk=26
+  19:24:20.048 t=8235 ui: up
+--- crash events for this pid ---
+  (none)

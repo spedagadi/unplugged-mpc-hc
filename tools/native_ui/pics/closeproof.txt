@@ -1,0 +1,4 @@
+﻿started pid=7056
+frame=1378152 rect=0,0,3440,1440 scale=1
+pressed VK_UP to raise chrome
+STRIP NOT FOUND

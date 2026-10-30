@@ -69,3 +69,11 @@ ipch
 
 # OMDb API key shipped with the app - never committed
 src/unplugged-ui/src/mpvprocessor/media/_omdb_key.py
+
+# Native UI (tools/native_ui) - the MFC shell that replaces the PyQt one.
+# The source, project file, docs and the WebView2 vendor headers/lib are tracked;
+# these are build output, crash/repair snapshots and verification screenshots only.
+/tools/native_ui/obj/
+/tools/native_ui/*.bak-*
+/tools/native_ui/*.damaged
+/tools/native_ui/pics/*.png
