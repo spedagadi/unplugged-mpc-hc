@@ -60,6 +60,23 @@ def old_horizontal(k, stretch, cap):
     return wr, cs
 
 
+# Mirrors NlsFillAction(): 0 none, 1 warp, 2 crop.
+def fill_action(clientAR, activeAR, bandValid, mode, fillLimit, axis, split, cap):
+    if mode == 3:
+        return 0
+    if mode == 2:
+        return 2
+    if mode == 1:
+        return 1
+    k = clientAR / activeAR
+    within = (k >= 1.0) or (1.0 / k <= max(1.0, min(fillLimit, 2.0)))
+    sx, sy = engine_model(k, 1.0 if axis != 2 and axis != 3 else (0.0 if axis == 2 else split),
+                          None)[:2]
+    worst = max(max(sx, 1.0 / sx), max(sy, 1.0 / sy))
+    budget = worst > max(1.0, cap) + 1e-9
+    return 1 if ((within or budget) and bandValid) else 0
+
+
 def test_engine():
     scope16x9 = 1.7778 / 2.39
 
@@ -109,6 +126,31 @@ def test_engine():
                 sx, sy, cx, cy = engine_model(k, s, cap)
                 worst = max(worst, abs(centre_anisotropy(k, sx, sy, cx, cy) - 1.0))
     check("centre isotropic over split/cap grid", worst < 0.002, f"worst={worst:.5f}")
+
+    # --- the Auto gate: no change for a traditional setup at the default cap ----
+    s16 = 1.7778          # 16:9 window
+    scope = 2.39
+    uw = 2.76             # wider than scope
+    # No change where Auto already filled (k >= 1: a picture narrower than the window).
+    for name, cl, ac in [("16:9 content on a scope screen", scope, s16),
+                         ("4:3 content on 16:9", s16, 4 / 3)]:
+        check(f"auto fills, unchanged: {name}", fill_action(cl, ac, True, 0, 1.05, 1, 1.0, 1.4) == 1)
+    # No change where Auto letterboxed (default cap above the correction).
+    for name, cl, ac in [("scope on 16:9, default cap", s16, scope),
+                         ("ultra-wide on a scope screen, default cap", scope, uw)]:
+        check(f"auto letterboxes, unchanged: {name}",
+              fill_action(cl, ac, True, 0, 1.05, 1, 1.0, 1.4) == 0)
+    # The new capability: an explicit budget below the correction fills and crops.
+    for name, cl, ac in [("scope on 16:9, cap 110", s16, scope),
+                         ("ultra-wide on scope, cap 110", scope, uw)]:
+        check(f"auto fills with an explicit budget: {name}",
+              fill_action(cl, ac, True, 0, 1.05, 1, 1.0, 1.1) == 1)
+    # Budget or not, a band still has to be confirmed.
+    check("no band, no fill", fill_action(s16, scope, False, 0, 1.05, 1, 1.0, 1.1) == 0)
+    # Stretch / Crop / Off keep their meaning.
+    check("stretch always fills", fill_action(s16, scope, True, 1, 1.05, 1, 1.0, 1.4) == 1)
+    check("crop mode is crop", fill_action(s16, scope, True, 2, 1.05, 1, 1.0, 1.4) == 2)
+    check("off never fills", fill_action(s16, scope, True, 3, 1.05, 1, 1.0, 1.4) == 0)
 
 
 # ---------------------------------------------------------------- shader model

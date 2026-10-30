@@ -18,6 +18,9 @@
 //     slack axis ([GEOM] dest wider than client).
 //   - Vertical leaves the horizontal axis at 1.000 and puts 1/k on y.
 //   - Crop mode logs "no pass (crop to fill)"; Off logs warp 0.
+//   - auto-def140 logs "fill refused" and auto-def110 fills: the Auto gate moved
+//     only for users who set a budget below the correction, so a traditional
+//     setup keeps letterboxing.
 //
 // NOT a criterion: frame equality. A grab returns the renderer's last DRAWN
 // frame, and while paused a settings change does not always force a redraw, so
@@ -79,6 +82,14 @@ static const Cfg kCfgs[] = {
       "nls_proof_6_vertical.bmp" },
     { "crop",           "geo.nlsFillMode=2;geo.nlsAxis=1",
       "nls_proof_7_crop.bmp" },
+    // The Auto gate, at the DEFAULT Fill limit: with Max distortion above what the
+    // fill needs the picture letterboxes exactly as before (the traditional
+    // setup); with an explicit budget below it, Auto fills and crops the rest.
+    // This title needs 24 %, so 140 % must refuse and 110 % must fill.
+    { "auto-def140",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.4",
+      "nls_proof_8_auto_def140.bmp" },
+    { "auto-def110",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.1",
+      "nls_proof_9_auto_def110.bmp" },
 };
 
 static std::string g_outDir;

@@ -169,7 +169,50 @@ old 0 normalises to 1.
 
 ---
 
-## 7. Build / staging (unchanged from the evening handoff)
+## 7. The Auto gate - operator decision after end-user feedback
+
+An end user described the intended use: a 185" 16:9 screen, scope content, and
+"how much of the black bars can you get rid of ... a sweet spot, then zoom the
+rest away", tune-to-taste, and the same tools working the other way for a native
+scope screen. Two things blocked that out of the box:
+
+- Auto refused to fill when the correction exceeded **Fill limit** (105 %), and
+  scope -> 16:9 needs 134 %, so the screen stayed letterboxed until the user
+  found that row. (Auto's k > 1 direction was already exempt, which is why a
+  traditional scope screen with 16:9 content always filled.)
+- **Stretch** never crops, so the artifact budget was off in the mode people
+  pick when they say "fill it".
+
+Operator constraint: **whatever changes, do not break the traditional
+scope-screen setup.** So the rule added is narrow, and only fires on an explicit
+act:
+
+```
+Auto fills when  (correction within Fill limit)
+              OR (the per-axis distortion the fill needs is ABOVE Max distortion)
+```
+
+Setting Max distortion *below* the correction is a stated budget ("I will take
+at most 10 %"), so Auto fills and crops the rest. At the **default** 140 % the
+second clause is false, so every previously-letterboxed case still letterboxes.
+
+Verified (nls_proof, 2.2:1 title, Fill limit left at the 105 % default):
+
+| leg | result |
+|---|---|
+| auto-def140 (cap 140) | `filling=0`, "fill refused", dest 571x321 - identical to before |
+| auto-def110 (cap 110) | `filling=1`, warp 9 %, crop 13 %, dest 705 wide |
+| 16:9-on-scope / 4:3-on-16:9 | fill, unchanged (k > 1 path) |
+
+`nls_math_check.py` now asserts both sides of that table.
+
+**Deferred by the operator:** a lock across titles ("keep 1 aspect ratio" for
+every title, not just within one). *Lock band* stays per-title until the end
+user has tested it on a couple of titles and says a cross-title lock is wanted.
+
+---
+
+## 8. Build / staging (unchanged from the evening handoff)
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.7\resources\app\git\cmd;" + $env:PATH

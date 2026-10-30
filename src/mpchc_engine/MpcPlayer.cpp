@@ -1079,16 +1079,35 @@ static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
 // from the published state arrived one push late and the Crop leg got the warp
 // injected on top of its crop (seen in nls_proof, 2026-10-30).
 static int NlsFillAction(double clientAR, double activeAR, bool bandValid,
-                         int fillMode, double fillLimit)
+                         int fillMode, double fillLimit,
+                         int axis, double split, double cap)
 {
     const int mode = std::clamp(fillMode, 0, 3);
     if (mode == 3) return 0;                       // Off
     if (mode == 2) return 2;                       // Crop: always, no warp
+    if (mode == 1) return 1;                       // Stretch: warp regardless
     const double ratioAR = (activeAR > 0.001) ? clientAR / activeAR : 1.0;
     const double limit = std::clamp(fillLimit, 1.0, 2.0);
-    const bool warpOK = (mode == 1) || (ratioAR >= 1.0) || (1.0 / ratioAR <= limit);
-    if (mode == 1) return 1;                       // Stretch: warp regardless
-    return (warpOK && bandValid) ? 1 : 0;          // Auto: needs a confirmed band
+    const bool withinLimit = (ratioAR >= 1.0) || (1.0 / ratioAR <= limit);
+    // A CAP BELOW THE CORRECTION IS AN EXPLICIT BUDGET.
+    //
+    // Auto used to letterbox whenever the fill needed more than Fill limit, and
+    // in the squeeze direction (a scope film on a 16:9 screen: 134 %) that is
+    // the exact case people buy NLS for - so the screen stayed letterboxed
+    // until they found a row called Fill limit and raised it. Max distortion is
+    // now the direct expression of "how much distortion will you take", so when
+    // it sits below what the fill needs, the user has answered the question and
+    // the rest is taken as crop. At the DEFAULT cap (140 %) this is false, so
+    // every case that letterboxed before still letterboxes: a traditional
+    // scope-screen setup is untouched (scope content on a scope screen needs no
+    // correction at all, 16:9 content on it is k > 1 and already filled).
+    double sx = 1.0, sy = 1.0;
+    NlsSplitFactors(ratioAR, axis, split, cap, false /* uncapped: the correction */,
+                    sx, sy);
+    const double worst = std::max(std::max(sx, 1.0 / std::max(sx, 0.001)),
+                                  std::max(sy, 1.0 / std::max(sy, 0.001)));
+    const bool budgetGiven = (cap >= 1.0) && (worst > cap + 1e-9);
+    return ((withinLimit || budgetGiven) && bandValid) ? 1 : 0;
 }
 
 HRESULT MpcPlayer::ResizeVideo()
@@ -1180,7 +1199,8 @@ HRESULT MpcPlayer::ResizeVideo()
             // 0.991), and which way it went depended only on whether the detector
             // latched a real band before or after the opening black frames - the
             // "NLS is hit and miss at start-up" report.
-            nlsAction = NlsFillAction(clientAR, activeAR, bandValid, mode, fillLimit);
+            nlsAction = NlsFillAction(clientAR, activeAR, bandValid, mode, fillLimit,
+                                      std::clamp(nl.axis, 0, 3), (double)nl.split, cap);
             if (nlsAction != 1 && nlsAction != 2) {
                 static double s_loggedAR = 0.0;
                 if (fabs(s_loggedAR - activeAR) > 0.01) {
@@ -3403,7 +3423,8 @@ void MpcPlayer::ApplyPostFx()
             // Crop leg cannot get the warp injected on top of its crop just because
             // the geometry had not run yet when this push arrived.
             const int fillAction = NlsFillAction(winAR, activeAR, haveBand,
-                                                 pendingNls_.fillMode, pendingNls_.fillLimit);
+                                                 pendingNls_.fillMode, pendingNls_.fillLimit,
+                                                 axis, (double)pendingNls_.split, maxStretch);
             // What filling WOULD cost on this title, in per cent. Published for the
             // INFO panel so "Fill limit" can be set knowingly (a 2.39 film on a
             // 16:9 screen needs ~36 % squeeze, a 16:9 title on a scope screen ~34 %
