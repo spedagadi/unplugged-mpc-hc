@@ -47,16 +47,24 @@ it is not made.
 
 ### 2.2 Interaction
 
-- **I1.** The chrome is static: no auto-hide, no reveal gesture, no hover reveal, and no state
-  describing "whether the chrome is up".
-- **I2.** Panel visibility changes only through an explicit user action (Info / Settings) or the
-  library screen. Nothing changes on a timer.
+- **I1.** The chrome has exactly ONE up/down state (`m_uiUp`), changed in exactly one place
+  (`SetUi`). While it is up and something is showing (video processor, or file playback with no
+  card up) it auto-hides after 2.5 s with no pointer or keyboard activity; any activity re-arms
+  the deadline. Hiding is unconditional: EVERY pane goes, the status and settings rails included,
+  together with any help card, tip or overlay. This is the operator's requirement (2026-10-30) and
+  replaces the earlier "static chrome" rule.
+- **I2.** Panel visibility changes through an explicit user action (Info / Settings / Up / F1 /
+  Esc) or the idle deadline above. There is no hover reveal; the only pointer gesture is the
+  bottom-edge band, which raises the transport bar while the chrome is down.
+- **I2a.** Settings cards and dialogs suspend the idle deadline; the library screen owns its own
+  chrome and never auto-hides.
 - **I3.** Every control that is drawn does something. A control with no meaning in the current
   mode is not drawn.
 - **I4.** Clicking a control always produces its action. No visible control is inert.
 - **I5.** Global keys work regardless of focus: F2 (VideoProcessor), F3 (media player),
   F5 (restart capture), Up/Esc, N.
-- **I6.** The cursor is the system's; the app does not hide it.
+- **I6.** The cursor is the system's, except over playing video: it hides after 2.5 s idle and
+  returns on any pointer movement or when the chrome is up.
 - **I7.** Panels talk to the frame only by posting `WM_APP+n`. A pane never reaches into the
   frame, the engine, or another panel.
 
@@ -87,7 +95,7 @@ Each invariant makes a class of failure impossible, rather than unlikely.
 | # | Invariant | Failure class removed (all observed 29-30 Oct) |
 |---|---|---|
 | V1 | One rectangle per owner: chrome bands and picture rect are disjoint by construction. | Chrome visible but dead because the renderer's window owned the chrome pixels (`WindowFromPoint` returned `VRWindow` at strip, bar and rails). |
-| V2 | Chrome static: no timer, no gesture, no show/hide state. | Chrome that disagrees with the screen; a reveal that cannot be re-entered; auto-hide that leaves the app looking dead. |
+| V2 | One chrome state (`SetUi`); the idle deadline is the only automatic hide and hides every pane; the bottom edge is the only reveal gesture. | Chrome that disagrees with the screen; a reveal that cannot be re-entered; an auto-hide that leaves the app looking dead. |
 | V3 | One top-level window; panes and host are its children; cards are transient. | Activation split: a chrome click activated a second top-level, the frame went inactive, the keyboard died. |
 | V4 | No UI-thread call into the renderer; picture-rect changes are deferred to the render thread. | Freeze inside `SetWindowPosition` / `SetDestinationPosition` during capture (Windows `AppHangB1`; log stops dead at the moment of a chrome change). |
 | V5 | The layout excludes the taskbar band. | Transport bar laid out under `Shell_TrayWnd`: play, seek, volume and both mode buttons were clicks on the taskbar. |
@@ -158,7 +166,7 @@ capture" or "rails over the picture"; both are rejected.
 
 ## 7. Out of scope for v2.0.0
 
-- Auto-hide of any part of the chrome; hover reveal; idle cursor hiding.
+- Hover reveal (the bottom-edge band is the only pointer gesture). Auto-hide IS in scope: see I1.
 - NLS kernel upgrade (bilinear to Catmull-Rom). Current state: bilinear, compiled and injected.
 - Dolby Vision P5 plumbing.
 - Splitting `native_ui.cpp` into multiple translation units.

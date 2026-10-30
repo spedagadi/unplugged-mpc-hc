@@ -6566,15 +6566,14 @@ public:
     if((m_vp || InFilePlayback()) && !card && UiIdleMs()>=2500 && !OverChrome()) CursorHide();
     else CursorShow();
   }
-  // The idle deadline expired: this is the ONLY path that auto-hides the bars.
+  // The idle deadline expired: this is the ONLY path that auto-hides the chrome.
   // The guards re-arm instead of hiding and re-check on the next expiry, so a
   // transient condition (a drag, a card, the library) can never cancel the hide
   // for good — the earlier design returned and nothing ever tried again.
   //
-  // Only the STRIP and the TRANSPORT BAR are auto-hiding. The status and settings
-  // rails are ordinary user panels now: their visibility is the saved ui.showInfo /
-  // ui.showSettings preference (and the Info/Settings buttons), and this timer
-  // never touches them.
+  // It hides EVERYTHING, rails included (SetUi(false)): the operator asked for
+  // auto-hide that covers the whole chrome while a title plays (2026-10-30), and
+  // a rail left standing over the picture is not "hidden".
   void OnChromeIdle(){
     if(!m_uiUp){ ChromeTimerStop(); return; }
     const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
