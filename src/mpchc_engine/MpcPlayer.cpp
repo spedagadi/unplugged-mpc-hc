@@ -15,8 +15,10 @@
 #include <initguid.h>
 #include <moreuuids.h>
 #include "PostFxShaders.h"
+#include "NlsShader.h"
 
 #include <windows.h>
+#include <qnetwork.h>   // IAMExtendedSeeking + its IID (LAVSplitter's chapter interface)
 #include <versionhelpers.h>
 #include <d3d9.h>
 #include <dvdmedia.h>
@@ -316,6 +318,59 @@ MpcPlayer::TrackKind ClassifyStream(const AM_MEDIA_TYPE* pmt, const std::wstring
     return ClassifyStreamName(name);
 }
 
+static std::wstring CodecName(DWORD sub);   // defined below GetTracks helpers
+
+// Default English audio: among all ENGLISH streams choose the best quality.
+// TrueHD/Atmos and DTS-HD must beat compressed E-AC3/AC-3, which is the point:
+// a disc usually ships both English TrueHD and an English compatibility track.
+static int AudioRank(const std::wstring& codec,const std::wstring& name)
+{
+    std::wstring n=name; for(auto&c:n) c=(wchar_t)towlower(c);
+    if(n.find(L"truehd")!=std::wstring::npos||n.find(L"atmos")!=std::wstring::npos) return 100;
+    if(n.find(L"dts-hd")!=std::wstring::npos||n.find(L"dts:x")!=std::wstring::npos) return 95;
+    if(codec==L"PCM"||codec==L"FLAC") return 90;
+    if(codec==L"DTS") return 60;
+    if(codec==L"E-AC-3") return 40;
+    if(codec==L"AC-3") return 30;
+    if(codec==L"AAC") return 20;
+    if(codec==L"MP3"||codec==L"MPEG"||codec==L"Opus") return 10;
+    return 5;
+}
+static int PickEnglishAudioIndex(IBaseFilter* splitter)
+{
+    if (!splitter) return -1;
+    CComQIPtr<IAMStreamSelect> sel = splitter;
+    if (!sel) return -1;
+    DWORD count = 0;
+    if (FAILED(sel->Count(&count))) return -1;
+    int audioNth = 0, bestNth = -1, bestRank = -1;
+    for (DWORD i = 0; i < count; ++i) {
+        AM_MEDIA_TYPE* pmt = nullptr;
+        DWORD flags = 0; LCID lcid = 0; DWORD group = 0;
+        WCHAR* pName = nullptr; IUnknown* pObj = nullptr; IUnknown* pUnk = nullptr;
+        if (FAILED(sel->Info(i, &pmt, &flags, &lcid, &group, &pName, &pObj, &pUnk))) continue;
+        const std::wstring name = pName ? pName : L"";
+        const MpcPlayer::TrackKind kind = ClassifyStream(pmt, name);
+        if (kind == MpcPlayer::TrackKind::Audio) {
+            if (PRIMARYLANGID(lcid) == LANG_ENGLISH) {
+                DWORD sub = pmt ? pmt->subtype.Data1 : 0, subFmt = 0;
+                if (pmt && pmt->pbFormat && pmt->cbFormat >= sizeof(WAVEFORMATEXTENSIBLE)) {
+                    const WAVEFORMATEXTENSIBLE* we = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pmt->pbFormat);
+                    if (we->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE) subFmt = we->SubFormat.Data1;
+                }
+                const int rank = AudioRank(CodecName(subFmt ? subFmt : sub), name);
+                if (rank > bestRank) { bestRank = rank; bestNth = audioNth; }
+            }
+            ++audioNth;
+        }
+        if (pmt) { if (pmt->pbFormat) CoTaskMemFree(pmt->pbFormat); CoTaskMemFree(pmt); }
+        if (pName) CoTaskMemFree(pName);
+        if (pObj) pObj->Release();
+        if (pUnk) pUnk->Release();
+    }
+    return bestNth;
+}
+
 // IAMStreamSelect::Info returns the stream language as an LCID. LAV's stream NAME is
 // often just the format string ("48000 Hz, 7l, s24") — unreadable as a track label —
 // so map the LCID's primary language to a short name the rail can show. "" for
@@ -400,18 +455,35 @@ MpcPlayer::MpcPlayer()
     // UI thread (~1 s cadence). The UI reads only the cache — it must never
     // touch the renderer/card directly (see GetLive* docs).
     m_liveThread = std::thread([this]() {
+        m_graphThreadId = std::this_thread::get_id();   // the only thread that may touch the renderer
+        // A graph REBUILD (track switch, audio-mode change) runs Open() on THIS
+        // thread, and Open()->ConfigureRendererWindow() CREATES the renderer's
+        // window here. A window's wndproc only runs on a thread that pumps;
+        // without this pump the rebuilt video window was deaf (mouse drain
+        // died => "controls inaccessible") and cross-thread DestroyWindow /
+        // WM_CLOSE from the UI thread blocked forever on it (=> "only Task
+        // Manager can close it"), both measured 2026-10-25. Pump at ~5 ms so
+        // the wndproc is responsive; keep telemetry at its ~1 s cadence.
+        auto next = std::chrono::steady_clock::now();
         while (!m_liveStop) {
-            // Pump the graph's event queue HERE, not on the UI thread. PumpEvents
-            // takes m_graphMtx, and the refresh thread is the one thread that may
-            // hold it while sending window messages: the UI thread must never block
-            // on this mutex, because this thread can need the UI thread to service
-            // the renderer's drained messages. Doing it on the UI thread (via
-            // s3_stats) deadlocked exactly that way -- black frame, frozen app.
-            // Cadence is ~1 s, so end-of-title is noticed within a second, which the
-            // 300 ms UI poll then reports on its next tick.
-            PumpEvents();
-            RefreshLive();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            MSG wm;
+            while (PeekMessageW(&wm, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&wm);
+                DispatchMessageW(&wm);
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next) {
+                next = now + std::chrono::milliseconds(1000);
+                PumpEvents();
+                RefreshLive();
+            }
+            // Picture-geometry changes requested by the shell are applied HERE, on
+            // the thread that owns the graph — never on the caller's (UI) thread.
+            // Calling into the renderer while a capture streams takes the lock the
+            // capture thread holds; measured as a UI freeze and, with a chrome
+            // toggle, a hung window that had to be killed.
+            if (m_videoRectPending.exchange(false)) ResizeVideo();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
 }
@@ -475,6 +547,7 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
 
     m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
+    ClearChapters();       // stale marks must never survive into a new source
     if (source.empty()) return E_INVALIDARG;
 
     // A rebuild-only setting (audio mode, swap effect, dither…) re-opens the SAME source,
@@ -487,6 +560,7 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     const LONGLONG resumePos = resumeSameSource ? (LONGLONG)snapshot_.position : 0;
     if (!resumeSameSource) {
         pendingAudioTrack_ = -1;   // a new file starts from its own default stream
+        pendingSubTrack_ = -1;     // ...and its own default (or Off) subtitles
     }
     if (resumeSameSource) {
         Log("[GRAPH] Open: re-open of the same source at %.1f s — position will be restored",
@@ -871,11 +945,127 @@ HRESULT MpcPlayer::Seek(LONGLONG position)
     return hr;
 }
 
+void MpcPlayer::ClearChapters()
+{
+    std::lock_guard<std::mutex> lk(chaptersMtx_);
+    chapters_.clear();
+}
+
+void MpcPlayer::CacheChapters()
+{
+    std::vector<ChapterMark> marks;
+    CComPtr<IAMExtendedSeeking> xs;
+    if (splitter_) splitter_->QueryInterface(IID_IAMExtendedSeeking, (void**)&xs);
+    if (xs) {
+        long count = 0;
+        if (SUCCEEDED(xs->get_MarkerCount(&count)) && count > 0 && count <= 2000) {
+            for (long i = 1; i <= count; ++i) {
+                ChapterMark m;
+                double t = 0.0;
+                if (FAILED(xs->GetMarkerTime(i, &t)) || t < 0.0) continue;
+                m.secs = t;
+                BSTR b = nullptr;
+                if (SUCCEEDED(xs->GetMarkerName(i, &b)) && b) {
+                    m.name = b;
+                    SysFreeString(b);
+                }
+                if (m.name.empty()) m.name = L"Chapter " + std::to_wstring(i);
+                marks.push_back(std::move(m));
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(chaptersMtx_);
+        chapters_.swap(marks);
+        Log("[ENGINE] chapters: %zu cached (splitter %s)", chapters_.size(),
+            xs ? "exposes IAMExtendedSeeking" : "has no chapter interface");
+    }
+}
+
+HRESULT MpcPlayer::StepFrame(int dir)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+    if (!mediaSeeking_) return VFW_E_NOT_FOUND;
+    // Stepping is a paused-mode operation: hold the frame, then move one
+    // frame duration. LAV's seeking is frame-exact on mkv/mp4, and the same
+    // math serves both directions, unlike IVideoFrameStep (forward only).
+    if (mediaControl_) mediaControl_->Pause();
+    LONGLONG pos = 0;
+    if (FAILED(mediaSeeking_->GetCurrentPosition(&pos))) return E_FAIL;
+    const LONGLONG frame = videoStreamInfo_.avgTimePerFrame100ns > 0
+        ? videoStreamInfo_.avgTimePerFrame100ns : 416667;   // 24 fps fallback
+    const LONGLONG target = std::max<LONGLONG>(0, pos + (dir < 0 ? -frame : frame));
+    Log("[ENGINE] step dir=%d pos=%lld frame=%lld target=%lld", dir, pos, frame, target);
+    return Seek(target);
+}
+
+HRESULT MpcPlayer::SeekChapter(int dir)
+{
+    std::vector<ChapterMark> snap;
+    {
+        std::lock_guard<std::mutex> lk(chaptersMtx_);
+        snap = chapters_;
+    }
+    if (snap.empty()) return S_FALSE;
+
+    LONGLONG pos100 = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
+        if (!mediaSeeking_ || FAILED(mediaSeeking_->GetCurrentPosition(&pos100)))
+            return VFW_E_NOT_FOUND;
+    }
+    const double pos = (double)pos100 / 10000000.0;
+
+    double target = -1.0;
+    size_t idx = 0;
+    if (dir > 0) {
+        // +0.5 s so a press right after a chapter start still goes forward.
+        for (size_t i = 0; i < snap.size(); ++i) {
+            if (snap[i].secs > pos + 0.5) { target = snap[i].secs; idx = i; break; }
+        }
+    } else {
+        // -1.0 s so a press at a chapter start returns to the PREVIOUS chapter
+        // instead of replaying the one that just started.
+        for (size_t i = snap.size(); i-- > 0;) {
+            if (snap[i].secs < pos - 1.0) { target = snap[i].secs; idx = i; break; }
+        }
+    }
+    if (target < 0.0) return S_FALSE;
+    Log("[ENGINE] chapter dir=%d -> #%zu @%.2f", dir, idx + 1, target);
+    return Seek((LONGLONG)(target * 10000000.0));
+}
+
 HRESULT MpcPlayer::ResizeVideo()
 {
+    // ONLY the graph's own thread may touch the renderer here. From any other
+    // (i.e. the UI) thread this call takes the lock the capture thread holds while
+    // it presents - measured as a frozen window during a chrome toggle, with audio
+    // continuing and the UI dead. Off-thread callers are turned into a pending
+    // request that the live thread applies at the top of its loop.
+    if (std::this_thread::get_id() != m_graphThreadId) {
+        m_videoRectPending = true;
+        return S_OK;
+    }
     if (!renderer_ || !renderTarget_) return S_OK;
     RECT rc = {};
     GetClientRect(renderTarget_, &rc);
+    // THE PICTURE'S CANVAS IS ALWAYS THE WHOLE WINDOW.
+    //
+    // The shell can reserve part of its client for chrome, but that must NOT change
+    // the canvas the geometry is computed against: NLS/zoom/crop are tuned by the
+    // user against the full window, and re-deriving them for a narrower canvas
+    // re-warps the picture every time the chrome appears (measured: text turned
+    // ragged because Stretch mode's ratio jumped from 2.39:1 to 2.58:1). So the
+    // geometry below runs against the full client exactly as before, and the
+    // finished destination rect is then scaled UNIFORMLY into the chrome's
+    // remaining area - the picture gets smaller, never differently shaped.
+    RECT vr = rc;
+    if (videoRectSet_) {
+        vr.left = std::clamp(videoRect_[0], 0L, rc.right);
+        vr.top = std::clamp(videoRect_[1], 0L, rc.bottom);
+        vr.right = std::clamp(videoRect_[0] + videoRect_[2], vr.left, rc.right);
+        vr.bottom = std::clamp(videoRect_[1] + videoRect_[3], vr.top, rc.bottom);
+    }
     const int clientW = rc.right;
     const int clientH = rc.bottom;
     if (clientW <= 0 || clientH <= 0) return S_OK;
@@ -890,18 +1080,194 @@ HRESULT MpcPlayer::ResizeVideo()
     }
     RECT dest = rc;
     if (vw > 0 && vh > 0) {
-        const double videoAR = (double)vw / (double)vh;
+        GeometrySettings g; NlsSettings nl;
+        { std::lock_guard<std::mutex> lk(m_geomMtx); g = geometry_; nl = nls_; }
+        // NLS wants to fill — but only when the window can take the picture without a
+        // big distortion, and only once the band decision for this title is known
+        // (a launch that begins on a black card must not be stretched on a guess).
+        //
+        // THREE outcomes, not two. The correction is a horizontal scale of
+        // ratioAR = winAR / activeAR (>1 stretch at the sides, <1 squeeze at them):
+        //   warp  - keeps everything, distorts the outer band; fine while small
+        //   crop  - uniform scale until the picture covers the window, then cut
+        //           the overflow: zero distortion, spends picture
+        //   none  - letterbox at the picture's own aspect
+        // Fill mode decides which; Fill limit is the point where Auto stops
+        // trusting the warp.
+        int nlsAction = 0;                 // 0 none, 1 warp(fill), 2 crop(fill)
+        bool geomCrop = false;
+        double warpRatio = 1.0;            // what the shader is asked to correct
+        double cropScale = 1.0;            // uniform zoom that covers the remainder
         const double clientAR = (double)clientW / (double)clientH;
+        double fillScaleW = 0.0, fillScaleH = 0.0;   // cover rect, used by crop
+        if (nl.enabled && m_nlsBandKnown.load()) {
+            const int mode = std::clamp(nl.fillMode, 0, 3);
+            const double frameAR = (double)vw / (double)vh;
+            const double hA = m_nlsBandValid.load()
+                ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
+            // "No bars detected" is NOT the same statement as "this is a full-frame
+            // picture". At start-up, on a black frame, a player menu or a fade, the
+            // detector reports 0/0 exactly as confidently as it reports a real band.
+            const bool bandValid = m_nlsBandValid.load();
+            const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
+            const double fillLimit = std::clamp((double)nl.fillLimit, 1.0, 2.0);
+            const double ratioAR = clientAR / activeAR;
+            // The budget in BOTH directions. The WARP is capped by "Max stretch" — that is
+            // the user's answer to "NLS as much as possible" (e.g. 115 % = warp up to
+            // 15 %), and a uniform zoom covers whatever is left. "Fill limit" governs
+            // the opposite direction (picture wider than the window, where filling
+            // squeezes the edges): beyond it Auto fits instead.
+            // Stretch = uncapped warp, Crop = pure crop, Off = plain fit.
+            const double cap = std::clamp((double)nl.maxStretch, 1.0, 2.0);
+            warpRatio = (ratioAR >= 1.0) ? ((mode == 1) ? ratioAR : std::min(ratioAR, cap)) : ratioAR;
+            cropScale = (ratioAR >= 1.0) ? std::max(1.0, ratioAR / std::max(warpRatio, 0.01)) : 1.0;
+            const bool warpOK = (mode == 1) || (ratioAR >= 1.0) || (1.0 / ratioAR <= fillLimit);
+            if (mode == 3) nlsAction = 0;                  // Off
+            else if (mode == 2) nlsAction = 2;             // Crop: always, no warp
+            else if (mode == 1) nlsAction = 1;             // Stretch: warp regardless
+            // AUTO WAITS FOR A CONFIRMED BAND. Acting on "no bars detected" warped a
+            // scope film by 34.6 % (measured 30 Oct 15:48:52: bars=0/0 of 1436,
+            // activeAR=1.778 -> ratio=1.346, while the true correction was 0.991),
+            // and which way it went depended only on whether the detector latched a
+            // real band before or after the opening black frames - the "NLS is hit
+            // and miss at start-up" report. Auto now refuses to fill until the bar
+            // detection is stable and valid; the Stretch mode below still honours an
+            // explicit instruction to warp regardless.
+            else nlsAction = (warpOK && bandValid) ? 1 : 0; // Auto: needs a confirmed band
+            if (nlsAction != 1 && nlsAction != 2) {
+                static double s_loggedAR = 0.0;
+                if (fabs(s_loggedAR - activeAR) > 0.01) {
+                    s_loggedAR = activeAR;
+                    Log("[NLS] fill refused: picture AR %.3f needs a %.0f%% %s, limit %.0f%% — "
+                        "letterboxed", activeAR,
+                        ratioAR < 1.0 ? (1.0 / ratioAR - 1.0) * 100.0 : (ratioAR - 1.0) * 100.0,
+                        ratioAR < 1.0 ? "squeeze" : "stretch", (fillLimit - 1.0) * 100.0);
+                }
+            }
+            if (nlsAction == 1 && hA > 0.5 && hA < 0.9995) {
+                // Crop the encoded bars through the GEOMETRY: growing the
+                // destination by 1/hA puts the active band exactly on the window,
+                // so fill + crop is ONE resize with the renderer's own scaler.
+                geomCrop = true;
+            }
+            if (nlsAction == 2) {
+                // Cover rect: the ACTIVE picture (frame width, hA of its height)
+                // scaled uniformly until it covers the window. Whichever axis
+                // overflows is what gets cut — sides for wide pictures, top/bottom
+                // for tall ones.
+                const double scale = std::max((double)clientW,
+                                              (double)clientH * frameAR / (hA > 0.01 ? hA : 1.0));
+                fillScaleW = scale;
+                fillScaleH = scale / frameAR;
+                Log("[NLS] crop to fill: picture AR %.3f on %.3f window -> %dx%d (no warp)",
+                    activeAR, clientAR, (int)lround(fillScaleW), (int)lround(fillScaleH));
+            }
+        }
+        if (nlsAction) g.mode = 2;
+        m_nlsFillOk.store(nlsAction != 0);
+        m_nlsCropFill.store(nlsAction == 2);
+        double videoAR = (double)vw / (double)vh;
+        if (g.mode == 1 && g.aspect > 0.0) videoAR = std::clamp(g.aspect, 1.0, 3.0);
+        else if (g.mode == 2) videoAR = clientAR;      // fill
         int destW = clientW;
         int destH = clientH;
-        if (clientAR > videoAR) {
-            destW = (int)(clientH * videoAR + 0.5);
-        } else if (clientAR < videoAR) {
-            destH = (int)(clientW / videoAR + 0.5);
+        m_nlsWarpRatio.store(1.0f);
+        if (g.mode != 2) {
+            if (clientAR > videoAR) destW = (int)(clientH * videoAR + 0.5);
+            else if (clientAR < videoAR) destH = (int)(clientW / videoAR + 0.5);
+        } else if (nlsAction == 2) {
+            destW = (int)lround(fillScaleW);
+            destH = (int)lround(fillScaleH);
+        } else if (nlsAction == 1 && m_nlsBandKnown.load()) {
+            // The warp takes the correction up to Fill limit; cropScale covers the
+            // remainder with a uniform zoom, so the screen is filled either way.
+            m_nlsWarpRatio.store((float)warpRatio);
+            m_nlsWarpPct.store((int)lround(fabs(warpRatio - 1.0) * 100.0));
+            m_nlsCropPct.store((int)lround(fabs(cropScale - 1.0) * 100.0));
+            const double hA2 = m_nlsBandValid.load()
+                ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
+            destW = (int)lround((double)clientW * cropScale);
+            destH = geomCrop ? (int)lround((double)clientH / hA2 * cropScale)
+                             : (int)lround((double)clientH * cropScale);
         }
-        const int destX = (clientW - destW) / 2;
-        const int destY = (clientH - destH) / 2;
+        m_nlsGeomCrop.store(geomCrop);
+        const double zoom = std::clamp(g.zoom, 0.5, 2.0);
+        destW = std::max(1, (int)(destW * zoom + 0.5));
+        destH = std::max(1, (int)(destH * zoom + 0.5));
+        // Pan is meaningful only where the PICTURE overflows the window; -1/+1
+        // walks it from one edge to the other.
+        //
+        // With a geometric NLS crop the destination also overflows by the bars,
+        // and that overflow is NOT picture: panning into it slides the image off
+        // the screen — a black strip on one side and content lost on the other
+        // (observed: a stored Pan Y of 0.15 from the T5a test left a 36 px black
+        // band at the top). So the vertical pan room is the active-picture size
+        // minus the window, and the clamp keeps the active band covering it; at
+        // zoom 1 the room is exactly zero.
+        const int roomX = destW - clientW;
+        int destX = (clientW - destW) / 2;
+        int destY = (clientH - destH) / 2;
+        if (roomX > 0) {
+            destX += (int)(std::clamp(g.panX, -1.0, 1.0) * roomX / 2.0);
+            destX = std::clamp(destX, clientW - destW, 0);
+        }
+        if (geomCrop) {
+            const double fracT = (double)m_nlsBandTop.load();
+            const double fracB = (double)m_nlsBandBot.load();
+            const int barTopPx = (int)lround((double)destH * fracT);
+            const int activeH  = (int)lround((double)destH * (1.0 - fracT - fracB));
+            const int roomY    = activeH - clientH;
+            if (roomY > 0) {
+                destY += (int)(std::clamp(g.panY, -1.0, 1.0) * roomY / 2.0);
+                // Keep the active band covering the window: its top edge may not
+                // drop below y=0 nor its bottom rise above clientH.
+                destY = std::clamp(destY, clientH - activeH - barTopPx, -barTopPx);
+            }
+        } else if (destH > clientH) {
+            destY += (int)(std::clamp(g.panY, -1.0, 1.0) * (destH - clientH) / 2.0);
+            destY = std::clamp(destY, clientH - destH, 0);
+        }
         dest = {destX, destY, destX + destW, destY + destH};
+        {
+            // Logged on every change (not just the crop): "the picture sits too
+            // low / is cut at the bottom" is answerable from these numbers alone.
+            static RECT s_last{-1,-1,-1,-1};
+            static int s_lastW=0, s_lastH=0;
+            if (dest != s_last || clientW != s_lastW || clientH != s_lastH) {
+                s_last = dest; s_lastW = clientW; s_lastH = clientH;
+                Log("[GEOM] client=%dx%d dest=(%d,%d) %dx%d mode=%d crop=%d zoom=%.2f pan=%.2f/%.2f",
+                    clientW, clientH, destX, destY, destW, destH,
+                    g.mode, geomCrop ? 1 : 0, g.zoom, g.panX, g.panY);
+            }
+        }
+        if (geomCrop) {
+            Log("[NLS] geom crop band=%.4f/%.4f client=%dx%d dest=(%d,%d) %dx%d",
+                (double)m_nlsBandTop.load(), (double)m_nlsBandBot.load(),
+                clientW, clientH, destX, destY, destW, destH);
+        }
+    }
+
+    // Now place the finished picture in the space the chrome leaves, UNIFORMLY:
+    // the whole canvas (picture plus its letterbox) is scaled by one factor and
+    // centred, so the picture's shape, crop and NLS warp are identical whether the
+    // chrome is up or not - it is simply smaller. Without this the canvas aspect
+    // changed with the chrome and every toggle re-warped the picture.
+    if (videoRectSet_) {
+        const int vw2 = vr.right - vr.left, vh2 = vr.bottom - vr.top;
+        if (vw2 > 0 && vh2 > 0) {
+            const double s = std::min((double)vw2 / (double)clientW, (double)vh2 / (double)clientH);
+            const int w2 = (int)std::lround((double)clientW * s);
+            const int h2 = (int)std::lround((double)clientH * s);
+            const int ox = vr.left + (vw2 - w2) / 2;
+            const int oy = vr.top + (vh2 - h2) / 2;
+            dest = { ox + (int)std::lround((double)dest.left * s),
+                     oy + (int)std::lround((double)dest.top * s),
+                     ox + (int)std::lround((double)dest.right * s),
+                     oy + (int)std::lround((double)dest.bottom * s) };
+            Log("[GEOM] refit x%.3f canvas=(%d,%d) dest=(%d,%d) %dx%d",
+                s, clientW, clientH, dest.left, dest.top,
+                dest.right - dest.left, dest.bottom - dest.top);
+        }
     }
 
     if (CComQIPtr<IMFGetService> pGS = renderer_) {
@@ -914,9 +1280,23 @@ HRESULT MpcPlayer::ResizeVideo()
         pBV->SetDefaultSourcePosition();
         pBV->SetDestinationPosition(dest.left, dest.top, dest.right - dest.left, dest.bottom - dest.top);
     }
-    if (CComQIPtr<IVideoWindow> pVW = renderer_) {
-        pVW->SetWindowPosition(0, 0, clientW, clientH);
+    // NO SetWindowPosition here: the window is sized once per graph in
+    // ConfigureRendererWindow. Changing it here would call ResizeBuffers on a live
+    // swap chain during capture and block the caller (and the renderer lock).
+    return S_OK;
+}
+
+HRESULT MpcPlayer::SetVideoRect(int x, int y, int w, int h)
+{
+    if (w > 0 && h > 0) {
+        videoRect_[0] = x; videoRect_[1] = y; videoRect_[2] = w; videoRect_[3] = h;
+        videoRectSet_ = true;
+    } else {
+        videoRectSet_ = false;
     }
+    Log("[GEOM] video rect %s (%d,%d) %dx%d (apply on the graph thread)",
+        videoRectSet_ ? "set" : "cleared", x, y, w, h);
+    m_videoRectPending = true;
     return S_OK;
 }
 
@@ -1618,6 +1998,11 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
     graph_.QueryInterface(&mediaEvent_);
 
     splitter_ = splitter;
+    if (!bDeckLink) {
+        // After splitter_ is set: LAVSplitter exposes IAMExtendedSeeking for
+        // mkv/mp4 chapter marks.
+        CacheChapters();
+    }
     if (bDeckLinkDirect) {
         // Direct ingest: no LAV splitter queue to tune (phase-2b bounded queue
         // replaces it later).
@@ -1651,6 +2036,41 @@ HRESULT MpcPlayer::BuildGraph(std::wstring_view source)
             const HRESULT hrTrack = SelectStream(TrackKind::Audio, pendingAudioTrack_);
             Log("[GRAPH] pending audio track %d applied at connect hr=0x%08X",
                 pendingAudioTrack_, (unsigned)hrTrack);
+        } else {
+            // Default to English AUDIO when the file offers it. Applied before the
+            // pins connect, like the explicit pending track, so no live renegotiation.
+            const int en = PickEnglishAudioIndex(splitter);
+            if (en >= 0) {
+                const HRESULT hrEn = SelectStream(TrackKind::Audio, en);
+                Log("[GRAPH] default English audio track %d applied at connect hr=0x%08X",
+                    en, (unsigned)hrEn);
+            } else {
+                Log("[GRAPH] default audio: no English audio stream; using file default");
+            }
+        }
+        // Same rule as audio, and the reason it was missing here is the bug the
+        // user reported: the subtitle pin is spliced a few lines below while the
+        // demuxer still has NO stream enabled, so the sink's decoder is built for a
+        // stream that never delivers (measured: render11 climbs, drew stays 0, on
+        // every engine binary including the installed 1.3.0 one). Enabling the
+        // picked stream before the splice means the pin negotiates the real type
+        // and CSubtitleInputPin::CompleteConnect builds the right decoder.
+        if (pendingSubTrack_ >= 0) {
+            const HRESULT hrSub = SelectStream(TrackKind::Subtitle, pendingSubTrack_);
+            Log("[GRAPH] pending subtitle track %d applied at connect hr=0x%08X",
+                pendingSubTrack_, (unsigned)hrSub);
+            if (SUCCEEDED(hrSub)) {
+                // The ordered teardown Open() runs BEFORE BuildGraph wipes curSub_
+                // (its "4f release subtitle providers" step), so the re-open arrives
+                // here with the selection lost and the splice below attaches nothing
+                // (measured 2026-10-26 11:06:53: "pending subtitle track 1 applied
+                // hr=0x00000000" + "spliced=1" + only "subpic provider cleared",
+                // drew=0). pendingSubTrack_ survives the re-open — Open() resets it
+                // only for a DIFFERENT source — so restore curSub_ from it and let
+                // ApplySubtitleProvider hand the decoder built for this track to the
+                // presenter.
+                curSub_ = pendingSubTrack_;
+            }
         }
         if (ConnectAudio(splitter) != S_OK && HasAudioOutput(splitter)) {
             AddBuildWarning("audio_none");
@@ -2040,6 +2460,18 @@ HRESULT MpcPlayer::ConfigureRendererWindow()
         pVW->put_Owner(reinterpret_cast<OAHWND>(renderTarget_));
         pVW->put_WindowStyle(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
         pVW->put_MessageDrain(reinterpret_cast<OAHWND>(renderTarget_));
+        // Size the renderer's WINDOW to the whole host client ONCE PER GRAPH, here,
+        // while the graph is being configured. This is the only safe moment: later,
+        // with a capture streaming, a window-rect change calls ResizeBuffers on a
+        // live swap chain, which blocks while holding the renderer lock - measured
+        // as the UI freezing (and s3_stats deadlocking behind it) after a chrome
+        // toggle. The picture itself is placed by the destination rect (ResizeVideo)
+        // and never needs the window to change.
+        RECT rc{};
+        if (renderTarget_) ::GetClientRect(renderTarget_, &rc);
+        if (rc.right > 0 && rc.bottom > 0) {
+            pVW->SetWindowPosition(0, 0, rc.right, rc.bottom);
+        }
     }
     if (CComQIPtr<IExFilterConfig> pCfg = renderer_) {
         pCfg->Flt_SetBool("lessRedraws", true);
@@ -2084,6 +2516,28 @@ void MpcPlayer::ApplyPendingWindowDetach()
     // which is indistinguishable from three other failures without this line.
     Log("[EOF] renderer window detached on the UI poll (requested by the live thread)");
     DetachRendererWindow();
+}
+
+void MpcPlayer::ApplyPendingNlsRefresh()
+{
+    // Cash in an NLS re-injection the live thread asked for when the renderer's
+    // detected band moved. Same threading rule as the detach above: the post-scale
+    // shader list is renderer state, and this poll is the UI thread, which is where
+    // every other settings push already mutates it.
+    if (!m_nlsRefreshPending.exchange(false)) return;
+    if (!renderer_ || !renderTarget_) return;
+    // The band is a 90-frame union, so it moves at scene rate, not frame rate. The
+    // throttle is here to stop a detector that flickers between two values from
+    // recompiling three shaders every tick — a recompile is a visible hitch.
+    if (::GetTickCount64() - m_nlsLastInject < 1500) {
+        m_nlsRefreshPending = true;   // retry on a later poll
+        return;
+    }
+    // The band is applied through the destination rect, so the geometry has to
+    // move with it — otherwise ApplyPostFx would see a fresh band and a stale
+    // crop and re-inject against the old one.
+    ResizeVideo();
+    ApplyPostFx();
 }
 
 void MpcPlayer::SetRendererVisible(bool visible)
@@ -2699,6 +3153,11 @@ HRESULT MpcPlayer::SetHdrSettings(const HdrSettings& h)
 // setting that shapes negotiation has to be in place before negotiation happens.
 void MpcPlayer::ApplyPendingSettings()
 {
+    if (hasGeom_ || hasNls_) {
+        std::lock_guard<std::mutex> lk(m_geomMtx);
+        if (hasGeom_) geometry_ = pendingGeom_;
+        if (hasNls_)  nls_ = pendingNls_;
+    }
     if (!renderer_) return;
     CComQIPtr<IVideoRenderer> vr = renderer_;
     if (!vr) return;
@@ -2739,7 +3198,18 @@ void MpcPlayer::ApplyPendingSettings()
             h.exposureTrim, h.shadowLift, h.punch,
             s.iHdrExposureTrim, s.iHdrShadowLift, s.iHdrPunch);
     }
-    if (hasMl_)  ApplyMlToSettings(pendingMl_, s);
+    if (hasMl_) {
+        ApplyMlToSettings(pendingMl_, s);
+        // Delivery proof at the one boundary that was missing: the operator's intent
+        // -> the struct actually handed to the renderer. The chain is now traceable
+        // end to end in three lines: the shell's "CMD {...} (ml.enable) rc=", this
+        // one, and the renderer's own "[live] ml: <mode> ... active: <yes|no>".
+        // Reading them together answers "did the click arrive" and "is the backend
+        // acting on it" without inference.
+        Log("[ML] apply enable=%d mode=%d -> settings(enable=%d mode=%d gamma=%.3f shadow=%.3f)",
+            pendingMl_.enable ? 1 : 0, pendingMl_.mode,
+            s.bMLEnabled ? 1 : 0, s.iMLMode, s.fMLGamma, s.fMLShadow);
+    }
     if (hasOut_) ApplyOutToSettings(pendingOut_, s);
     // Instrumented 2026-09-20: SetSettings rebuilds the tone LUT and can BLOCK
     // indefinitely while the graph is mid-rebuild. ENTER without RETURN in the
@@ -2765,8 +3235,15 @@ void MpcPlayer::ApplyPendingSettings()
     Log("[ENGINE] ApplyPendingSettings: SetSettings ENTER");
     vr->SetSettings(s);
     Log("[ENGINE] ApplyPendingSettings: SetSettings RETURN");
-    Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d pushed rebuild=%d",
-        hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0, needRebuild ? 1 : 0);
+    Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d geo=%d pushed rebuild=%d",
+        hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0, hasGeom_ ? 1 : 0,
+        needRebuild ? 1 : 0);
+    if ((hasGeom_ || hasNls_) && !m_inGraphBuild) {
+        const auto g = pendingGeom_;
+        Log("[ENGINE] geometry mode=%d aspect=%.3f zoom=%.3f pan=%.2f/%.2f nls=%d",
+            g.mode, g.aspect, g.zoom, g.panX, g.panY, pendingNls_.enabled ? 1 : 0);
+        ResizeVideo();
+    }
 
     if (needRebuild) RequestSettingsRebuild();
     // Media (file) path: there is no executor to rebuild onto, so a held-back
@@ -2784,6 +3261,14 @@ void MpcPlayer::ApplyPendingSettings()
     // above — this is the live dial-change path. During BuildGraph the device is
     // not up yet, so skip: the end-of-BuildGraph ApplyPostFx handles first injection.
     if (!m_inGraphBuild) ApplyPostFx();
+    // A PAUSED frame is held by the renderer and only repainted when a new sample
+    // arrives, so a geometry / NLS change made while paused stayed invisible until
+    // playback resumed (reported: NLS off->on on a paused frame did nothing).
+    // Ask the renderer for one redraw of the frame it is holding.
+    if (!m_inGraphBuild && snapshot_.state == State::Paused) {
+        if (CComQIPtr<IExFilterConfig> cfg = renderer_)
+            cfg->Flt_SetBool("cmd_redraw", true);
+    }
 }
 
 void MpcPlayer::ApplyPostFx()
@@ -2797,10 +3282,131 @@ void MpcPlayer::ApplyPostFx()
     std::string deband  = p.debandEnabled  ? postfx::Deband(p.debandThreshold, p.debandRange,
                                                             p.debandIterations, p.debandGrain) : std::string();
 
+    // NLS: warp the active picture (renderer bar bounds) onto the full window.
+    // Parameters are baked; a geometry change, a settings push, or a change in
+    // the renderer's detected band re-injects (the live tick watches the band and
+    // the host's poll cashes it in — see ApplyPendingNlsRefresh).
+    //
+    // The bar band is measured by the renderer on the SOURCE frame, in units of
+    // the window it is drawn into. NLS forces Fill (ResizeVideo), so the frame is
+    // stretched onto the whole client and a source-frame fraction is also the
+    // fraction of the client. That is what makes the crop below correct: the
+    // post-scale shader samples the window-sized image, rows and columns 0..1.
+    std::string nlsSrc;
+    m_nlsNeedPct.store(0);      // no NLS, no fill bill to report
+    if (pendingNls_.enabled && pendingNls_.strength > 0.001f && renderTarget_ &&
+        m_nlsBandKnown.load()) {
+        RECT cr = {};
+        ::GetClientRect(renderTarget_, &cr);
+        const int W = cr.right - cr.left, H = cr.bottom - cr.top;
+        long vw = 0, vh = 0;
+        if (CComQIPtr<IBasicVideo> pBV = renderer_) {
+            long sl = 0, st = 0;
+            if (FAILED(pBV->GetSourcePosition(&sl, &st, &vw, &vh))) vw = vh = 0;
+        }
+        if (W > 0 && H > 0 && vw > 0 && vh > 0) {
+            // Confirmed band from the live watcher (per-frame, gated, persisted
+            // for two ticks). Not read from GetMLStats here: that is the union,
+            // which grows on dark scenes.
+            bool haveBand = m_nlsBandValid.load();
+            float fracT = haveBand ? m_nlsBandTop.load() : 0.0f;
+            float fracB = haveBand ? m_nlsBandBot.load() : 0.0f;
+            int top = std::clamp((int)lroundf(fracT * (float)H), 0, H - 1);
+            int bot = std::clamp((int)lroundf(fracB * (float)H), 0, H - 1 - top);
+            const double hA = (double)(H - top - bot) / (double)H;   // active height fraction
+            const double fullAR = (double)vw / (double)vh;           // AR-corrected frame AR
+            double activeAR = fullAR / hA;                           // AR of the picture after crop
+            // Last sanity gate, in the space that matters: a band implying a
+            // picture wider than 2.9:1 is a detector artefact (the widest real
+            // format is ~2.76), so it is discarded rather than zooming the image.
+            if (haveBand && activeAR > 2.9) {
+                Log("[NLS] band rejected: implied active AR %.2f (top=%d bot=%d of %d)",
+                    activeAR, top, bot, H);
+                haveBand = false; top = bot = 0; activeAR = fullAR;
+            }
+            const bool haveBars = haveBand && (top >= 2 || bot >= 2);
+            const double winAR = (double)W / (double)H;
+            // The band itself is removed by the destination rect (ResizeVideo),
+            // so the shader never crops: its active rectangle is the whole
+            // frame. Cropping here as well would double-crop AND resample the
+            // picture a second time, which is exactly the pass that made thin
+            // lines crawl.
+            const bool geomCrop = m_nlsGeomCrop.load();
+            // The geometry may already have absorbed part of the correction (the split in
+            // ResizeVideo); the shader takes exactly what is left over.
+            const double ratioAR = winAR / activeAR;
+            const double warp = (double)m_nlsWarpRatio.load();
+            const bool vertical = (pendingNls_.axis == 2);   // explicit override only
+            double ratio = (warp > 0.01) ? warp : (vertical ? 1.0 / ratioAR : ratioAR);
+            if (!(ratio > 0.0)) ratio = 1.0;
+            const double maxStretch = std::clamp((double)pendingNls_.maxStretch, 1.0, 2.0);
+            // What filling WOULD cost on this title, in per cent. Published for the
+            // INFO panel so "Fill limit" can be set knowingly (a 2.39 film on a
+            // 16:9 screen needs ~36 % squeeze, a 16:9 title on a scope screen ~34 %
+            // stretch).
+            m_nlsNeedPct.store((int)lround(fabs(ratioAR - 1.0) * 100.0));
+            // 2 % is below the threshold where a uniform stretch is visible, so
+            // the common scope-film-on-scope-screen case (measured 1.009) gets the
+            // crop from the resize and NO shader pass at all.
+            //
+            // A band that geometry REFUSED to fill must not be warped either: the picture
+            // is being shown at its own aspect and a warp would only distort it.
+            // The 2 % deadband applies to both directions — a 0.98 squeeze is as
+            // invisible as a 1.02 stretch.
+            if (fabs(ratio - 1.0) > 0.02 && m_nlsFillOk.load() && !m_nlsCropFill.load()) {
+                if (ratio > 1.0) ratio = std::min(ratio, maxStretch);
+                nls::Params np;
+                np.activeL = 0.0f;
+                np.activeR = 1.0f;
+                np.activeT = 0.0f;
+                np.activeB = 1.0f;
+                np.ratio = (float)ratio;
+                np.strength = pendingNls_.strength;
+                np.center = pendingNls_.center;
+                np.curve = pendingNls_.curve;
+                np.vertical = vertical;
+                nlsSrc = nls::Source(np);
+                Log("[NLS] %s bars=%d/%d of %d geomCrop=%d frameAR=%.3f activeAR=%.3f "
+                    "winAR=%.3f ratio=%.3f centre=%.2f curve=%.2f strength=%.2f",
+                    vertical ? "vertical" : "horizontal", top, bot, H, geomCrop ? 1 : 0,
+                    fullAR, activeAR, winAR, ratio,
+                    (double)np.center, (double)np.curve, (double)np.strength);
+            } else {
+                Log("[NLS] no pass bars=%d/%d of %d geomCrop=%d winAR=%.3f activeAR=%.3f "
+                    "ratio=%.3f%s", top, bot, H, geomCrop ? 1 : 0,
+                    winAR, activeAR, ratio,
+                    m_nlsCropFill.load() ? " (crop to fill)"
+                        : (!m_nlsFillOk.load() ? " (fill refused: letterboxed at its own aspect)"
+                                               : " (crop only)"));
+            }
+        }
+    }
+
+    // T5b: micro contrast must run on the geometry the viewer sees. While NLS
+    // is delivering a pass the renderer draws its MC step AFTER the custom
+    // post-scale chain (same single draw, relocated - not a second pass), so its
+    // halo radius lives in final geometry and never lands on a black band. Sent
+    // on every call, including the dedup early-return path below, so a stale ON
+    // can never outlive NLS being switched off.
+    cfg->Flt_SetBool("cmd_mlPostWarpMC", !nlsSrc.empty());
+    {
+        // Log the transition only: this runs on every settings push, and the
+        // line has to say WHICH side of the warp the renderer's MC step is on
+        // without turning every slider drag into a log spam.
+        static bool s_postWarpMc = false;
+        const bool on = !nlsSrc.empty();
+        if (on != s_postWarpMc) {
+            s_postWarpMc = on;
+            Log("[NLS] micro contrast moved %s the warp (single draw)",
+                on ? "AFTER" : "back inside the grade, before");
+        }
+    }
+
     // Dedup: only touch the renderer when the picture-defining source changed or
     // the renderer instance is new. An unrelated settings push must not recompile.
     const bool freshRenderer = (m_postFxGraphGen != graphGen_);
-    if (!freshRenderer && sharpen == m_lastSharpenSrc && deband == m_lastDebandSrc)
+    if (!freshRenderer && nlsSrc == m_lastNlsSrc &&
+        sharpen == m_lastSharpenSrc && deband == m_lastDebandSrc)
         return;
 
     // Rebuild the whole post-scale list from current intent: clear, then add
@@ -2831,14 +3437,17 @@ void MpcPlayer::ApplyPostFx()
         Log("[POSTFX] inject %ls (%zu bytes) hr=%08x",
             name, code.size(), (unsigned)hr);
     };
+    inject(L"NLS", nlsSrc);
     inject(L"Deband", deband);
     inject(L"Adaptive Sharpen", sharpen);
 
     if (!allOk) return;   // leave the cache stale so a later attempt retries
 
+    m_lastNlsSrc = nlsSrc;
     m_lastSharpenSrc = sharpen;
     m_lastDebandSrc  = deband;
     m_postFxGraphGen = graphGen_;
+    if (!nlsSrc.empty()) m_nlsLastInject = ::GetTickCount64();
 }
 
 // Ask the graph owner to rebuild, which is how a rebuild-only setting reaches the
@@ -3003,6 +3612,7 @@ HRESULT MpcPlayer::SetOutSettings(const OutSettings& o)
 HRESULT MpcPlayer::SetDecklinkCapture(const std::wstring& deviceName)
 {
     Log("[DECKLINK][engine] SetDecklinkCapture begin deviceName='%S'", deviceName.c_str());
+    ClearChapters();   // capture has no chapters; never show file marks on live
     if (decklinkDevice_ == deviceName && decklinkMonitor_ && decklinkMonitor_->IsRunning()) {
         Log("[DECKLINK][engine] already capturing '%S' — no-op", deviceName.c_str());
         return S_OK;
@@ -3129,6 +3739,112 @@ void MpcPlayer::RefreshLive()
     DeckLinkSourceStats dl{};
     GetRendererStats(r);
     GetMlStats(ml);
+    // Detected-band watch (T5b). Samples the PER-FRAME band the renderer reports
+    // (barsNow, fractions of the frame) rather than the 90-frame union: the union
+    // is a running min/max, so a dark scene whose top rows dip under the
+    // detector's threshold grows the band until the window rolls over (measured
+    // live: 688/598 of 1436 on a night scene = a 17:1 "active picture").
+    //
+    // The band is LATCHED, not followed. Bars are a property of the title, not of
+    // the shot, and luminance alone cannot tell a letterbox from artwork on black:
+    // a black title card ("THE SHIELD" logo) reads as an enormous symmetric band
+    // and cropping to it cut into the artwork (reported from a live run). So:
+    //
+    //   * a frame whose activeFrac is low - mostly black - is NOT evidence at all;
+    //     it can neither create nor move a band (a title card leaves the latch
+    //     untouched);
+    //   * the first confidence needs two consecutive picture-bearing ticks;
+    //   * after that, replacing the band needs the new one to hold for
+    //     kRelatchTicks (an IMAX scene change is real; a fade is not);
+    //   * the latch resets when the graph generation changes (new title).
+    {
+        float ft = 0.0f, fb = 0.0f, frac = 0.0f;
+        bool have = false;
+        const wchar_t* bp = wcsstr(ml.c_str(), L"barsNow: top=");
+        if (bp) have = (swscanf_s(bp, L"barsNow: top=%f bot=%f", &ft, &fb) == 2);
+        float act = 1.0f;              // assume picture if the field is absent
+        const wchar_t* ap = wcsstr(ml.c_str(), L"activeFrac: ");
+        if (ap) { if (swscanf_s(ap, L"activeFrac: %f", &frac) == 1) act = frac; }
+        // Below this the frame is mostly black: text on black, a fade, the gap
+        // between scenes. Not a letterbox, whatever shape the detector reports.
+        constexpr float kPictureFloor = 0.45f;
+        const bool picture = (act >= kPictureFloor);
+
+        static unsigned long long s_latchGen = ~0ull;
+        static bool s_latched = false, s_latchValid = false;
+        static int  s_latchT = 0, s_latchB = 0;
+        static int  candT = -2, candB = -2, stable = 0;
+        static constexpr int kRelatchTicks = 6;
+
+        if (graphGen_ != s_latchGen) {   // new title: forget the old band
+            s_latchGen = graphGen_;
+            s_latched = false; s_latchValid = false; s_latchT = s_latchB = 0;
+            candT = candB = -2; stable = 0;
+            m_nlsBandValid.store(false);
+            m_nlsBandTop.store(0.0f);
+            m_nlsBandBot.store(0.0f);
+            m_nlsBandKnown.store(false);
+            m_nlsRefreshPending = true;
+        }
+
+        if (picture) {
+            int qt = -1, qb = -1;
+            if (have && ft >= 0.0f && fb >= 0.0f && ft < 0.45f && fb < 0.45f &&
+                fabsf(ft - fb) <= 0.015f) {
+                qt = (int)lroundf(ft * 1000.0f);
+                qb = (int)lroundf(fb * 1000.0f);
+            }
+            if (qt != candT || qb != candB) {
+                Log("[NLS] band candidate %d/%d (held %d) <- per-frame %.4f/%.4f activeFrac=%.3f",
+                    qt, qb, stable, (double)ft, (double)fb, (double)act);
+                candT = qt; candB = qb; stable = 1;
+            }
+            else if (stable < 1000) ++stable;
+
+            // A FIRST latch that says "no bars" is the weakest evidence there is: the
+            // opening frames of a graph are often black or mid-transition, and a
+            // detector that sees no bars reports 0/0 as confidently as it reports a
+            // real band. Accepting that on the second tick made the engine believe a
+            // scope film was 16:9 - measured 2026-10-30 15:12:15, latched 0/0 one tick
+            // after the previous candidate, which then fed a 34.6 % warp to a picture
+            // whose real band implied a correction of 0.99. A real band still latches
+            // in 2 ticks; "no bars" has to prove itself like everything else.
+            const int need = s_latched ? (pendingNls_.lockBand ? 1000000 : kRelatchTicks)
+                                       : (std::max(qt, qb) > 0 ? 2 : kRelatchTicks);
+            if (stable >= need && (!s_latched || qt != s_latchT || qb != s_latchB)) {
+                // One detected row of bias (1/144 of the frame). The detector's
+                // grid is 144 rows tall and its boundary is a box average, so it
+                // lands a row INSIDE the real bar: cropping exactly to it left
+                // ~7-13 px of black on the top and bottom edges (measured on
+                // screen). A 0/0 report is "no bars" and is never biased.
+                constexpr float kBandMin = 1.5f / 144.0f;
+                constexpr float kBandBias = 1.0f / 144.0f;
+                const bool valid = (qt >= 0) && ((float)std::max(qt, qb) / 1000.0f >= kBandMin);
+                float nt = 0.0f, nb = 0.0f;
+                if (valid) {
+                    nt = (float)qt / 1000.0f + kBandBias;
+                    nb = (float)qb / 1000.0f + kBandBias;
+                    if (nt + nb > 0.6f) { nt = (float)qt / 1000.0f; nb = (float)qb / 1000.0f; }
+                }
+                s_latched = true; s_latchValid = valid; s_latchT = qt; s_latchB = qb;
+                m_nlsBandValid.store(valid);
+                m_nlsBandTop.store(nt);
+                m_nlsBandBot.store(nb);
+                m_nlsBandKnown.store(true);
+                m_nlsRefreshPending = true;
+                // THE BAND DECIDES THE GEOMETRY, so a new band has to re-derive the
+                // geometry AND the shader's share of the correction in one go. Only
+                // refreshing the shader left them disagreeing: the pass is fed
+                // m_nlsWarpRatio when it is set, and the shader's own ratioAR when it
+                // is not, so after a band change the picture was warped for the bar
+                // layout that had just been replaced (measured 15:12:21 - shader told
+                // ratio 1.346 while the band on screen implied 0.991). Toggling NLS
+                // forced this rebuild, which is why that "fixed" the picture.
+                m_videoRectPending = true;
+                Log("[NLS] band latched %d/%d (valid=%d)", qt, qb, valid ? 1 : 0);
+            }
+        }
+    }
     GetMlSettings(mls);
     GetHdrSettings(hd);
     GetOutSettings(ou);
@@ -3161,6 +3877,13 @@ void MpcPlayer::RefreshLive()
             return ml.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
         };
         const std::wstring pipe = Field(L"pipeline:");
+        // The renderer's own ML activation account, already returned by GetMLStats:
+        // "mode: Auto domain: ... active: yes|no" plus model/features/predict gates.
+        // Without this line an OFF->ON toggle can only be inferred from the setting
+        // echo; with it we see whether the grade was really reactivated (2026-10-26).
+        const std::wstring mlState = Field(L"mode: ");
+        const std::wstring mlGates = Field(L"gates: ");
+        Log("[live] ml: %ls | %ls", mlState.c_str(), mlGates.c_str());
         // Renderer-reported color truth. The file-path pin media type often
         // carries NO color info (flags=0), while the renderer learned the
         // transfer from the decoded stream — parse the numbers it already
@@ -3217,6 +3940,51 @@ void MpcPlayer::RefreshLive()
             (long long)DSObjects::g_subRender11Drew,
             (double)DSObjects::g_subRender11LastRt / 10000000.0,
             (long long)DSObjects::g_subRender11Dropped);
+        // The queue leg (see the sample in RenderEx3): depth + cached window vs the
+        // time the presenter asked at, plus the last blit's HRESULT.
+        Log("[live] subq: depth=%lld rtNow=%.2f cached=[%.2f..%.2f] lastHr=0x%08X hit=%lld geoHr=0x%08X",
+            (long long)DSObjects::g_subQueueDepth,
+            (double)DSObjects::g_subQueueRtNow / 10000000.0,
+            (double)DSObjects::g_subQueueRtStart / 10000000.0,
+            (double)DSObjects::g_subQueueRtStop / 10000000.0,
+            (unsigned)(long long)DSObjects::g_subLastDrawHr,
+            (long long)DSObjects::g_subLookupHit,
+            (unsigned)(long long)DSObjects::g_subGeoHr);
+        // Provider-side truth, asked the SAME way the subpic queue asks it
+        // (GetStartPosition at the presenter's rt): this splits the drew=0 space in
+        // two from one log line. An event ACTIVE at rt with drew still 0 puts the
+        // fault in the queue/blit leg; NO event with render11 climbing puts it in the
+        // decoder/samples leg (nothing parsed into the provider). fps only matters
+        // for VobSub frame timing and animated transforms — text tracks compare rt
+        // against start/stop — so the file's nominal fps is not worth plumbing here.
+        if (!subs_.empty()) {
+            if (CComQIPtr<ISubPicProvider> prov = subs_[0].stream) {
+                const REFERENCE_TIME rtNow = DSObjects::g_subRender11LastRt;
+                const double fps = 23.976;
+                POSITION pos = prov->GetStartPosition(rtNow, fps);
+                if (pos) {
+                    const REFERENCE_TIME st = prov->GetStart(pos, fps);
+                    const REFERENCE_TIME sp = prov->GetStop(pos, fps);
+                    Log("[SUBS] probe: rt=%.2fs -> event %.2fs..%.2fs (%s)",
+                        (double)rtNow / 10000000.0, (double)st / 10000000.0,
+                        (double)sp / 10000000.0,
+                        (st <= rtNow && rtNow < sp) ? "ACTIVE now" : "next, not at rt");
+                } else {
+                    // Ambiguity to kill: "nothing at/after rt" can mean the parser
+                    // received nothing, or simply that the (just-in-time delivered)
+                    // events near rt are all already past. GetStartPosition(0) asks
+                    // for the FIRST parsed event — null only if nothing was parsed.
+                    const POSITION first = prov->GetStartPosition(0, fps);
+                    Log("[SUBS] probe: rt=%.2fs -> nothing at/after rt; first parsed=%s",
+                        (double)rtNow / 10000000.0,
+                        first ? "exists" : "NONE (parser fed nothing)");
+                }
+            } else {
+                Log("[SUBS] probe: subs_[0].stream exposes no ISubPicProvider");
+            }
+        } else {
+            Log("[SUBS] probe: no spliced subtitle stream");
+        }
     }
     // (The delivery watchdog lived here: it read the renderer's frame counters and
     // posted a graph rebuild when they froze. Removed 2026-09-21. It was a
@@ -3352,7 +4120,35 @@ std::string MpcPlayer::GetUiStatusJson() const
         }
     }
 
+    // Chapter marks (file mode): a small JSON array inside the media object.
+    // Names are escaped minimally; anything non-ASCII becomes '?', because a
+    // broken escape would take the whole status read down in the python client.
+    char chBuf[2048] = {};
+    {
+        std::lock_guard<std::mutex> lk(chaptersMtx_);
+        std::string acc;
+        for (const auto& c : chapters_) {
+            if (acc.size() > 1700) break;
+            std::string nm;
+            for (const wchar_t wc : c.name) {
+                const char ch = (char)wc;
+                if (ch == '"' || ch == '\\') nm += '\\';
+                nm += (ch >= 0x20 && ch < 0x7f) ? ch : '?';
+            }
+            char one[192];
+            snprintf(one, sizeof(one), "%s{\"t\":%.3f,\"name\":\"%s\"}",
+                     acc.empty() ? "" : ",", c.secs, nm.c_str());
+            acc += one;
+        }
+        snprintf(chBuf, sizeof(chBuf), ",\"chapters\":[%s]", acc.c_str());
+    }
+
     char b1[2300];
+    int dispW = 0, dispH = 0;
+    if (renderTarget_) {
+        RECT wr{};
+        if (::GetClientRect(renderTarget_, &wr)) { dispW = wr.right - wr.left; dispH = wr.bottom - wr.top; }
+    }
     snprintf(b1, sizeof(b1),
         "{\"gen\":%u,\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
         "\"render\":{\"recv\":%u,\"draw\":%.2f,\"lagMs\":%.1f,\"drop\":%u,\"skip\":%u,\"fail\":%u},"
@@ -3367,7 +4163,17 @@ std::string MpcPlayer::GetUiStatusJson() const
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"chroma\":%d,\"il\":%d},"
         "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d,\"dovi\":%d},"
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"scPeak\":%.4f,\"scAvg\":%.4f,"
-        "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}}",
+        "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}},"
+        // NLS state for the INFO panel: on/off, what filling this title would cost
+        // (per cent vertical stretch), the user's budget, and whether it is filling.
+        // Four specifiers, four arguments — see the warning above about keeping
+        // these matched.
+        "\"nls\":{\"on\":%d,\"need\":%d,\"limit\":%d,\"filling\":%d,\"warp\":%d,\"crop\":%d},"
+        // The surface every aspect decision is based on: the client rect of the
+        // renderer's host window, i.e. whatever the app actually covers (the
+        // screen, full-screen). Nothing asks the user for a screen size — this is
+        // the number those decisions read, so it is worth showing them.
+        "\"display\":{\"w\":%d,\"h\":%d}",
         (unsigned)graphGen_,
         st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
         rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
@@ -3389,7 +4195,12 @@ std::string MpcPlayer::GetUiStatusJson() const
         m_liveDovi,
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits,
         scPeak, scAvg,
-        m_liveMdrCll, m_liveMdrFall, m_liveMdrMmax, m_liveMdrMmin);
+        m_liveMdrCll, m_liveMdrFall, m_liveMdrMmax, m_liveMdrMmin,
+        pendingNls_.enabled ? 1 : 0, m_nlsNeedPct.load(),
+        (int)lround((double)pendingNls_.fillLimit * 100.0),
+        m_nlsFillOk.load() ? 1 : 0,
+        m_nlsWarpPct.load(), m_nlsCropPct.load(),
+        dispW, dispH);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
     char b2[4096];
@@ -3473,6 +4284,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         result.pop_back();
         result += audio;
         result += subs;
+        result += chBuf;      // top-level "chapters":[...] (empty string when none)
         result += diag;
         result += '}';
     }
@@ -3486,6 +4298,8 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     HdrSettings hdr{};   bool hAny = false;
     MlSettings  ml{};    bool mAny = false;
     OutSettings out{};   bool oAny = false;
+    GeometrySettings geo = pendingGeom_; bool gAny = false;
+    NlsSettings nls = pendingNls_; bool nAny = false;
     // Post-fx has no Settings_t mirror to read back from the renderer (it lives in
     // the injected shader, not a settings field), so it always seeds from the
     // remembered intent — a partial push merges onto the last full intent.
@@ -3653,6 +4467,26 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "tray")          out.trayIcon = vb(v);
             else hit = false;
             oAny = oAny || hit;
+        } else if (grp == "geo") {
+            if (name == "nls")            { nls.enabled = vb(v); nAny = true; }
+            else if (name == "nlsAxis")   { nls.axis = std::clamp((int)vd(v), 0, 2); nAny = true; }
+            else if (name == "nlsStrength") { nls.strength = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
+            else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.45f); nAny = true; }
+            else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }
+            else if (name == "nlsMax")    { nls.maxStretch = std::clamp((float)vd(v), 1.0f, 1.5f); nAny = true; }
+            else if (name == "nlsFillLimit") { nls.fillLimit = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }
+            else if (name == "nlsLock")   { nls.lockBand = vb(v); nAny = true; }
+            else if (name == "nlsFillMode") { nls.fillMode = std::clamp((int)vd(v), 0, 3); nAny = true; }
+            else {
+                bool hit = true;
+                if      (name == "mode")   geo.mode = std::clamp((int)vd(v), 0, 2);
+                else if (name == "aspect") geo.aspect = std::clamp(vd(v), 1.0, 3.0);
+                else if (name == "zoom")   geo.zoom = std::clamp(vd(v), 0.5, 2.0);
+                else if (name == "panX")   geo.panX = std::clamp(vd(v), -1.0, 1.0);
+                else if (name == "panY")   geo.panY = std::clamp(vd(v), -1.0, 1.0);
+                else hit = false;
+                gAny = gAny || hit;
+            }
         } else if (grp == "postfx") {
             bool hit = true;
             if      (name == "sharpen")    pfx.sharpenEnabled = vb(v);
@@ -3688,6 +4522,8 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
     if (hAny) { pendingHdr_ = hdr; hasHdr_ = true; }
     if (mAny) { pendingMl_  = ml;  hasMl_  = true; }
     if (oAny) { pendingOut_ = out; hasOut_ = true; }
+    if (gAny) { pendingGeom_ = geo; hasGeom_ = true; }
+    if (nAny) { pendingNls_ = nls; hasNls_ = true; }
     if (pAny) { pendingPostFx_ = pfx; hasPostFx_ = true; }
     // UI-thread entry point: remember, and let the graph owner apply. Never
     // write the renderer from here — see QueueSettingsApply().
@@ -3801,7 +4637,28 @@ void MpcPlayer::DecklinkOpLoop()
         bool runGraph = false, runApply = false;
         {
             std::unique_lock<std::mutex> lk(m_gopMtx);
-            m_gopCv.wait(lk, [this] { return m_gopStop || m_gopQueued || m_gopApplyQueued; });
+            // PUMP WHILE WAITING. RunDecklinkRebuild() -> Open() -> ConfigureRendererWindow()
+            // CREATES the renderer's window on THIS thread, and a window's wndproc only
+            // runs on a thread that pumps. A pure cv.wait() left that window hung from
+            // birth: Windows stopped answering for it, and because the picture IS that
+            // window, a click on the picture made the whole app stop taking mouse and
+            // keyboard input while timers and painting carried on. Measured 2026-10-30:
+            // IsHungAppWindow(VRWindow)=TRUE before any click, five consecutive 5 s
+            // sent-message timeouts, UI thread answering in 0 ms throughout. It is also
+            // why a cross-thread DestroyWindow/WM_CLOSE used to block forever.
+            // Same rule, and the same ~5 ms cadence, as the live thread's loop above.
+            while (!m_gopStop && !m_gopQueued && !m_gopApplyQueued) {
+                lk.unlock();
+                MSG wm;
+                while (PeekMessageW(&wm, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&wm);
+                    DispatchMessageW(&wm);
+                }
+                lk.lock();
+                if (!m_gopStop && !m_gopQueued && !m_gopApplyQueued) {
+                    m_gopCv.wait_for(lk, std::chrono::milliseconds(5));
+                }
+            }
             if (m_gopStop) break;
             // The graph op goes first: a settings push that arrived during a
             // rebuild is then applied onto the NEW renderer, which is the point
@@ -4084,28 +4941,23 @@ HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
         Log("[SUBS] subtitle track Off (provider detached; splitter stream left enabled)");
         return S_OK;
     }
-    const HRESULT hr = SelectStream(TrackKind::Subtitle, posIndex);
-    if (SUCCEEDED(hr)) {
-        // No re-splice, and the reason is measured: the splitter exposes ONE subtitle pin
-        // for all of its subtitle streams ("subtitle pins found=1" on a file with seven),
-        // so there is no "pin 4" to move onto - trying to splice one would leave subs_ empty
-        // and switch subtitles off entirely. Switching is the demuxer's job: enabling
-        // another stream makes LAV reconnect that pin with the new media type, which runs
-        // CSubtitleInputPin::CompleteConnect - where libass / CPGSSub / CVobSubStream is
-        // chosen from the subtype - and the filter reports the swap back through
-        // ISubtitleHost::ReplaceSubtitle, which updates subs_[0].stream. That is MPC-HC's
-        // mechanism, and it is why the provider is indexed by the splice and never by the
-        // track number.
-        curSub_ = posIndex;
-        ApplySubtitleProvider();
-        if (subAP_) subAP_->Invalidate(-1);   // drop text still queued for the old stream
-        RebuildSubtitleJson();   // the rail lights the track the engine actually took
-        Log("[SUBS] subtitle track %d -> rendering=%d spliced=%d", posIndex, curSub_,
-            (int)subs_.size());
-    } else {
-        Log("[SUBS] subtitle track %d unavailable hr=0x%08X", posIndex, (unsigned)hr);
-    }
-    return hr;
+    // Queued, never live — the same rule as audio (see SetAudioTrack).
+    // The live SelectStream that used to run first is measured dead weight and a
+    // hazard: on a running graph it goes through LAVSplitter::RenameOutputPin's
+    // connected branch (graph Stop + ReconnectPin + Run, synchronously from the
+    // cmd thread), seconds before the re-open it queues tears down that just-
+    // resumed graph. The apply-at-connect in BuildGraph does the whole job:
+    // measured 2026-10-26 11:48, "pending subtitle track 4 applied hr=0" makes
+    // the pin OFFER the selected stream's type ("pin 0 offered: UTF8 ... lang=bul"),
+    // the splice builds that stream's decoder, and the provider probe sees the
+    // real event at the playhead. An out-of-range index self-limits: the
+    // at-connect SelectStream fails, curSub_ is not restored, nothing attaches.
+    pendingSubTrack_ = posIndex;
+    m_fileRebuildPending = true;
+    curSub_ = posIndex;
+    RebuildSubtitleJson();   // the rail lights the track that will be rendering
+    Log("[ENGINE] subtitle track %d queued - re-open splices it at connect", posIndex);
+    return S_OK;
 }
 
 HRESULT MpcPlayer::SetSubtitlesEnabled(bool on)
@@ -4152,7 +5004,12 @@ void MpcPlayer::ReplaceSubtitle(const ISubStream* pOld, ISubStream* pNew)
 HRESULT MpcPlayer::SpliceSubtitleFilters(int targetRel)
 {
     subs_.clear();
-    curSub_ = -1;
+    // NO curSub_ reset here. The entry reset erased the selection AFTER
+    // BuildGraph's pending-track block had just restored it, so every re-open
+    // ended "provider cleared (subsOn=1 curSub=-1 subs=1)" with the splice itself
+    // fine — measured 2026-10-26 11:48. The state is already clean when this runs:
+    // Open()'s ordered teardown zeroes curSub_ at step 4f before every rebuild,
+    // and the very first graph starts from its -1 default.
     if (!splitter_ || !subSink_ || !graph_) {
         return S_FALSE;
     }
@@ -4190,11 +5047,51 @@ HRESULT MpcPlayer::SpliceSubtitleFilters(int targetRel)
         if (em->Next(1, &pmt, nullptr) != S_OK || !pmt) continue;
         const bool isSub = (pmt->majortype == MEDIATYPE_Text)
                         || (pmt->majortype == MEDIATYPE_Subtitle);
+        // Capture the OFFERED first type before releasing it: ConnectDirect(pmt=null)
+        // negotiates from this list, so it decides which stream's decoder
+        // CSubtitleInputPin::CompleteConnect builds. If the pending-track Enable ran
+        // (LAVSplitter::RenameOutputPin on the still-unconnected pin: SetStreamId +
+        // SetNewMediaTypes), the subtype/SUBTITLEINFO logged below must match the
+        // SELECTED track, not the splitter's own default pick. This is the observation
+        // that was missing on 2026-10-26 — the splice logged only its classification.
+        const GUID offeredSub = pmt->subtype;
+        const bool offeredText = (pmt->majortype == MEDIATYPE_Text);
+        DWORD offCb = 0, offDw = 0;
+        char offLang[8] = "";
+        if (isSub && !offeredText && pmt->pbFormat && pmt->cbFormat >= sizeof(SUBTITLEINFO)) {
+            const SUBTITLEINFO* psi = (const SUBTITLEINFO*)pmt->pbFormat;
+            offCb = pmt->cbFormat;
+            offDw = psi->dwOffset;
+            strncpy_s(offLang, psi->IsoLang, _TRUNCATE);
+        }
         DeleteMediaType(pmt);
         if (!isSub) continue;
         const int rel = found;                  // this pin's subtitle-relative index
         ++found;
         if (rel != targetRel) continue;
+        {
+            const char* subName =
+                offeredText                                        ? "(Text/NULL)" :
+                (offeredSub == MEDIASUBTYPE_UTF8)                  ? "UTF8" :
+                (offeredSub == MEDIASUBTYPE_SSA)                   ? "SSA" :
+                (offeredSub == MEDIASUBTYPE_ASS)                   ? "ASS" :
+                (offeredSub == MEDIASUBTYPE_ASS2)                  ? "ASS2" :
+                (offeredSub == MEDIASUBTYPE_WEBVTT)                ? "WEBVTT" :
+                (offeredSub == MEDIASUBTYPE_VOBSUB)                ? "VOBSUB" :
+                (offeredSub == MEDIASUBTYPE_DVB_SUBTITLES)         ? "DVB" :
+                (offeredSub == MEDIASUBTYPE_HDMVSUB)               ? "PGS" : "other";
+            char guidStr[64] = "";
+            if (!strcmp(subName, "other")) {
+                OLECHAR w[64];
+                if (StringFromGUID2(offeredSub, w, 64) > 0) {
+                    CStringA a(w);
+                    strncpy_s(guidStr, (const char*)a, _TRUNCATE);
+                }
+            }
+            Log("[SUBS] pin %d offered: %s%s%s cbFormat=%lu dwOffset=%lu lang=%s",
+                rel, subName, guidStr[0] ? " " : "", guidStr, offCb, offDw,
+                offLang[0] ? offLang : "-");
+        }
 
         // Which pin this is, by name: LAV names them after the stream ("Subtext (ger)"),
         // so this line is the cross-check that the splitter's stream order and its pin
@@ -4270,7 +5167,12 @@ void MpcPlayer::ApplySubtitleProvider()
         prov = CComQIPtr<ISubPicProvider>(subs_[0].stream);
     }
     subAP_->SetSubPicProvider(prov);
-    Log("[SUBS] subpic provider %s", prov ? "attached" : "cleared");
+    // Log the three gate inputs, not just the outcome: "cleared" alone cannot say
+    // WHICH of subsOn_/curSub_/subs_ vetoed the attach, and on 2026-10-26 that
+    // ambiguity cost a wrong diagnosis (it was curSub_, wiped by the re-open's
+    // teardown, while the splice itself had succeeded).
+    Log("[SUBS] subpic provider %s (subsOn=%d curSub=%d subs=%d)",
+        prov ? "attached" : "cleared", subsOn_ ? 1 : 0, curSub_, (int)subs_.size());
 }
 
 // Rebuild the cached audio fragment the UI polls. Called on graph-safe threads only

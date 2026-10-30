@@ -321,6 +321,47 @@ public:
         float toneLutPivotScale = 1.0f;
     };
 
+    // Geometry is applied by the engine's destination-rect calculation, not by a
+    // renderer Settings_t field: the renderer still reports the source AR, while
+    // ResizeVideo() fits/overrides/zooms/pans the picture inside the host window.
+    struct GeometrySettings {
+        int    mode = 0;        // 0=Source, 1=Fixed aspect, 2=Fill window
+        double aspect = 1.78;   // used by Fixed
+        double zoom = 1.0;      // 1.0 = fit; >1 crops
+        double panX = 0.0;      // -1..1 across overflow
+        double panY = 0.0;      // -1..1 across overflow
+    };
+
+    // Our NLS model: warp only the active picture to use the screen. Axis 0 picks
+    // from the content/window aspect, 1 forces horizontal, 2 forces vertical.
+    struct NlsSettings {
+        bool  enabled = false;
+        int   axis = 0;             // 0 auto, 1 horizontal, 2 vertical
+        float strength = 1.0f;      // 0..1
+        float center = 0.35f;       // protected centre fraction
+        float curve = 2.0f;         // 1..2.9
+        float maxStretch = 1.4f;    // cap
+        // How much VERTICAL stretch filling may cost before it is refused.
+        // 1.05 = fill only if the picture is at most 5 % wider than the window;
+        // above that it is shown letterboxed at its own aspect (a 2.39 film on a
+        // 16:9 screen needs 36 %, which reads as elongated heads).
+        float fillLimit = 1.05f;
+        // Keep the band found at the start of a title for the whole title. Bars
+        // are a property of the title, but some titles switch aspect mid-film
+        // (IMAX sequences); with this On the picture keeps ONE shape instead of
+        // jumping as the detector re-latches.
+        bool  lockBand = false;
+        // What to do when the picture must be fitted to the window:
+        //   0 Auto    - warp if the correction is inside Fill limit, else CROP
+        //   1 Stretch - warp inside the limit, otherwise letterbox
+        //   2 Crop    - always crop (uniform scale, zero distortion)
+        //   3 Off     - never fill (letterbox, same as disabling NLS geometry)
+        // Crop is uniform scaling, so it never distorts a face; it spends picture
+        // instead. The warp keeps everything but squeezes/stretches the outer band,
+        // which becomes visible on people somewhere around 25-35 %.
+        int   fillMode = 0;
+    };
+
     struct OutSettings {
         bool useD3D11 = true;
         int  texFormat = 0;                // 0/8/10/16
@@ -385,6 +426,20 @@ public:
     HRESULT Stop();
     HRESULT Seek(LONGLONG position);
     HRESULT ResizeVideo();
+    // The shell's picture canvas inside its client (chrome takes the rest). The
+    // picture is placed by DESTINATION rect within the unchanged renderer window:
+    // resizing that window during a live capture resizes a swap chain and blocks
+    // for tens of seconds. w/h <= 0 clears the inset (full client again).
+    HRESULT SetVideoRect(int x, int y, int w, int h);
+
+    // Navigation beyond raw seek (file mode; DeckLink capture has none).
+    // Chapters come from the splitter's IAMExtendedSeeking (LAVSplitter
+    // implements it); frame stepping is pause + one-frame-duration seek, which
+    // is frame-exact on LAV's seeking and symmetric in both directions.
+    HRESULT StepFrame(int dir);        // +1 / -1 frame
+    HRESULT SeekChapter(int dir);      // +1 / -1 chapter; S_FALSE when there is none
+    void    CacheChapters();           // call after a file graph builds
+    void    ClearChapters();           // call on every Open / capture start
 
     // Full teardown for app exit (DESIGN.md ordered script): stop the capture
     // feeder at the SDK, disconnect, join the source threads, THEN stop the
@@ -452,6 +507,12 @@ public:
     // Public because the host's poll (s3_stats, UI thread) is what calls it: window
     // operations belong to the thread that owns the window. See the definition.
     void ApplyPendingWindowDetach();
+    // Cash in an NLS re-injection requested by the live thread when the
+    // renderer's detected black-band bounds change. Public for the same reason
+    // as the detach above: s3_stats runs on the UI thread, and the post-scale
+    // shader list is a renderer mutation that must not come off the refresh
+    // worker. See the definition.
+    void ApplyPendingNlsRefresh();
     // The user's settings INTENT, independent of whether a graph exists. A push
     // that arrives before the renderer does is remembered here and applied when
     // the graph is built, instead of being dropped (old behaviour: dropped, but the
@@ -462,8 +523,72 @@ public:
     HdrSettings pendingHdr_{};
     MlSettings  pendingMl_{};
     OutSettings pendingOut_{};
+    GeometrySettings pendingGeom_{};
+    NlsSettings pendingNls_{};
     PostFxState pendingPostFx_{};
-    bool hasHdr_ = false, hasMl_ = false, hasOut_ = false, hasPostFx_ = false;
+    bool hasHdr_ = false, hasMl_ = false, hasOut_ = false, hasGeom_ = false,
+         hasNls_ = false, hasPostFx_ = false;
+    GeometrySettings geometry_{};
+    NlsSettings nls_{};
+    std::mutex m_geomMtx;
+    std::string m_lastNlsSrc;
+    // Detected-bar watch. The renderer reports the band through GetMLStats, and a
+    // one-shot read at injection time catches whatever the detector held at that
+    // instant. RefreshLive samples the PER-FRAME band, gates it (a real letterbox
+    // is symmetric and cannot exceed half the frame) and confirms it for two
+    // consecutive ticks; the UI-thread poll cashes in a re-injection when the
+    // confirmed band moves.
+    //
+    // The 90-frame UNION is deliberately not used here: it is a running min/max,
+    // so a dark scene whose top rows fall under the detector's threshold grows
+    // the band until the window rolls over (seen live: 688/598 of 1436 on a night
+    // scene, i.e. a 17:1 "active picture"). That is fine for "is this title
+    // letterboxed" and unusable for a per-frame geometry decision.
+    std::atomic<bool> m_nlsRefreshPending{false};
+    std::atomic<bool>  m_nlsBandValid{false};
+    // True once a band decision has been made for this title (whether it found
+    // bars or not). Until then geometry stays Source: a launch that begins on a
+    // black card must not be stretched to fill on a guess.
+    std::atomic<bool>  m_nlsBandKnown{false};
+    std::atomic<float> m_nlsBandTop{0.0f}, m_nlsBandBot{0.0f};
+    // True when ResizeVideo has already cropped the band through the destination
+    // rect, so the shader must NOT crop again (it would double-crop) and only
+    // applies the residual warp. Set by ResizeVideo, read by ApplyPostFx.
+    std::atomic<bool>  m_nlsGeomCrop{false};
+    // How much vertical stretch the CURRENT title would need to fill, in per
+    // cent (0 when it does not need any). Read by the status JSON so the INFO
+    // panel can show "needs 136 % / limit 105 %" — the number a user needs to set
+    // Fill limit knowingly instead of by trial and error.
+    std::atomic<int>   m_nlsNeedPct{0};
+    // True when the picture is being fitted to the window at all — cropped by the
+    // destination rect, warped by the shader, or both. Set by ResizeVideo, which
+    // owns the fill decision (it is the same fillLimit test for a title WITH bars
+    // and one whose frame is simply wider than the window, e.g. 2.20:1 on 16:9).
+    std::atomic<bool>  m_nlsFillOk{false};
+    // True when the fill is being done by CROPPING (uniform scale, no warp), so
+    // ApplyPostFx must not inject the warp on top of it.
+    std::atomic<bool>  m_nlsCropFill{false};
+    // The warp factor the geometry actually left for the shader. A correction is
+    // SPLIT across the two axes (sqrt each) instead of dumping all of it on one:
+    // 27 % sideways is visibly ugly, 13 % sideways + 13 % cropped is not.
+    std::atomic<float> m_nlsWarpRatio{1.0f};
+    // Picture canvas inside the host window (see SetVideoRect). Written on the UI
+    // thread, read by ResizeVideo on the same thread; the atomics are only so the
+    // status tick can report it without a lock.
+    LONG videoRect_[4] = { 0, 0, 0, 0 };
+    std::atomic<bool> videoRectSet_{false};
+    // Pending "the picture rect changed" flag, applied by the graph's own thread.
+    // The shell must never call into the renderer itself: during a live capture that
+    // blocks on the lock the capture thread holds.
+    std::atomic<bool> m_videoRectPending{false};
+    // The thread that owns the graph/renderer (the live thread). ResizeVideo refuses
+    // to run anywhere else and defers instead - see its comment.
+    std::thread::id m_graphThreadId{};
+    // The split actually applied: warp % and crop % (both 0..100). Shown in the
+    // live panel so "Fill limit" stops being something the user has to infer.
+    std::atomic<int>   m_nlsWarpPct{0};
+    std::atomic<int>   m_nlsCropPct{0};
+    unsigned long long m_nlsLastInject = 0;
     void ApplyPendingSettings();
 
     // Cached audio status for the UI: a `,"audio":{"mode":N,"tracks":[…]}` JSON
@@ -692,6 +817,7 @@ private:
     };
     std::vector<SubEntry> subs_;
     int curSub_ = -1;                    // index into subs_, -1 = off
+    int pendingSubTrack_ = -1;           // applied at connect, like pendingAudioTrack_
     bool subsOn_ = true;
     void ApplySubtitleProvider();        // (re)hands the current provider to subAP_
     // One splice at a time, moved to the selected stream: the sink has a single input, so
@@ -721,6 +847,10 @@ private:
     std::wstring decklinkDevice_;
     DecklinkSettings decklinkSettings_;
     VideoStreamInfo videoStreamInfo_;        // captured at graph connect (DEMUXER → REC)
+
+    struct ChapterMark { double secs = 0.0; std::wstring name; };
+    std::vector<ChapterMark> chapters_;      // written only at graph build/teardown
+    mutable std::mutex chaptersMtx_;         // read by the status JSON thread
     CComPtr<IDeckLinkSourceControl> decklinkControl_;  // current direct filter (retired on rebuild)
     std::wstring decklinkUrl_;               // source the decklink graph was opened with
     std::wstring pendingDecklinkUrl_;        // latest monitor-advised URL (shell → restart)
