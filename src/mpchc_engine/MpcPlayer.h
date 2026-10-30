@@ -346,6 +346,13 @@ public:
         float center = 0.35f;       // protected centre fraction, 0..0.90
         float curve = 2.0f;         // 1..2.9
         float maxStretch = 1.4f;    // per-axis distortion cap (both directions)
+        // HOW MUCH OF THE LETTERBOX TO TAKE. 0 = show the picture at its own
+        // aspect (bars untouched), 1 = fill the screen (the bars are removed by
+        // the geometry). In between the picture grows into the bars by that
+        // fraction and the correction it needs scales with it - half the bars is
+        // half the distortion. Whatever is left can be zoomed away, which spends
+        // side picture instead.
+        float barFill = 1.0f;       // 0..1
         // How much VERTICAL stretch filling may cost before it is refused.
         // 1.05 = fill only if the picture is at most 5 % wider than the window;
         // above that it is shown letterboxed at its own aspect (a 2.39 film on a

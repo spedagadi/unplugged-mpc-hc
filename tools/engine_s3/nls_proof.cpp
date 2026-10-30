@@ -97,6 +97,13 @@ static const Cfg kCfgs[] = {
     { "rim-protect",    "geo.nlsFillMode=1;geo.nlsAxis=1;geo.nlsMax=1.4;geo.nlsCenter=0.9;"
                         "geo.nlsCurve=2.9",
       "nls_proof_10_rim.bmp" },
+    // Partial bar fill: the picture grows into half the letterbox, so the
+    // correction must be about half of the full fill's and a bar must remain.
+    { "bars50",         "geo.nlsFillMode=1;geo.nlsAxis=1;geo.nlsMax=1.4;geo.nlsCenter=0.45;"
+                        "geo.nlsCurve=1.2;geo.nlsBars=0.5",
+      "nls_proof_11_bars50.bmp" },
+    { "bars0",          "geo.nlsBars=0",
+      "nls_proof_12_bars0.bmp" },
 };
 
 static std::string g_outDir;

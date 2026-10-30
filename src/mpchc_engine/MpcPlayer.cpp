@@ -1073,12 +1073,60 @@ static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
     if (cy) *cy = gy;
 }
 
+// How much of the letterbox the fill takes. `barFill` 0..1 is the fraction of
+    // the bars the picture grows into; the returned value is the fraction of the
+    // window height the ACTIVE picture occupies (hA with no fill, 1 fully filled).
+    static double NlsBarHeight(double hA, double barFill)
+{
+    if (!(hA > 0.5 && hA < 0.9995)) return 1.0;   // no bars to take
+    const double t = std::clamp(barFill, 0.0, 1.0);
+    return hA + t * (1.0 - hA);
+}
+
+// The UN-CROPPED geometry for a given bar fill, plus the correction it needs.
+//
+//   t = 0  the frame is fitted (bars untouched, no distortion)
+//   t = 1  it is drawn to the window with the encoded bars cropped away, so the
+//          active picture fills the screen (the pre-bar-fill behaviour)
+//   in between: the picture grows into the bars - half the bars, half the
+//          correction - which is the operator's "how many bars do I remove" dial.
+//
+// `aniso` (x-scale / y-scale of that geometry) is what the split then corrects,
+// so it is derived from the rect actually drawn rather than assumed: in a window
+// whose aspect differs from the frame this is what keeps t = 0 an honest fit.
+struct NlsGeom {
+    double Ht = 1.0;         // fraction of the window height the picture occupies
+    double destW0 = 0.0;     // un-cropped destination, frame pixels
+    double destH0 = 0.0;
+    double aniso = 1.0;      // correction the split must apply
+};
+
+static NlsGeom NlsPartialFill(double clientW, double clientH, double frameAR,
+                              double hA, double barFill)
+{
+    NlsGeom g;
+    const double t = std::clamp(barFill, 0.0, 1.0);
+    g.Ht = NlsBarHeight(hA, t);
+    const double clientAR = clientW / std::max(clientH, 1.0);
+    // The frame's fit rect (uniform scale inside the window).
+    double fitW = clientW, fitH = clientH;
+    if (clientAR > frameAR)      fitW = clientH * frameAR;
+    else if (clientAR < frameAR) fitH = clientW / std::max(frameAR, 0.01);
+    // Grow from the fit rect toward the fully-filled one.
+    const double fitActiveH = hA * fitH;             // picture height at fit
+    g.destW0 = fitW + t * (clientW - fitW);
+    g.destH0 = (fitActiveH + t * (clientH - fitActiveH)) / (hA > 0.01 ? hA : 1.0);
+    g.aniso = (g.destW0 / std::max(g.destH0, 1.0)) / std::max(frameAR, 0.01);
+    if (!(g.aniso > 0.0)) g.aniso = 1.0;
+    return g;
+}
+
 // What the fill is doing this frame: 0 none (letterbox), 1 warp, 2 crop.
 // Same reason as NlsSplitFactors: the geometry and the shader can run on
 // different threads with the geometry deferred, so a "crop to fill" flag read
 // from the published state arrived one push late and the Crop leg got the warp
 // injected on top of its crop (seen in nls_proof, 2026-10-30).
-static int NlsFillAction(double clientAR, double activeAR, bool bandValid,
+static int NlsFillAction(double ratioAR, bool bandValid,
                          int fillMode, double fillLimit,
                          int axis, double split, double cap)
 {
@@ -1086,7 +1134,7 @@ static int NlsFillAction(double clientAR, double activeAR, bool bandValid,
     if (mode == 3) return 0;                       // Off
     if (mode == 2) return 2;                       // Crop: always, no warp
     if (mode == 1) return 1;                       // Stretch: warp regardless
-    const double ratioAR = (activeAR > 0.001) ? clientAR / activeAR : 1.0;
+    if (!(ratioAR > 0.0)) ratioAR = 1.0;
     const double limit = std::clamp(fillLimit, 1.0, 2.0);
     const bool withinLimit = (ratioAR >= 1.0) || (1.0 / ratioAR <= limit);
     // A CAP BELOW THE CORRECTION IS AN EXPLICIT BUDGET.
@@ -1173,6 +1221,7 @@ HRESULT MpcPlayer::ResizeVideo()
         bool geomCrop = false;
         double warpX = 1.0, warpY = 1.0;   // per-axis factors the shader is asked to correct
         double cropX = 1.0, cropY = 1.0;   // per-axis geometry zoom that covers the remainder
+        NlsGeom ng;                        // geometry for the chosen bar fill
         const double clientAR = (double)clientW / (double)clientH;
         double fillScaleW = 0.0, fillScaleH = 0.0;   // cover rect, used by crop
         if (nl.enabled && m_nlsBandKnown.load()) {
@@ -1184,9 +1233,12 @@ HRESULT MpcPlayer::ResizeVideo()
             // picture". At start-up, on a black frame, a player menu or a fade, the
             // detector reports 0/0 exactly as confidently as it reports a real band.
             const bool bandValid = m_nlsBandValid.load();
-            const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
             const double fillLimit = std::clamp((double)nl.fillLimit, 1.0, 2.0);
-            const double ratioAR = clientAR / activeAR;
+            // How much of the letterbox this title may keep, and the correction
+            // that geometry needs (see NlsPartialFill).
+            ng = NlsPartialFill((double)clientW, (double)clientH, frameAR, hA,
+                                (double)nl.barFill);
+            const double ratioAR = ng.aniso;
             // The correction is split across both axes - see NlsSplitFactors.
             const double cap = std::clamp((double)nl.maxStretch, 1.0, 2.0);
             NlsSplitFactors(ratioAR, std::clamp(nl.axis, 0, 3), (double)nl.split, cap,
@@ -1199,9 +1251,10 @@ HRESULT MpcPlayer::ResizeVideo()
             // 0.991), and which way it went depended only on whether the detector
             // latched a real band before or after the opening black frames - the
             // "NLS is hit and miss at start-up" report.
-            nlsAction = NlsFillAction(clientAR, activeAR, bandValid, mode, fillLimit,
+            nlsAction = NlsFillAction(ratioAR, bandValid, mode, fillLimit,
                                       std::clamp(nl.axis, 0, 3), (double)nl.split, cap);
             if (nlsAction != 1 && nlsAction != 2) {
+                const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
                 static double s_loggedAR = 0.0;
                 if (fabs(s_loggedAR - activeAR) > 0.01) {
                     s_loggedAR = activeAR;
@@ -1227,7 +1280,8 @@ HRESULT MpcPlayer::ResizeVideo()
                 fillScaleW = scale;
                 fillScaleH = scale / frameAR;
                 Log("[NLS] crop to fill: picture AR %.3f on %.3f window -> %dx%d (no warp)",
-                    activeAR, clientAR, (int)lround(fillScaleW), (int)lround(fillScaleH));
+                    frameAR / (hA > 0.01 ? hA : 1.0), clientAR,
+                    (int)lround(fillScaleW), (int)lround(fillScaleH));
             }
         }
         if (nlsAction) g.mode = 2;
@@ -1256,11 +1310,12 @@ HRESULT MpcPlayer::ResizeVideo()
             m_nlsWarpRatioY.store((float)warpY);
             m_nlsWarpPct.store((int)lround(std::max(fabs(warpX - 1.0), fabs(warpY - 1.0)) * 100.0));
             m_nlsCropPct.store((int)lround((std::max(cropX, cropY) - 1.0) * 100.0));
-            const double hA2 = m_nlsBandValid.load()
-                ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
-            destW = (int)lround((double)clientW * cropX);
-            destH = geomCrop ? (int)lround((double)clientH / hA2 * cropY)
-                             : (int)lround((double)clientH * cropY);
+            // The un-cropped rect comes from the bar fill (NlsPartialFill): at
+            // 0 it IS the fit rect, at 100 the fully-filled one. The geometry
+            // zoom then covers whatever the warp cap refused, on the axis that
+            // has slack only (see `residue` in NlsSplitFactors).
+            destW = (int)lround(ng.destW0 * cropX);
+            destH = (int)lround(ng.destH0 * cropY);
         }
         m_nlsGeomCrop.store(geomCrop);
         const double zoom = std::clamp(g.zoom, 0.5, 2.0);
@@ -3406,7 +3461,14 @@ void MpcPlayer::ApplyPostFx()
             const bool geomCrop = m_nlsGeomCrop.load();
             // The geometry may already have absorbed part of the correction (the split in
             // ResizeVideo); the shader takes exactly what is left over.
-            const double ratioAR = winAR / activeAR;
+            // How much of the letterbox this title keeps, and the correction that
+            // geometry needs. Same helper the renderer's resize uses, so the two
+            // halves agree even while the geometry is deferred.
+            const NlsGeom ng = NlsPartialFill((double)W, (double)H, fullAR,
+                                              haveBand ? hA : 1.0,
+                                              (double)pendingNls_.barFill);
+            const double Ht = ng.Ht;
+            const double ratioAR = ng.aniso;
             // Derived from the SETTINGS, not from what the geometry last published:
             // a settings push can run off the graph thread, where ResizeVideo defers,
             // and reading the published factors then baked the previous change into
@@ -3422,7 +3484,7 @@ void MpcPlayer::ApplyPostFx()
             // Same for the fill decision: NlsFillAction is the one definition, so a
             // Crop leg cannot get the warp injected on top of its crop just because
             // the geometry had not run yet when this push arrived.
-            const int fillAction = NlsFillAction(winAR, activeAR, haveBand,
+            const int fillAction = NlsFillAction(ratioAR, haveBand,
                                                  pendingNls_.fillMode, pendingNls_.fillLimit,
                                                  axis, (double)pendingNls_.split, maxStretch);
             // What filling WOULD cost on this title, in per cent. Published for the
@@ -3441,20 +3503,25 @@ void MpcPlayer::ApplyPostFx()
             // invisible as a 1.02 stretch.
             if ((fabs(rx - 1.0) > 0.02 || fabs(ry - 1.0) > 0.02) && fillAction == 1) {
                 nls::Params np;
+                // The map is evaluated inside the PICTURE rect, not the whole
+                // window: with a partial bar fill the picture does not reach the
+                // top/bottom edges, and the bars must stay black and unwarped.
+                const double barFrac = (1.0 - Ht) * 0.5;
                 np.activeL = 0.0f;
                 np.activeR = 1.0f;
-                np.activeT = 0.0f;
-                np.activeB = 1.0f;
+                np.activeT = (float)barFrac;
+                np.activeB = (float)(1.0 - barFrac);
                 np.ratioX = (float)rx;
                 np.ratioY = (float)ry;
                 np.strength = pendingNls_.strength;
                 np.center = pendingNls_.center;
                 np.curve = pendingNls_.curve;
                 nlsSrc = nls::Source(np);
-                Log("[NLS] %s bars=%d/%d of %d geomCrop=%d frameAR=%.3f activeAR=%.3f "
-                    "winAR=%.3f ratio=%.3f/%.3f centre=%.2f curve=%.2f strength=%.2f",
+                Log("[NLS] %s bars=%d/%d of %d geomCrop=%d fill=%.2f picH=%.3f frameAR=%.3f "
+                    "activeAR=%.3f winAR=%.3f ratio=%.3f/%.3f centre=%.2f curve=%.2f strength=%.2f",
                     axis == 2 ? "vertical" : (axis == 3 ? "split" : "horizontal"),
                     top, bot, H, geomCrop ? 1 : 0,
+                    (double)pendingNls_.barFill, Ht,
                     fullAR, activeAR, winAR, rx, ry,
                     (double)np.center, (double)np.curve, (double)np.strength);
             } else {
@@ -4557,6 +4624,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             if (name == "nls")            { nls.enabled = vb(v); nAny = true; }
             else if (name == "nlsAxis")   { nls.axis = std::clamp((int)vd(v), 0, 3); nAny = true; }
             else if (name == "nlsSplit")  { nls.split = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
+            else if (name == "nlsBars")   { nls.barFill = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsStrength") { nls.strength = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.90f); nAny = true; }
             else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }

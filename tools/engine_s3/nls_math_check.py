@@ -60,6 +60,14 @@ def old_horizontal(k, stretch, cap):
     return wr, cs
 
 
+# Mirrors NlsBarHeight(): the fraction of the window height the active picture
+# occupies when `barFill` of the letterbox is taken.
+def bar_height(hA, t):
+    if not (0.5 < hA < 0.9995):
+        return 1.0
+    return hA + max(0.0, min(1.0, t)) * (1.0 - hA)
+
+
 # Mirrors NlsFillAction(): 0 none, 1 warp, 2 crop.
 def fill_action(clientAR, activeAR, bandValid, mode, fillLimit, axis, split, cap):
     if mode == 3:
@@ -151,6 +159,22 @@ def test_engine():
     check("stretch always fills", fill_action(s16, scope, True, 1, 1.05, 1, 1.0, 1.4) == 1)
     check("crop mode is crop", fill_action(s16, scope, True, 2, 1.05, 1, 1.0, 1.4) == 2)
     check("off never fills", fill_action(s16, scope, True, 3, 1.05, 1, 1.0, 1.4) == 0)
+
+    # --- partial bar fill: the correction scales with what the fill takes ------
+    hA = s16 / scope                      # 2.39 inside a 16:9 frame
+    check("bar height: 0 % leaves the frame alone", abs(bar_height(hA, 0.0) - hA) < 1e-12)
+    check("bar height: 100 % fills", abs(bar_height(hA, 1.0) - 1.0) < 1e-12)
+    hs = [bar_height(hA, t / 20.0) for t in range(21)]
+    check("bar height is monotone in the dial", all(b >= a for a, b in zip(hs, hs[1:])))
+    k = s16 / scope
+    # half the bars costs half the correction (in log terms, i.e. sqrt-ish)
+    d0 = abs(1.0 - k / bar_height(hA, 1.0))
+    d5 = abs(1.0 - k / bar_height(hA, 0.5))
+    d1 = abs(1.0 - k / bar_height(hA, 0.0))
+    check("half the bars is a smaller correction than full", d1 <= d5 <= d0,
+          f"0%={d1:.3f} 50%={d5:.3f} 100%={d0:.3f}")
+    check("no bars taken needs no correction", abs(k / bar_height(hA, 0.0) - 1.0) < 1e-9,
+          f"ratio={k / bar_height(hA, 0.0):.4f}")
 
 
 # ---------------------------------------------------------------- shader model

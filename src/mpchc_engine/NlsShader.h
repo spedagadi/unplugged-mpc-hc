@@ -133,6 +133,19 @@ float map_radius(float r, float ratio0)
            h01 + h11 * span * edgeSlope;
 }
 
+// Maps one axis of the picture. The radius is measured INSIDE the active rect,
+// so a partial bar fill leaves the top/bottom bars black and untouched instead
+// of dragging picture into them; outside the rect the coordinate passes through.
+// With the full rect (0..1) this is exactly the old whole-window mapping.
+float map_axis(float u, float lo, float hi, float ratio)
+{
+    float span = max(hi - lo, 0.0001);
+    if (u < lo || u > hi) return u;
+    float c = ((u - lo) / span) * 2.0 - 1.0;
+    float m = map_radius(abs(c), ratio);
+    return lerp(lo, hi, (c < 0.0 ? -m : m) * 0.5 + 0.5);
+}
+
 float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
 {
     // BOTH axes are mapped, each by its own factor with its own protected
@@ -140,18 +153,8 @@ float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
     // An axis whose factor is 1 is an exact identity (map_radius early-outs),
     // which is what makes the single-axis modes bit-for-bit what they were.
     float2 src = coord;
-    {
-        float c = coord.x * 2.0 - 1.0;
-        float m = map_radius(abs(c), RATIO_X);
-        src.x = (c < 0.0 ? -m : m) * 0.5 + 0.5;
-        src.x = lerp(ACTIVE_L, ACTIVE_R, src.x);
-    }
-    {
-        float c = coord.y * 2.0 - 1.0;
-        float m = map_radius(abs(c), RATIO_Y);
-        src.y = (c < 0.0 ? -m : m) * 0.5 + 0.5;
-        src.y = lerp(ACTIVE_T, ACTIVE_B, src.y);
-    }
+    src.x = map_axis(coord.x, ACTIVE_L, ACTIVE_R, RATIO_X);
+    src.y = map_axis(coord.y, ACTIVE_T, ACTIVE_B, RATIO_Y);
     return sampleBilinear(src);
 }
 )SHADER";
