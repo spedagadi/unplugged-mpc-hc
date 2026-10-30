@@ -35,6 +35,23 @@ namespace DSObjects
 	extern volatile long long g_subRender11Dropped;
 	extern volatile long long g_subRender11Drew;
 
+	// Queue-leg witness, sampled from ISubPicQueue::GetStats every 50 callbacks:
+	// what the queue actually caches (depth), around which time (rtStart..rtStop),
+	// and what the last AlphaBltSubPic returned. With the provider proven to hold
+	// an ACTIVE event at the playhead and drew still 0, these four numbers are what
+	// separates "worker caches nothing" / "clock mismatch" / "blit fails" (2026-10-26).
+	extern volatile long long g_subQueueDepth;
+	extern volatile REFERENCE_TIME g_subQueueRtNow;
+	extern volatile REFERENCE_TIME g_subQueueRtStart;
+	extern volatile REFERENCE_TIME g_subQueueRtStop;
+	extern volatile long long g_subLastDrawHr;
+	// AlphaBltSubPic has three failure branches — LookupSubPic miss, GetSourceAndDest
+	// fail, AlphaBlt fail — and the queue stats alone cannot say which one fires.
+	// These replay the first two steps (mirroring the real call's bAdviseBlocking)
+	// on the same 50th-callback sample.
+	extern volatile long long g_subLookupHit;
+	extern volatile long long g_subGeoHr;
+
 	class CMPCVRAllocatorPresenter
 		: public CSubPicAllocatorPresenterImpl
 		, ISubRenderCallback4

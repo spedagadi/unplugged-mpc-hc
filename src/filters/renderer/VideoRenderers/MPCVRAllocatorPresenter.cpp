@@ -186,6 +186,38 @@ HRESULT CMPCVRAllocatorPresenter::RenderEx3(REFERENCE_TIME rtStart,
 	if (SUCCEEDED(hrDraw)) {
 		++DSObjects::g_subRender11Drew;
 	}
+	DSObjects::g_subLastDrawHr = (long long)hrDraw;
+	// Queue-leg sample, every 50th callback (~2 s of video): what does the queue
+	// hold, around which time? depth=0 with an ACTIVE provider event means the
+	// worker caches nothing; a [rtStart..rtStop] window far from rtNow means a
+	// clock/time-base mismatch; a window covering rtNow with the draw still
+	// failing means the blit itself. One line, three hypotheses separated.
+	if ((DSObjects::g_subRender11Calls % 50) == 0) {
+		int n = 0;
+		REFERENCE_TIME rn = 0, rs = 0, re = 0;
+		if (SUCCEEDED(m_pSubPicQueue->GetStats(n, rn, rs, re))) {
+			DSObjects::g_subQueueDepth    = n;
+			DSObjects::g_subQueueRtNow    = rn;
+			DSObjects::g_subQueueRtStart  = rs;
+			DSObjects::g_subQueueRtStop   = re;
+		}
+		// Replay the first two branches of AlphaBltSubPic exactly as it runs them
+		// (same m_rtNow, same bAdviseBlocking, same rects): hit=0 -> the queue
+		// refuses the time despite its own cached window (worker/clock fault);
+		// hit=1 + geoHr failing -> geometry; hit=1 + geoHr=0 + lastHr=E_FAIL ->
+		// the AlphaBlt itself (target/device on the DX11 path).
+		CComPtr<ISubPic> probe;
+		const bool hit = m_pSubPicQueue->LookupSubPic(m_rtNow, !IsRendering(), probe);
+		DSObjects::g_subLookupHit = hit ? 1 : 0;
+		DSObjects::g_subGeoHr = 0x4005;   // E_FAIL sentinel: not reached
+		if (hit) {
+			const CRenderersSettings& r = GetRenderersSettings();
+			CRect rcSource, rcDest;
+			DSObjects::g_subGeoHr = (long long)probe->GetSourceAndDest(
+				CRect(viewportRect), CRect(croppedVideoRect), &rcSource, &rcDest,
+				videoStretchFactor, xOffsetInPixels, r.subPicVerticalShift);
+		}
+	}
 	return hrDraw;
 }
 
@@ -249,6 +281,13 @@ namespace DSObjects {
 	volatile REFERENCE_TIME g_subRender11LastRt = 0;
 	volatile long long g_subRender11Dropped = 0;
 	volatile long long g_subRender11Drew    = 0;
+	volatile long long g_subQueueDepth      = 0;
+	volatile REFERENCE_TIME g_subQueueRtNow = 0;
+	volatile REFERENCE_TIME g_subQueueRtStart = 0;
+	volatile REFERENCE_TIME g_subQueueRtStop = 0;
+	volatile long long g_subLastDrawHr      = 0;
+	volatile long long g_subLookupHit       = 0;
+	volatile long long g_subGeoHr           = 0;
 }
 
 HRESULT CMPCVRAllocatorPresenter::Render11(
