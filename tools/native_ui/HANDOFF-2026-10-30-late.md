@@ -252,7 +252,37 @@ existing Max-distortion crop.
 
 ---
 
-## 9. Build / staging (unchanged from the evening handoff)
+## 9. "Bars removed" - the amount dial the end user was describing
+
+Their message: "how much of the black bars you can get rid of, certainly not all
+of it without major image artifacts ... sweet spot ... then zoom it away". That
+is an AMOUNT, and the build was binary: the fill took every bar or none.
+
+- **New row: NON-LINEAR STRETCH -> Bars removed, 0-100 %, default 100** (the
+  previous behaviour). 0 = picture fitted at its own aspect; 50 = it grows into
+  half the letterbox and costs about half the correction; 100 = full fill.
+- `NlsPartialFill()` is the ONE definition (resize + shader push): returns the
+  un-cropped rect (fit rect at 0 -> fully-filled rect at 100) and the
+  anisotropy that rect implies, so split, cap and shader all follow the geometry
+  actually drawn instead of an assumed k. It also fixed a latent case: at t = 0
+  in a window whose aspect differs from the frame, the old formula stretched the
+  width instead of fitting it.
+- The shader maps inside the ACTIVE rect (fields were already plumbed, hard-set
+  to 0..1), so the remaining bars stay black and unwarped. A full rect is
+  bit-identical to the old `main()`.
+
+For a 2.39 title on a 16:9 screen the dial reads: 0 % -> 12.8 % bars each side,
+0 % distortion; 50 % -> 6.4 % bars, 14.7 %; 100 % -> no bars, 25.6 %.
+
+Verified (`nls_proof`, 2.2:1 title, window 1.944 so the mismatch is visible):
+`bars0` dest 571x321 fitted, ratio 1.000, no pass, need 0; `bars50` dest
+597x379, ratio 0.889 (11 % vs the full fill's 20 %), half the bars left; `bars100`
+unchanged. `nls_math_check.py` asserts the endpoints, monotonicity and that every
+existing setting is untouched.
+
+---
+
+## 10. Build / staging (unchanged from the evening handoff)
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.7\resources\app\git\cmd;" + $env:PATH
