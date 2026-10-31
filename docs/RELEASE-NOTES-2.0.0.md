@@ -3,27 +3,25 @@
 Unplugged is now one native Windows application, and this release adds the dial
 for fitting a scope film to a 16:9 screen: non-linear stretch that works on
 **both axes**, so the correction can be shared instead of spent all in one
-direction. Also new: presets that save themselves, an update check, and Dolby
-Vision correctly recognised over HDMI.
+direction. This release also brings presets that save themselves, a daily
+update check, and Dolby Vision over HDMI reported for what it is.
 
 ## What's new
 
 ### A native app
 
 - The player and the settings panel are one native Windows program. There is no
-  Python runtime bundled or loaded, the download is about a third smaller than
-  1.3.0 (127 MB vs 186 MB), and the app starts without the Python startup delay.
-- The settings rail keeps every section from 1.3.x — Playback, Source, HDR,
-  Zion, Output, System — and changes reach the picture as you make them, on a
-  paused frame too.
+  Python runtime bundled or loaded, the download is 127 MB, and the app starts
+  without the Python startup delay.
+- The settings rail keeps every settings section — Playback, Source, HDR, Zion,
+  Output, System — and changes reach the picture as you make them, on a paused
+  frame too.
 - **Auto-hide, including the rails.** During playback the top strip, the
   transport bar and both settings rails hide. Move the pointer to the bottom
   edge (or press **↑ / F1 / Esc**) to bring them back; while the pointer is on
   the settings panel it stays up, so you can tune without losing it.
-- **Fixed: clicking the picture could freeze all mouse and keyboard input.**
-  The picture's window was created on a thread that never processed messages;
-  a click on it made Windows route input through a window that could not
-  answer. It now processes messages, and input survives any click on the video.
+- Clicking the picture never interrupts input: the video window processes
+  messages, so mouse and keyboard keep working after any click on the frame.
 - The transport bar sits at the screen edge instead of floating above it.
 
 ### Non-linear stretch on both axes
@@ -71,9 +69,10 @@ that into dials:
 
 ### Dolby Vision over HDMI, correctly reported
 
-- The first-run HDMI capture dialog and the Info panel now report a Dolby
-  Vision source as **Dolby Vision**. Previously the same signal was shown as
-  SDR in both places, because the card reports it with no HDR flag of its own.
+- The first-run HDMI capture dialog and the Info panel report a Dolby Vision
+  source as **Dolby Vision**. The card marks such a signal with BT.2020 colour
+  and no HDR flag of its own, so the app identifies it by that signature rather
+  than falling back to SDR.
 - The signal's dynamic metadata (MaxCLL / MaxFALL / mastering display) is read
   from the card and from files, and feeds the tone curve.
 
@@ -83,19 +82,26 @@ that into dials:
   the rail section for section: every visible control, its range, its default,
   and what the picture does when you move it.
 
-## Upgrading from 1.3.x
+## Upgrading from 1.2.0
 
-- **Uninstall 1.3.x first** (Windows Settings → Apps → Unplugged). 2.0.0 is a
-  different application; installing over the old one leaves the old Python
-  files behind.
-- **Your settings are kept.** The new app reads the same
-  `%LOCALAPPDATA%\Unplugged\s3_shell.ini`, so your picture settings, presets
-  and display calibration carry over. Give the Display Target numbers a quick
-  look after upgrading.
+- **Uninstall the previous version first** (Windows Settings → Apps →
+  Unplugged). 2.0.0 is a different application; installing over the old one
+  leaves the old program's Python files behind. Your settings live in
+  `%LOCALAPPDATA%\Unplugged` and are kept by the uninstaller.
+- **Your picture is kept, and it carries into a preset.** On first start the
+  app reads your existing settings, copies them into five ready presets
+  (`Preset 1` … `Preset 5`), and makes **Preset 1** active — so the picture
+  looks exactly as it did, and your tuning simply continues in Preset 1.
+  `Default` stays available as the untouched compiled baseline, and you can
+  rename Preset 1 to something meaningful.
+- **Display Target rows carry over untouched.** SDR display nits, static nits,
+  display black, Convert to SDR and Output gamut describe the screen, not the
+  look, so they are global rather than part of a preset.
 - Your library folders are kept (they come from
   `%USERPROFILE%\.unplugged\app_config.json`).
-- The first-time setup runs once: choose Live capture (HDMI) or Media player,
-  pick your input and your media folder.
+- **New installs** start from compiled defaults, get the same five ready
+  presets, and run the first-time setup once: Live capture (HDMI) or Media
+  player, your input and your media folder.
 
 ## Requirements
 
