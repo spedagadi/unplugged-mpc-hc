@@ -83,6 +83,62 @@ never interferes with anything else running on the machine.
 - Your settings are plain text at `%LOCALAPPDATA%\Unplugged\s3_shell.ini`.
   Every row writes itself there on first start, so you can back it up, or
   hand-edit a value a slider can't reach (like `hdr.maxNits` above 1000).
+- The **Preset** chip in the title strip keeps whole setups side by side — see
+  [Presets](#presets) below.
+
+---
+
+## Presets
+
+A preset is a saved snapshot of every **settings row across all tabs** — tone
+curve and trims, the Zion grade, Output scalers, Geometry and non-linear
+stretch, and the Playback audio rows. It is how you keep, say, a **Projector**
+setup and a **Daylight TV** setup side by side instead of re-tuning when the
+room or the display changes.
+
+The active preset's name is shown in the title strip as `Preset  Name  ▾`.
+**Click it** to open the preset card.
+
+| In the card | What it does |
+| --- | --- |
+| The list | `Default` first, then your presets alphabetically. Click one to select it, then **Apply**. |
+| **New** | Asks for a name (pre-filled `Preset 1`, `Preset 2`…) and creates a preset that starts as a **copy of the one you are using** — tune once, name it, and it is yours from then on. |
+| **Apply** | Loads the selected preset. Only the rows that differ are pushed to the running picture, so it applies live — including on a paused frame. |
+| **Rename** | Same settings, new name. |
+| **Delete** | Asks first. Deleting the preset you are on drops you back to `Default`. |
+| **Close** (×) / click outside | Closes the card. Nothing is lost: custom presets save themselves (below). |
+
+### `Default` is read-only — and custom presets save themselves
+
+- **`Default`** is the built-in starting point. You can change anything while it
+  is active and the picture follows, but those changes are **not stored as a
+  preset** — the strip shows `Default  *` to say so, and opening the card offers
+  to turn what you have into a new preset. That is the intended workflow: tune,
+  then **New**.
+- **Any preset of your own is live.** There is no Save button: as soon as you
+  change a row, the preset file is rewritten (about a third of a second later,
+  so a slider drag lands once). The `*` next to the name only means a write is
+  still pending.
+- Your presets live at `%LOCALAPPDATA%\Unplugged\presets\<name>.ini` — one plain
+  text file each, alongside the base `s3_shell.ini`.
+
+### What a preset does *not* contain
+
+Five rows describe the **display you calibrated, not your taste**, so they stay
+with the machine and switching presets never changes them:
+
+> **SDR display nits · Static nits (max) · Display black (nits) ·
+> Convert to SDR · Output gamut**
+
+Also not part of a preset: the app rows on the System tab (context banner,
+auto-next), which input device is selected, and the playback position. Those
+belong to the app and the session, not to a look.
+
+One behaviour worth knowing: the preset you last used is **re-applied when the
+next picture comes up** (the first play or capture after launch), *after* the
+base settings file has loaded. So a preset's value wins over a hand-edit you
+made in `s3_shell.ini` — change the row while that preset is active (it saves
+itself) or switch to `Default` first.
 
 ---
 
