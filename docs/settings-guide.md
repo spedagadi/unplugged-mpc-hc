@@ -139,20 +139,12 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
 
 **Exposure**, **Shadow detail** and **Contrast** are taste trims — they work
-the same on both tone curves. The Curve Settings section is the opposite: its
-rows belong to one curve, so the rail shows only the selected curve's dials —
-three on **Unplugged**, nine on **GT7 Adapt**. **Title peak (nits)** is common
-to both.
+the same on both tone curves. The Curve Settings section is the opposite: every
+row in it belongs to the GT7 Adapt curve, so the rail shows the section only
+while that curve is selected. On **Unplugged** the trims above are the whole
+adjustment surface, and no Curve Settings section appears at all.
 
-### Curve Settings — **Unplugged**
-
-| Setting | Range | Default | What it does |
-| --- | --- | --- | --- |
-| **Title peak (nits)** | 100…4000 | 1000 | The content peak the curve squeezes from. Leave at 1000 unless you know the disc's MaxCLL. |
-| **Highlight neutral (head)** | 0…1 | 0.9 | Where the bright end is treated as fully neutral before any highlight desaturation. The shipped 0.9 is the value measured against reference renderers; lower pulls the shoulder toward grey sooner (calmer, flatter highlights), higher keeps colour further up into the peak. |
-| **Chroma desat (exp)** | −1.0…3.5 | 1.35 | The exponent that shapes how fast colour fades out of the brightest highlights. 1.0 is a gentle fade; the shipped 1.35 takes saturated highlights toward their own neutral; above ~2 the top end goes close to white. |
-
-### Curve Settings — **GT7 Adapt**
+### Curve Settings (appears only for **GT7 Adapt**)
 
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
