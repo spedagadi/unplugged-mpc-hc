@@ -282,7 +282,35 @@ existing setting is untouched.
 
 ---
 
-## 10. Build / staging (unchanged from the evening handoff)
+## 10. The renderer defers the destination rect (paused toggles lied)
+
+Reported: on a paused frame, toggling NLS left the picture filled/squeezed while
+the toast said off — the two halves disagreed, and NLS tuning on a paused frame
+is the operator's main workflow.
+
+The engine was innocent: the log shows `dest=... mode=0` (fit) plus the cleared
+shader for the same push, then the paused redraw. The **renderer** defers the
+rect: `SetDestinationPosition` stores `m_destRectPending` and only
+`DoRenderSample` applied it, i.e. only when a NEW SAMPLE arrives. A paused
+redraw therefore painted the held frame with the PREVIOUS rect (NLS-on geometry)
+while the post-scale shader had already switched off.
+
+Fixed in `unplugged-VideoRenderer` (`6f965fa`): `ApplyPendingDestRect()` is the
+one place the queue is taken, called by `DoRenderSample` **and `Redraw()`**.
+
+Verified with `nls_proof` + the renderer's own `%TEMP%\mpcvr_destrect.log`: every
+paused leg now logs `applied WxH@x,y` as it changes (fit 571x321 -> fill 624x436
+-> crop 641x436 -> half-bars 597x379 ...), where before only sample arrivals
+produced entries.
+
+**Staging trap:** `Install_Unplugged_64.cmd` registers the .ax IN PLACE (it copies
+nothing); the Program Files copy is only replaced by the installer. After
+rebuilding, check the hash of whatever the CLSIDs point at, not the file you
+think you staged.
+
+---
+
+## 11. Build / staging (unchanged from the evening handoff)
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.7\resources\app\git\cmd;" + $env:PATH
