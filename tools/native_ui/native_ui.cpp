@@ -6775,7 +6775,12 @@ public:
     if(ml_top+ml_h>oy+h) ml_top=oy+IMAX(0,(h-ml_h)/2);
     m_lib.MoveWindow(ox+(w-ml_w)/2,ml_top,ml_w,ml_h); m_lib.Metrics(ml_w); m_lib.ClampScroll();
     m_lib.Invalidate(FALSE); }
-  void BringUiTop(){ CWnd* p[6]={&m_top,&m_status,&m_settings,&m_bar,&m_lib,&m_splash};
+  // Raise order = topmost last. THE LIBRARY GOES FIRST: it used to be raised above
+// the chrome, and on a display where its centred 1800 px window overlaps the
+// settings rail's icon column the tabs were covered by it - the panel showed but
+// no tab could be clicked. The rails are panels; they may sit over the library's
+// edge, never the other way round. The splash stays last (above everything).
+  void BringUiTop(){ CWnd* p[6]={&m_lib,&m_top,&m_status,&m_settings,&m_bar,&m_splash};
     for(CWnd*c:p) if(c->GetSafeHwnd()&&c->IsWindowVisible()) c->SetWindowPos(&CWnd::wndTop,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); }
   // The WHOLE chrome leaves after an idle period — bars, status, settings and any
   // edge-opened pane together, in one transition (SetUi). The idle deadline is a
@@ -7668,7 +7673,14 @@ protected:
     // While the library is up the grid owns the navigation keys - this is the
     // contextual Up 1.3.0 has (focus on a navigable widget means Up scrolls it,
     // it does not toggle chrome).
-    if(m_lib.IsWindowVisible()&&m_lib.Key(vk)) return;
+    //
+    // EXCEPT when the chrome is DOWN: then Up is the only recovery key a remote
+    // user has, and swallowing it left the app looking like the panels were gone
+    // for good (measured: F1 hid them on the library screen, then seven Up
+    // presses produced "KEY vk=26" and nothing else). Up with the chrome down
+    // falls through to the chrome toggle below; every other key still belongs to
+    // the grid.
+    if(m_lib.IsWindowVisible() && !(vk==VK_UP && !m_uiUp) && m_lib.Key(vk)) return;
     if(m_uiUp&&m_settings.IsWindowVisible()&&m_settings.KeyFocused()&&m_settings.Key(vk)){
       // Logged so a swallowed key is never invisible again: this line next to a
       // "KEY vk=26" with no following "ui:" line is what diagnosed Up being dead
