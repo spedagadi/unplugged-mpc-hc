@@ -318,7 +318,32 @@ think you staged.
 
 ---
 
-## 11. Build / staging (unchanged from the evening handoff)
+## 11. VP mode was scaling the picture into a stale canvas
+
+Reported: video processor mode, NLS off, Fit = Source, 16:9 content still showed
+black bars. The log said why:
+
+```
+[GEOM] client=3834x2154 dest=(2,0) 3829x2154 mode=0
+[GEOM] refit x0.928 canvas=(3834,2154) dest=(141,66) 3552x1998     <- the refit
+```
+
+`PlaceVideo` skips VP on purpose (a per-transition geometry call into a live
+capture froze the graph), but nothing ever CLEARED the rect a previous media-mode
+layout had left, so the engine kept SCALING the picture into 3552x1998 and the
+strip it reserved stayed black even with the chrome hidden.
+
+`8bd49790b`: VP clears the canvas once per capture session (`videorect` w/h = 0
+-> whole window) and then leaves geometry alone; the host's window REGION clips
+the picture to the visible area, which is the documented design ("clipped by the
+chrome instead of scaled around it"). The flag resets on VP start and on leaving
+VP. Verified on the running app: `vp: picture canvas cleared ... rc=0`, and the
+`[GEOM] refit` lines are gone (NLS off now `dest=(2,0) 3829x2154` - the 5 px is
+3834/2154 = 1.780 vs 1.778, not a bar).
+
+---
+
+## 12. Build / staging (unchanged from the evening handoff)
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\GitHubDesktop\app-3.6.7\resources\app\git\cmd;" + $env:PATH
