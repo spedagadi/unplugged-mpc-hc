@@ -6883,7 +6883,8 @@ public:
     if(m_uiUp==up&&m_fullUi==full)return;
     m_uiUp=up; m_fullUi=full;
     if(up) UiActivity();     // the idle clock starts when the bars appear
-    if(!up){ m_settings.ClearKeyFocus(); m_presets.HideCard(); m_bar.HideOverlay(); }
+    if(!up){ m_settings.ClearKeyFocus(); m_presets.HideCard(); m_bar.HideOverlay();
+      m_hotBottom=false; }   // the strip is gone: the next move into it is an entry
     // The hover tip is its own top-level window, so hiding the pane it belongs to
     // does NOT send the pane a mouse-leave: Up with the pointer over Min/Close
     // left a "Minimize" card floating over the video with nothing to dismiss it.
@@ -7741,8 +7742,14 @@ protected:
     const int zoneH=max(Px(28), H/34);
     const bool hit = p.y>=H-zoneH && abs(p.x-W/2)<=W*40/100;
     if(hit!=m_hotBottom) LogF("bottom edge %s at (%d,%d) of %dx%d", hit?"entered":"left",p.x,p.y,W,H);
-    if(hit==m_hotBottom) return;
     m_hotBottom=hit;
+    // RESTING IN THE STRIP IS THE REQUEST — not just entering it. This used to
+    // fire only on the false->true edge, so the gesture was dead whenever the
+    // pointer was already in the band when the chrome went down: m_hotBottom
+    // stayed true, no later move counted as an entry, and hovering the playback
+    // bar did nothing (reported after auto-hide began covering the rails).
+    // PointerSample only calls this when the pointer MOVED, so this is still one
+    // action per movement, not a per-tick storm.
     if(hit && !m_uiUp){ LogF("bottom edge -> reveal bars"); SetUi(true,false); } }
   // Video-area mouse move: an accelerator for the sampler, nothing more. It makes
 // the cursor reappear and the idle deadline reset on the message itself instead of
