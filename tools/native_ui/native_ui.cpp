@@ -34,6 +34,8 @@
 #include <algorithm>
 #include <wincrypt.h>
 #include <winhttp.h>
+#include <io.h>
+#include <fcntl.h>
 #include <shobjidl.h>
 #include <urlmon.h>
 #include <wrl.h>
@@ -74,6 +76,9 @@ static const wchar_t* kAppTitle = L"Unplugged 2.0.0";
 // The bare version, for the update check. Keep the two in step (and with
 // Unplugged.rc + the installer): the check compares against this string.
 static const wchar_t* kAppVersion = L"2.0.0";
+// What the signal is (SDR / PQ / HLG / Dolby Vision). Defined with the input
+// dialog; declared here because the status rail labels the signal too.
+static int DrClassify(int locked,int cs,int dr,int eotf,double tf,double hdrMeta,double dovi);
 static const int EDGE_BLEED=2;      // px the frame extends past the monitor, see OnCreate
 // Defined here (assigned by LoadWallpaper below) so the splash pane can pad its
 // clipped corners with the real wallpaper pixels behind it.
@@ -159,8 +164,18 @@ static FILE* OpenLogOnce(){
     cand[1]=logs+L"\\native_ui_log.txt"; }
   for(const auto& c:cand){
     if(c.empty()) continue;
-    FILE* f=nullptr;
-    if(_wfopen_s(&f,c.c_str(),L"a")==0&&f){ lg=f; break; } }
+    // SHARE READ/WRITE, not _wfopen: the CRT's fopen held the log exclusively, so
+    // it could not be tailed while the app ran - the one moment its contents
+    // matter. CreateFile with FILE_SHARE_READ|FILE_SHARE_WRITE + _fdopen keeps
+    // the same FILE* interface and makes the file readable live.
+    HANDLE h=::CreateFileW(c.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                           nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(h==INVALID_HANDLE_VALUE) continue;
+    const int fd=_open_osfhandle((intptr_t)h,_O_APPEND|_O_TEXT);
+    if(fd==-1){ ::CloseHandle(h); continue; }
+    FILE* f=_fdopen(fd,"a");
+    if(f){ lg=f; break; }
+    _close(fd); }
   return lg;
 }
 static void LogF(const char* f,...){ static FILE* lg=OpenLogOnce();
@@ -1353,9 +1368,10 @@ public:
     va_list a; va_start(a,fmt); _vsnwprintf_s(rows[n].v,96,_TRUNCATE,fmt,a); va_end(a); n++; }
   void Refresh(const char* st){
     KV prev[64]; int pn=n; memcpy(prev,rows,sizeof(rows)); n=0;
-    const char* M=Sect(st,"media"),*C=Sect(st,"cfg"),*H=Sect(st,"hdr"),*R=Sect(st,"render"),*D=Sect(st,"dl");
+    const char* M=Sect(st,"media"),*C=Sect(st,"cfg"),*H=Sect(st,"hdr"),*R=Sect(st,"render"),*D=Sect(st,"dl"),*S=Sect(st,"signal");
     double w=0,hh=0,fps=0,tf=0,dovi=0,hdrf=0,cll=0,fall=0,mmax=0,mmin=0,scP=0,scA=0,sdrN=0,conv=0,curve=0,
-           draw=0,drop=0,skip=0,recv=0,lag=0,delv=0,dsk=0,gate=0,qd=0,ren=0,refUs=0,pos=0;
+           draw=0,drop=0,skip=0,recv=0,lag=0,delv=0,dsk=0,gate=0,qd=0,ren=0,refUs=0,pos=0,
+           sigCs=0,sigDr=0,sigLocked=0,dlEotf=0,dlMeta=0;
     char subtype[32]="",state[32]="";
     JNumAt(M,"w",w); JNumAt(M,"h",hh); JNumAt(M,"fps",fps); JNumAt(M,"tf",tf); JNumAt(M,"dovi",dovi); JNumAt(M,"hdr",hdrf);
     JStrAt(M,"subtype",subtype,sizeof(subtype));
@@ -1364,6 +1380,11 @@ public:
     JNumAt(H,"curve",curve);
     JNumAt(R,"draw",draw); JNumAt(R,"drop",drop); JNumAt(R,"skip",skip); JNumAt(R,"recv",recv); JNumAt(R,"lagMs",lag);
     JNumAt(D,"delv",delv); JNumAt(D,"skip",dsk); JNumAt(D,"gate",gate); JNumAt(D,"qdrop",qd); JNumAt(D,"reneg",ren); JNumAt(D,"refUs",refUs);
+    JNumAt(D,"eotf",dlEotf); JNumAt(D,"hdrMeta",dlMeta);
+    if(S){ JNumAt(S,"cs",sigCs); JNumAt(S,"dr",sigDr); JNumAt(S,"locked",sigLocked); }
+    // The signal's format, classified once (see DrClassify): the card reports
+    // BT.2020 + SDR for a Dolby Vision source and cannot say more.
+    const int sigClass=DrClassify((int)sigLocked,(int)sigCs,(int)sigDr,(int)dlEotf,tf,dlMeta,dovi);
     JNum(st,"pos",pos);
     // What the app is drawing ON. Nothing asks the user for a screen size: the
     // host window is the screen (full-screen app), so this row is the surface all
@@ -1379,10 +1400,11 @@ public:
       AF(L"DISPLAY",L"%.0f \x00D7 %.0f \x00B7 %.2f:1",dw,dh,dw/dh);
     }
     A(L"PIXEL FORMAT", strstr(subtype,"P010")?L"YCbCr 4:2:0 \x00B7 10-bit": strstr(subtype,"P210")?L"YCbCr 4:2:2 \x00B7 10-bit": subtype[0]?L"":L"\x2014");
-    A(L"COLORSPACE", dovi?L"Dolby Vision":L"BT.2020");
-    A(L"TRANSFER (EOTF)", dovi?L"Dolby Vision": ((int)tf==15?L"PQ (HDR10)": (int)tf==16?L"HLG":L"BT.1886 (Gamma 2.4)"));
+    A(L"COLORSPACE", sigClass==3?L"Dolby Vision":L"BT.2020");
+    A(L"TRANSFER (EOTF)", sigClass==3?L"Dolby Vision": ((int)tf==15?L"PQ (HDR10)": (int)tf==16?L"HLG":L"BT.1886 (Gamma 2.4)"));
     AF(L"SOURCE FPS",L"%.3f fps",fps);
-    A(L"HDR FORMAT", dovi?L"Dolby Vision": ((int)tf==15||hdrf)?L"HDR10 / PQ": ((int)tf==16?L"HLG":L"SDR"));
+    A(L"HDR FORMAT", sigClass==3?L"Dolby Vision": sigClass==2?L"HLG":
+                     ((sigClass==1)?L"HDR10 / PQ":L"SDR"));
     AF(L"BITRATE",L"\x2248 %.3f Gbps", w*hh*2.0*8*fps/1e9);
     AF(L"MAXCLL", cll?L"%.0f nits":L"\x2014", cll);
     AF(L"MAXFALL", fall?L"%.0f nits":L"\x2014", fall);
@@ -2725,6 +2747,29 @@ END_MESSAGE_MAP()
 // Shared first-run / Rename-input card (FirstRunDialog + InputConfigDialog).
 struct DlPort { std::wstring url; int locked=0,dr=0; };
 static const wchar_t* DrLabel(int dr){ switch(dr){ case 1:return L"HDR PQ"; case 2:return L"HDR HLG"; case 3:return L"Dolby Vision"; default:return L"SDR"; } }
+// WHAT THE SIGNAL IS - one classifier, ported from 1.3.0
+// (decklink_monitor.py, which reported this correctly and this port did not).
+//
+// The card CANNOT flag Dolby Vision: a DV player replaces the HDR10 InfoFrame
+// with Dolby's VSIF, so the card reports BT.2020 colours with an SDR range flag
+// - a combination no consumer device produces otherwise. 1.3.0 read that as DV,
+// and so does this. Two independent confirmations are used when present:
+//   * the capture filter's eotf 4 = DV(PQ-coded), 2 = PQ, 3 = HLG;
+//   * the renderer's own reading - a PQ base layer with NO ST 2086 metadata
+//     (tf 15, no mastering/CLL) is this project's recorded DV fingerprint.
+// Returns 0=SDR 1=PQ 2=HLG 3=Dolby Vision.
+static int DrClassify(int locked,int cs,int dr,int eotf,double tf,double hdrMeta,double dovi){
+  if(dr==3) return 3;                                  // the poll already said so
+  if(eotf==4||dovi>0.5) return 3;                      // explicit DV coding / RPU
+  if(locked>0 && cs==2 && dr==0) return 3;             // BT.2020 + SDR = the DV signature
+  if(locked>0 && (int)tf==15 && hdrMeta<0.5) return 3; // PQ base, no ST 2086
+  if(eotf==3||dr==2||(int)tf==16) return 2;
+  if(eotf==2||dr==1||(int)tf==15) return 1;
+  return 0;
+}
+// The live classification of the ACTIVE port, filled by the status poll and read
+// by the input dialog (which otherwise only has the card's SDR reading).
+static int g_liveDrClass=0; static std::wstring g_liveDrUrl;
 static void PollDecklinkPorts(std::vector<DlPort>& out);
 static std::wstring g_setupMode,g_setupUrl;
 class CSetupCard : public CUiWnd {
@@ -2743,7 +2788,17 @@ public:
     return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,CUiWnd::ClassName(),L"",WS_POPUP,
                     CRect(0,0,860,560),owner,0); }
   void Place(){
-    int w=rename_?800:860,h=rename_?480:560; CRect pr; GetOwner()->GetWindowRect(pr);
+    // DPI AND CONTENT SIZED. The size used to be raw design pixels while every
+    // row, margin and gap inside it went through Px(): at 150 % scaling the card
+    // stayed 560 px tall for 4 x 84 px rows, so the port list scrolled although
+    // everything fit. Now the card grows to show up to six ports without
+    // scrolling (clamped to the screen).
+    const int w=Px(rename_?800:860);
+    const int rows=max(1,min((int)ports_.size(),6));
+    int h=Px(rename_?480:560);
+    h=max(h, Px(132)+Px(64)+rows*(Px(56)+Px(4))+Px(8));
+    CRect pr; GetOwner()->GetWindowRect(pr);
+    if(pr.Height()>0) h=min(h,(int)(pr.Height()*0.92));
     int x=pr.left+(pr.Width()-w)/2,y=pr.top+(pr.Height()-h)/2;
     MoveWindow(x,y,w,h); SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd); Layout(); }
   void ShowFirstRun(){ rename_=false; step_=1; DestroyInputs(); Place(); Present(); }
@@ -2857,7 +2912,8 @@ protected:
       StrokeR(dc,row,Px(16),active?ACCENT:RGB(45,45,45));
       TxtW(dc,CRect(Px(40),y,Px(64),y+rowH),L"\x25CF",active?ACCENT:MID,13,false,DT_CENTER|DT_VCENTER,g_fontFam);
       COLORREF sc=p.locked>0?(p.dr>0?RGB(0x4C,0xAF,0x50):TEXT):LO;
-      std::wstring badge=p.locked>0?std::wstring(L"\U0001F512  ")+DrLabel(p.dr):(p.locked<0?L"\x25CB  \x2014":L"\x25CB  No signal");
+      std::wstring badge=p.locked>0?std::wstring(L"\U0001F512  ")+
+        DrLabel(p.url==g_liveDrUrl?g_liveDrClass:p.dr):(p.locked<0?L"\x25CB  \x2014":L"\x25CB  No signal");
       TxtW(dc,CRect(Px(70),y,Px(174),y+rowH),badge.c_str(),sc,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
       std::wstring raw=p.url; if(raw.find(L"decklink://")==0) raw=raw.substr(11);
       TxtW(dc,CRect(Px(174),y,Px(418),y+rowH),raw.c_str(),LO,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
@@ -2882,9 +2938,9 @@ protected:
     }
   }
   void OnLButtonDown(UINT,CPoint p){
-    if(step_==1){ if(vpR.PtInRect(p)){ step_=2; Scan(); Invalidate(FALSE); }
+    if(step_==1){ if(vpR.PtInRect(p)){ step_=2; Scan(); Place(); Invalidate(FALSE); }
       else if(mpR.PtInRect(p)) Complete(L"media_player",L""); return; }
-    if(rescanR.PtInRect(p)){ Scan(); return; }
+    if(rescanR.PtInRect(p)){ Scan(); Place(); return; }
     if(rename_){ if(cancelR.PtInRect(p)){ Cancel(); return; }
       if(startR.PtInRect(p)){ SaveClose(); return; } }
     else { if(backR.PtInRect(p)){ step_=1; DestroyInputs(); Invalidate(FALSE); return; }
@@ -6440,7 +6496,9 @@ public:
   std::string m_mediaState; std::wstring m_nextPath,m_nextLabel; double m_nextResume=0;
   ULONGLONG m_nextAt=0; int m_nextLeft=0;
   bool m_firstRun=false; std::wstring m_pendingInputUrl,m_pendingMode;
-  ULONGLONG m_nextPortPoll=0; int m_liveEotf=0,m_liveLocked=0; std::string m_portsSig;
+  ULONGLONG m_nextPortPoll=0; int m_liveEotf=0,m_liveLocked=0,m_liveCs=0;
+  double m_liveTf=0,m_liveHdrMeta=0,m_liveDovi=0;
+  std::string m_portsSig;
   CAcquireCard m_acq; bool m_vp=false,m_vpAcq=false; int m_attempt=0; bool m_graphRan=false;
   // VP mode keeps the picture canvas at the WHOLE window and lets the host's
   // region clip it to the visible area, so no geometry call is needed when the
@@ -6485,10 +6543,16 @@ public:
     if(m_appMode!=L"video_processor"&&!m_uiUp) return;
     std::vector<DlPort> ports; PollDecklinkPorts(ports);
     for(auto&p:ports) if(p.url==m_inputUrl){
-      // The active input has the better instrument: engine frame facts replace
-      // the card's reading (DR_FROM_EOTF 2->1, 3->2, 4->3).
+      // The active input has the better instrument: the engine's own reading
+      // replaces the card's (which cannot see Dolby Vision at all - see
+      // DrClassify). This is what 1.3.0 did and what this port was missing.
       if(m_liveLocked) p.locked=1;
-      if(m_liveEotf==2) p.dr=1; else if(m_liveEotf==3) p.dr=2; else if(m_liveEotf==4) p.dr=3;
+      p.dr=DrClassify(m_liveLocked,m_liveCs,p.dr,m_liveEotf,m_liveTf,m_liveHdrMeta,m_liveDovi);
+      g_liveDrClass=p.dr; g_liveDrUrl=p.url;
+      static int s_loggedClass=-1;
+      if(p.dr!=s_loggedClass){ s_loggedClass=p.dr;
+        LogF("SOURCE active signal class=%d label='%S' (engine cs=%d eotf=%d tf=%.0f hdrMeta=%.0f dovi=%.0f)",
+             p.dr,DrLabel(p.dr),m_liveCs,m_liveEotf,m_liveTf,m_liveHdrMeta,m_liveDovi); }
     }
     std::string sig=Narrow(m_inputUrl)+"|"+std::to_string(m_liveEotf)+"|"+std::to_string(m_liveLocked);
     for(const auto&p:ports) sig+="|"+Narrow(p.url)+":"+std::to_string(p.locked)+":"+std::to_string(p.dr);
@@ -7008,9 +7072,13 @@ public:
     double p100=0,d100=0,vol=100,mut=0,amode=0; JNum(st,"pos",p100); JNum(st,"dur",d100); JNum(st,"vol",vol); JNum(st,"muted",mut);
     const char* ab=Sect(st,"audio"); JNumAt(ab,"mode",amode); m_bitstream=(amode!=0);
     const char* rr=Sect(st,"render"); if(rr){ JNumAt(rr,"draw",m_drawn); JNumAt(rr,"recv",m_recv); }
-    const char* dl=Sect(st,"dl"),*sg=Sect(st,"signal"); double eotf=0,locked=0;
-    if(dl) JNumAt(dl,"eotf",eotf); if(sg) JNumAt(sg,"locked",locked);
+    const char* dl=Sect(st,"dl"),*sg=Sect(st,"signal"),*md=Sect(st,"media");
+    double eotf=0,locked=0,cs=0,tf=0,hm=0,dv=0;
+    if(dl){ JNumAt(dl,"eotf",eotf); JNumAt(dl,"hdrMeta",hm); }
+    if(sg){ JNumAt(sg,"locked",locked); JNumAt(sg,"cs",cs); }
+    if(md){ JNumAt(md,"tf",tf); JNumAt(md,"dovi",dv); }
     m_liveEotf=(int)eotf; m_liveLocked=(int)locked;
+    m_liveCs=(int)cs; m_liveTf=tf; m_liveHdrMeta=hm; m_liveDovi=dv;
     const bool file=InFilePlayback();
     if(file){ m_pos=p100/1e7; m_dur=d100/1e7; if(m_pos<0||m_pos>1e6)m_pos=0; if(m_dur<0||m_dur>1e6)m_dur=0; }
     else { m_pos=0; m_dur=0; }

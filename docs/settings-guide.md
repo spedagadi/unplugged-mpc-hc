@@ -190,7 +190,7 @@ One row per physical DeckLink input, plus three actions.
 
 | Row | Shows | What it does |
 | --- | --- | --- |
-| Port row | name + badge | Click to switch the player to that HDMI input. The active port gets `●`. Badges: `🔒 HDR PQ` = an HDR signal is locked and being carried, `○ no signal` = nothing is plugged in or the source is off, `— unknown` = signal present but not identified yet. |
+| Port row | name + badge | Click to switch the player to that HDMI input. The active port gets `●`. Badges: `🔒 HDR PQ` = an HDR signal is locked and being carried, `🔒 Dolby Vision` = a Dolby Vision source (the card cannot flag DV, so this is read from its signature — BT.2020 colours with an SDR range flag, and confirmed by the picture being a PQ base layer without static mastering metadata), `🔒 HDR HLG` = HLG, `○ no signal` = nothing is plugged in or the source is off, `— unknown` = signal present but not identified yet. |
 | **⟳ Rescan inputs** | — | Re-asks the card what is plugged in. Use after connecting a new device. |
 | **✎ Rename inputs…** | — | Names your ports ("Console", "Bluray") — the name is yours only; the underlying input is unchanged. |
 | **▶ First-time setup… (restarts app)** | — | Restarts the app into the setup wizard. Stops any playback. |
