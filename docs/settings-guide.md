@@ -324,7 +324,7 @@ here Off for normal viewing.
 | Setting | What it does |
 | --- | --- |
 | **HDR passthrough** *[next open]* | Bypasses this app's entire picture pipeline and hands the raw signal to the display — the "is it the renderer or the TV" test. On a non-HDR display you'll see flat/green-grey nonsense; that's expected, not broken. Mutually exclusive with the next row by design. |
-| **Tone curve passthrough** *[next open]* | Renders the decoded picture *without* tone mapping or grade — a copy of the source through the normal output. The A/B baseline when you suspect the curve. Also auto-switches HDR passthrough off. |
+| **Tone curve passthrough** | Skips the **Zion ML grade** and nothing else: the picture is what the tone curve alone delivers — HDR converted to SDR by the selected curve, no per-scene model, no grade. It applies live. This is the A/B for the *grade*: if the picture is right here and wrong with the grade on, the grade is the suspect; if it is already wrong here, the tone curve or the display side is. Also auto-switches HDR passthrough off. |
 | **Frame log** | Writes a verbose per-frame telemetry line to the engine log (`%USERPROFILE%\.unplugged\logs\engine.log`) — what each stage computed, frame by frame. The thing to turn on when asking "why did the picture change there". |
 | **MC heat** | Replaces the picture with a greyscale map of where the micro-contrast engine is working, so a visible seam can be matched to a mask edge. |
 
