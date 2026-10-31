@@ -6644,7 +6644,11 @@ public:
     // One layout path for both modes: the host gets the room the chrome is not
     // using, in VP and in media playback alike (see Layout()).
     Layout();
-    m_acq.Start(m_inputLabel); SetTimer(5,3000,nullptr); }
+    // The card is what the user reads while the capture is being acquired, so
+    // it must say THEIR name for the port ("Panasonic UB820"), not the driver's
+    // device name ("DeckLink Quad HDMI Recorder (1)"). The device name above
+    // still goes to s3_start_device — this is only the banner.
+    m_acq.Start(LabelFor(m_inputUrl)); SetTimer(5,3000,nullptr); }
   // DELETED: the VP-only layout that inset the capture host and called the engine
     // on every chrome toggle. It was the single source of the VP freezes (a UI-thread
     // resize into a live capture graph) and of the mode split. The host now stays
