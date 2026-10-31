@@ -2311,6 +2311,10 @@ public:
   wchar_t title[128]=L"Close Unplugged", msg[256]=L"Are you sure you want to exit?", oklbl[32]=L"Yes";
   wchar_t nextLabel[160]=L"";
   int hov=0, action=0, msgH=0; CRect cancelR,okR;
+  // A NOTICE is a warning that has to be acknowledged: one centred OK button and
+  // no Cancel. Used when a change was made on the read-only Default preset - a
+  // toast was too quiet for a rule that decides whether work is kept.
+  bool notice=false;
   bool HandAt(CPoint p) override { return cancelR.PtInRect(p)||okR.PtInRect(p); }
   void Compute(int& outW,int& outH){
     int tW,tH,mW,mH,cW,cH,oW,oH;
@@ -2320,9 +2324,13 @@ public:
     cW+=2*Px(36); oW+=2*Px(36);       // confirm_dialog.py: padding 9px 36px per side
     int btnH=max(cH,oH)+2*Px(9);    // label height + padding, NOT message height
     int rowW=cW+Px(10)+oW;          // btn_row spacing 10
+    if(notice) rowW=oW;             // one centred button, no Cancel
     int inner=max(max(tW,mW),rowW);
     outW=Px(72)+inner;              // layout margins 36 left/right
-    outH=Px(56)+tH+Px(14)+mH+Px(14)+btnH;   // margins 28 top/bottom + spacing 14 twice
+    outH=Px(56)+tH+Px(14)+mH+Px(14)+btnH;
+    if(notice){ cancelR=CRect(0,0,0,0);
+      int x0=(outW-oW)/2, y0=outH-Px(28)-btnH;
+      okR=CRect(x0,y0,x0+oW,y0+btnH); return; }
     int x0=(outW-rowW)/2, y0=outH-Px(28)-btnH;
     cancelR=CRect(x0,y0,x0+cW,y0+btnH);
     okR=CRect(x0+cW+Px(10),y0,x0+cW+Px(10)+oW,y0+btnH); }
@@ -2352,7 +2360,7 @@ public:
   // Always RAISE, never toggle. The old toggle made a second X click dismiss the
   // card, so pressing X twice looked like "the close button does nothing" (log
   // 2026-10-25 20:20:59 shown / 20:21:01 hidden). Only Cancel, Esc and Yes change it.
-  void Show(){ Place(); ShowWindow(SW_SHOWNOACTIVATE);
+  void Show(){ notice=(action==6); Place(); ShowWindow(SW_SHOWNOACTIVATE);
     SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     // Two independent reasons it could still be invisible, so close both:
     //  - z-order: something else got raised over it (the library pane).
@@ -2383,6 +2391,12 @@ public:
     wcscpy_s(oklbl,L"Restart and set up"); Show(); }
   void ShowInputSwitch(const wchar_t* t,const wchar_t* m){ action=4;
     wcscpy_s(title,t); wcscpy_s(msg,m); wcscpy_s(oklbl,L"Restart and continue"); Show(); }
+  // The read-only notice. Centred on the window, one OK, no Cancel, nothing to
+  // decide - it exists so the user learns the rule the moment they break it.
+  void ShowPresetReadOnly(){ action=6;
+    wcscpy_s(title,L"Default is read-only");
+    wcscpy_s(msg,L"Changes made on Default are never saved.\n\nCreate a preset to keep them.");
+    wcscpy_s(oklbl,L"OK"); Show(); }
   // "Up next" countdown card (5 s, user choice). Cancel/Esc aborts, Play now skips it.
   void ShowNext(const wchar_t* item){ action=5; wcscpy_s(title,L"Up next");
     wcsncpy_s(nextLabel,item,_TRUNCATE); wcscpy_s(oklbl,L"Play now");
@@ -2391,6 +2405,7 @@ public:
     swprintf_s(msg,L"%s\n\nPlaying in %d s...",nextLabel,sec); Invalidate(FALSE); }
   void HideCard(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
   void Accept(){ LogF("confirm accepted action=%d",action);
+    if(action==6){ Dismiss(); return; }          // read-only notice: acknowledge only
     if(action==5){ HideCard(); CWnd* fr=GetParentFrame();
       if(fr) fr->PostMessageW(WM_APP+29,0,0); return; }
     Dismiss();
@@ -2412,14 +2427,16 @@ protected:
     // filling at 16 (r8) made the corners poke into the clip and get sheared off.
     CardAA(dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
     TxtW(dc,CRect(Px(36),Px(28),rc.right-Px(36),Px(28)+Px(22)),title,RGB(255,255,255),16,true,DT_CENTER|DT_VCENTER);
-    TxtW(dc,CRect(Px(36),cancelR.top-Px(14)-msgH,rc.right-Px(36),cancelR.top-Px(14)),msg,
+    TxtW(dc,CRect(Px(36),okR.top-Px(14)-msgH,rc.right-Px(36),okR.top-Px(14)),msg,
          RGB(0x99,0x99,0x99),13,false,DT_CENTER|DT_WORDBREAK);
     // Cancel: rgba(40,40,40,180) over #0e0e0e -> 32; hover rgba(60,60,60,220) -> 54
+    if(!notice){
     RR(dc,cancelR,Px(12), hov==1?RGB(54,54,54):RGB(32,32,32));    // radius 6 => diameter 12
     CPen cp(PS_SOLID,1,RGB(54,54,54)); CPen* cop=dc->SelectObject(&cp);      // 1px rgba(255,255,255,25)
     HBRUSH nb2=(HBRUSH)GetStockObject(NULL_BRUSH); HBRUSH cob=(HBRUSH)dc->SelectObject(nb2);
     dc->RoundRect(cancelR,CPoint(Px(12),Px(12))); dc->SelectObject(cop); dc->SelectObject(cob);
     TxtW(dc,cancelR,L"Cancel",hov==1?RGB(255,255,255):RGB(0xaa,0xaa,0xaa),13,false,DT_CENTER|DT_VCENTER);
+    }
     // Confirm: rgba(232,85,31,180) over #0e0e0e -> 168,64,26; hover rgba(232,85,31,240) -> 219,81,30
     RR(dc,okR,Px(12), hov==2?RGB(219,81,30):RGB(168,64,26));      // radius 6 => diameter 12
     CPen kp(PS_SOLID,1,RGB(223,82,30)); CPen* kop=dc->SelectObject(&kp);     // 1px rgba(232,85,31,220)
@@ -6834,7 +6851,9 @@ public:
     // header stay as the persistent reminders.
     if(w){
       LogF("preset: Default changed -> read-only notice shown");
-      ShowToast(L"Default is read-only. Create a preset to save changes.",3600);
+      // A warning the user must acknowledge. Dead centre, one OK (Enter or Esc
+      // also dismiss it): this rule decides whether their tuning is kept at all.
+      m_confirm.ShowPresetReadOnly();
     }
     else if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
     return 0; }

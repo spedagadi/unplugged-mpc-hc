@@ -111,10 +111,12 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 ### `Default` is read-only — and custom presets save themselves
 
 - **`Default` is read-only for the picture settings.** Moving a row still
-  changes the picture, but nothing is being kept as a preset: a popup says
-  **"Default is read-only. Create a preset to save changes."**, the strip shows
-  `Default  *`, and opening the card puts it in its *Create a preset* mode.
-  That is the intended workflow: tune, then **New**.
+  changes the picture, but nothing is being kept as a preset: a warning appears
+  in the **centre of the screen** — *"Default is read-only — Changes made on
+  Default are never saved. Create a preset to keep them."* — and stays until you
+  press **OK** (Enter or Esc also dismiss it). The strip shows `Default  *`, and
+  opening the card puts it in its *Create a preset* mode. That is the intended
+  workflow: tune, then **New**.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
   **Display black (nits)**, **Convert to SDR** and **Output gamut** describe the
   screen you calibrated, not a look, so they are never part of a preset. They
