@@ -429,11 +429,24 @@ While tuning, the Info panel's **Warp / Crop** row shows what the current settin
 
 | Setting | Choices | Default | What it does |
 | --- | --- | --- | --- |
+| **Check for updates automatically** | On / Off | On | Asks GitHub for the latest release once a day, in the background. When something newer exists, a card appears at start with the release notes and a link to the download page. Off stops the automatic check; **Check for updates now** still works. |
+| **Check for updates now** | button | — | Runs the check immediately and always reports: a newer version opens its card, otherwise a short "you are on the latest version" message. Also useful after installing on a machine that has been offline. |
 | **Report a problem** | button | — | The support action for a picture or playback problem. *Not wired in this build — it only writes a line to the log.* |
 | **Show context banner for settings** | On / Off | On | Draws the short explanation banner above the rows while you move around the panel. Off gives more rows on screen once you know the controls. |
 | **Play next item automatically** | On / Off | On | When a title ends, offers the next episode/film in the library after a five-second countdown; **Esc** (or the card's Cancel) stops it. Off returns to the library at the end of the title. |
 | **⟲ Reset renderer settings** | button | — | Deletes what the *renderer* stored in the registry (it keeps state of its own, and a previous machine's leftovers can ride along in a copy of the app). Your rail settings are re-applied immediately — this undoes registry state, not your configuration. |
 | **▶ First-time setup… (restarts app)** | button | — | Restarts into the setup wizard (stops playback). |
+
+**Updates.** The check reads the project's public GitHub release, compares it
+with the version shown in the title strip, and does nothing else: there is no
+silent download and the app never installs anything behind your back. When a
+newer version exists, a card opens **when the app starts**, shows the release
+notes and offers **Open download page** (your browser) or **Later** — Enter opens
+the page, Esc is Later. Choosing Later remembers that version and stops the
+automatic prompt until the next one; **Check for updates now** always asks.
+Offline, blocked or no releases yet: the check fails silently unless you asked
+for it. The only thing sent is an ordinary HTTPS request to GitHub — no
+identifiers, no telemetry.
 
 ---
 

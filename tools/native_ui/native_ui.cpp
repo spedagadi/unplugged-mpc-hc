@@ -25,6 +25,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <fstream>
 #include <map>
@@ -32,6 +33,7 @@
 #include <regex>
 #include <algorithm>
 #include <wincrypt.h>
+#include <winhttp.h>
 #include <shobjidl.h>
 #include <urlmon.h>
 #include <wrl.h>
@@ -46,6 +48,7 @@
 #pragma comment(lib,"shell32.lib")
 #pragma comment(lib,"urlmon.lib")
 #pragma comment(lib,"advapi32.lib")
+#pragma comment(lib,"winhttp.lib")
 
 extern "C" {
 __declspec(dllimport) int  s3_attach(int64_t hwnd);
@@ -68,6 +71,9 @@ static int g_dpi=96;
 // The version resource (Unplugged.rc) and the installer carry the same number;
 // the strip's literal used to say 1.3.1 while those said 2.0.0.
 static const wchar_t* kAppTitle = L"Unplugged 2.0.0";
+// The bare version, for the update check. Keep the two in step (and with
+// Unplugged.rc + the installer): the check compares against this string.
+static const wchar_t* kAppVersion = L"2.0.0";
 static const int EDGE_BLEED=2;      // px the frame extends past the monitor, see OnCreate
 // Defined here (assigned by LoadWallpaper below) so the splash pane can pad its
 // clipped corners with the real wallpaper pixels behind it.
@@ -519,7 +525,10 @@ static Row g_rows[]={
  {5,0,L"App",L"Tray icon","sys.trayIcon",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
   // Moved here from the title strip (30 Oct): a support action belongs in System,
   // and the same kind==3 CTA pattern as "Save frame as PNG" already exists here.
-  {5,3,L"App",L"Report a problem","__report",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+  // ---- update check rows ------------------------------------------------------
+ {5,0,L"App",L"Check for updates automatically","sys.updateCheck",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,3,L"App",L"Check for updates now","sys.updateNow",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,3,L"App",L"Report a problem","__report",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,0,L"App",L"Show context banner for settings","ui.helpBanner",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,0,L"App",L"Play next item automatically","ui.autoNext",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,3,L"App",L"\x27F2  Reset renderer settings","sys.resetRenderer",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
@@ -693,6 +702,148 @@ static void SaveIni(const char* why){
 static void SaveRowIni(const Row& r){
   if(!r.key||!*r.key) return;
   g_ini[r.key]=IniValue(r); g_iniDirty=true; SaveIni("change");
+}
+
+// ---- update check ------------------------------------------------------------
+// Notify-only, as decided: ask GitHub for the latest release on a background
+// thread, compare versions, and PROMPT on start when something newer exists.
+// Nothing is downloaded or run from here - a self-update would race the locked
+// s3engine.dll / .ax on a live HTPC, so the user gets the release page instead.
+//
+// One check per day (ui.lastUpdateCheck), silent when offline, and a kill switch
+// (sys.updateCheck). A manual check always reports, including "up to date".
+#define WM_UPDATE_DONE (WM_APP+55)
+
+static std::wstring Utf8ToWide(const std::string& s){
+  if(s.empty()) return std::wstring();
+  int n=MultiByteToWideChar(CP_UTF8,0,s.data(),(int)s.size(),nullptr,0);
+  if(n<=0) return std::wstring();
+  std::wstring w((size_t)n,L'\0');
+  MultiByteToWideChar(CP_UTF8,0,s.data(),(int)s.size(),&w[0],n);
+  return w;
+}
+static void AppendUtf8(std::string& o,unsigned cp){
+  if(cp<0x80) o+=(char)cp;
+  else if(cp<0x800){ o+=(char)(0xC0|(cp>>6)); o+=(char)(0x80|(cp&0x3F)); }
+  else if(cp<0x10000){ o+=(char)(0xE0|(cp>>12)); o+=(char)(0x80|((cp>>6)&0x3F)); o+=(char)(0x80|(cp&0x3F)); }
+  else { o+=(char)(0xF0|(cp>>18)); o+=(char)(0x80|((cp>>12)&0x3F)); o+=(char)(0x80|((cp>>6)&0x3F)); o+=(char)(0x80|(cp&0x3F)); }
+}
+// The value of a top-level "key":"..." in a JSON body, unescaped to UTF-8. The
+// GitHub release payload is the only JSON this parses, so it is deliberately a
+// scanner rather than a parser: tag_name, html_url and body are plain strings.
+static std::string JsonRaw(const std::string& j,const char* key){
+  const std::string k=std::string("\"")+key+"\":\"";
+  size_t p=j.find(k); if(p==std::string::npos) return std::string();
+  p+=k.size(); std::string out; out.reserve(4096);
+  for(size_t i=p;i<j.size();++i){
+    char c=j[i];
+    if(c=='"') break;
+    if(c!='\\'){ out+=c; continue; }
+    if(++i>=j.size()) break;
+    const char e=j[i];
+    if(e=='n') out+='\n'; else if(e=='r') out+='\r'; else if(e=='t') out+='\t';
+    else if(e=='b'||e=='f') {}
+    else if(e=='u'){
+      if(i+4>=j.size()) break;
+      unsigned cp=0;
+      for(int n=0;n<4;++n){ const char h=j[++i]; cp<<=4;
+        cp += (h>='0'&&h<='9')?(unsigned)(h-'0'):(h>='a'&&h<='f')?(unsigned)(h-'a'+10):
+              (h>='A'&&h<='F')?(unsigned)(h-'A'+10):0u; }
+      AppendUtf8(out,cp);
+    } else out+=e;
+  }
+  return out;
+}
+static int VerCmp(const std::wstring& a,const std::wstring& b){
+  int va[4]={0,0,0,0}, vb[4]={0,0,0,0};
+  const auto parse=[](const std::wstring& s,int* out){
+    int i=0; size_t p=0;
+    while(i<4&&p<s.size()){ int v=0;
+      while(p<s.size()&&s[p]>=L'0'&&s[p]<=L'9'){ v=v*10+(s[p]-L'0'); ++p; }
+      out[i++]=v;
+      if(p<s.size()&&s[p]==L'.') ++p; else break; } };
+  parse(a,va); parse(b,vb);
+  for(int i=0;i<4;++i) if(va[i]!=vb[i]) return va[i]<vb[i]?-1:1;
+  return 0;
+}
+static bool HttpGetText(const wchar_t* host,const wchar_t* path,std::string& out){
+  out.clear();
+  HINTERNET s=WinHttpOpen(L"Unplugged-Updater/1.0",WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                          WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
+  if(!s) return false;
+  WinHttpSetTimeouts(s,6000,6000,9000,9000);
+  bool ok=false;
+  if(HINTERNET c=WinHttpConnect(s,host,INTERNET_DEFAULT_HTTPS_PORT,0)){
+    HINTERNET r=WinHttpOpenRequest(c,L"GET",path,nullptr,WINHTTP_NO_REFERER,
+                                   WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE);
+    if(r){
+      LPCWSTR hdr=L"User-Agent: Unplugged-Updater/1.0\r\nAccept: application/vnd.github+json\r\n";
+      if(WinHttpSendRequest(r,hdr,(DWORD)-1L,WINHTTP_NO_ADDITIONAL_HEADERS,0,0,0)&&
+         WinHttpReceiveResponse(r,nullptr)){
+        DWORD st=0,sl=sizeof(st);
+        if(WinHttpQueryHeaders(r,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,
+                               WINHTTP_HEADER_NAME_BY_INDEX,&st,&sl,WINHTTP_NO_HEADER_INDEX)&&st==200){
+          for(;;){
+            DWORD avail=0;
+            if(!WinHttpQueryDataAvailable(r,&avail)||avail==0) break;
+            std::string buf((size_t)avail,'\0'); DWORD got=0;
+            if(!WinHttpReadData(r,&buf[0],avail,&got)||got==0) break;
+            out.append(buf.data(),got);
+            if(out.size()>512*1024) break; }
+          ok=!out.empty(); } }
+      WinHttpCloseHandle(r); }
+    WinHttpCloseHandle(c); }
+  WinHttpCloseHandle(s);
+  return ok;
+}
+struct UpdateState{ bool done=false, newer=false, failed=false;
+                    std::wstring version, notes, page; };
+static std::mutex g_updMtx;
+static UpdateState g_upd;
+static std::atomic<bool> g_updBusy{false};
+
+// Runs on its own thread: one HTTPS GET, no locks held, result posted to the
+// frame. Called at start (once a day) and by the System-tab "Check now" row.
+static void StartUpdateCheck(bool userInitiated){
+  if(g_updBusy.exchange(true)) return;
+  // QA override, read on THIS thread (g_ini is not thread-safe): with
+  // ui.updateTestVersion set in the ini the check reports that version as
+  // available, so the prompt can be exercised before a newer release exists.
+  const std::wstring forced=Widen(IniGet("ui.updateTestVersion"));
+  // The HWND is captured on the UI thread: AfxGetMainWnd() from a worker thread
+  // is an MFC thread-state lookup that can return NULL, which would silently
+  // swallow the result (measured: "check started" with no completion).
+  HWND target=nullptr;
+  if(CWnd* fr=AfxGetMainWnd()) target=fr->GetSafeHwnd();
+  LogF("[UPDATE] check started (%s)", userInitiated?"manual":"automatic");
+  if(!forced.empty()) LogF("[UPDATE] QA override -> %S", forced.c_str());
+  std::thread([userInitiated,forced,target]{
+    UpdateState s;
+    std::string body;
+    if(!forced.empty()){
+      s.version=forced;
+      s.notes=L"Release notes would appear here, word-wrapped, straight from the "
+               L"GitHub release body.\n\nThis text is the QA override: remove "
+               L"ui.updateTestVersion from s3_shell.ini to see the real check.";
+      s.page=L"https://github.com/spedagadi/unplugged-mpc-hc/releases";
+      s.done=true; s.newer=true;
+    } else if(HttpGetText(L"api.github.com",L"/repos/spedagadi/unplugged-mpc-hc/releases/latest",body)){
+      s.version=Utf8ToWide(JsonRaw(body,"tag_name"));
+      s.notes=Utf8ToWide(JsonRaw(body,"body"));
+      s.page=Utf8ToWide(JsonRaw(body,"html_url"));
+      if(!s.version.empty()&&(s.version[0]==L'v'||s.version[0]==L'V')) s.version.erase(0,1);
+      s.done=!s.version.empty();
+      s.newer=s.done && VerCmp(s.version,kAppVersion)>0;
+    }
+    s.failed=!s.done;
+    { std::lock_guard<std::mutex> lk(g_updMtx); g_upd=s; }
+    g_updBusy.store(false);
+    // Worker-side trace: without it "started" with no completion cannot be told
+    // apart from a lookup that returned NULL or a hung request.
+    LogF("[UPDATE] worker done ok=%d ver='%S' bytes=%d", s.done?1:0, s.version.c_str(), (int)body.size());
+    if(target) ::PostMessageW(target, WM_UPDATE_DONE, userInitiated?1:0, 0);
+    else LogF("[UPDATE] no window to report to");
+  }).detach();
 }
 static void SeedIni(){
   // seed_ini(): fill/normalise mapped rows, existing values win in MEANING. This
@@ -1781,6 +1932,7 @@ protected:
         if(!strcmp(r.key,"zion.reset")||!strcmp(r.key,"sys.resetRenderer")) cta=L"Reset";
         else if(!strcmp(r.key,"__capFrame")) cta=L"Save\x2026";
         else if(!strcmp(r.key,"__report"))   cta=L"Report\x2026";
+    else if(!strcmp(r.key,"sys.updateNow")) cta=L"Check\x2026";
         if(*cta) TxtW(dc,CRect(cright-CONTROL_W,y,cright-Px(PAD),y+RowH()),cta,ACCENT2,13,false,DT_RIGHT|DT_VCENTER); }
       else if(r.kind==4){ // FILE: basename on the right, full path remains in r.file
         std::wstring name=r.file.empty()?L"Set\x2026":r.file;
@@ -1852,6 +2004,7 @@ protected:
       else if(!strcmp(r.key,"sys.resetRenderer")) AfxGetMainWnd()->PostMessageW(WM_APP+12,0,0);
       else if(!strcmp(r.key,"__capFrame")) AfxGetMainWnd()->PostMessageW(WM_APP+14,0,0);
     else if(!strcmp(r.key,"__report"))   LogF("report a problem clicked (not wired)");
+      else if(!strcmp(r.key,"sys.updateNow")) AfxGetMainWnd()->PostMessageW(WM_APP+56,0,0);
       else if(!strcmp(r.key,"src.rescan")) AfxGetMainWnd()->PostMessageW(WM_APP+19,0,0);
       else if(!strcmp(r.key,"src.rename")) AfxGetMainWnd()->PostMessageW(WM_APP+20,0,0);
       else if(!strcmp(r.key,"src.setup")) AfxGetMainWnd()->PostMessageW(WM_APP+16,0,0); } }
@@ -2462,6 +2615,85 @@ protected:
   DECLARE_MESSAGE_MAP()
 };
 
+
+// "Update available" card. Shown at start when the background check found a
+// release newer than this build, and by the System tab's Check-now row. Notify
+// only: the primary button opens the release page, because installing is the
+// user's call (and a self-update would fight the locked renderer DLL).
+class CUpdateCard : public CUiWnd {
+public:
+  std::wstring version, notes, pageText;
+  int hov=0; CRect openR, laterR, notesR, closeR;
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,
+                    CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,Px(760),Px(460)),owner,0); }
+  void Show(const UpdateState& s){
+    version=s.version; notes=s.notes; pageText=s.page;
+    if(pageText.empty()) pageText=L"https://github.com/spedagadi/unplugged-mpc-hc/releases";
+    Place(); ShowWindow(SW_SHOWNOACTIVATE);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    CRect rc; GetClientRect(rc); RECT sr; GetWindowRect(&sr);
+    LogF("[UPDATE] card shown for %S (%dx%d at %d,%d)",version.c_str(),
+         rc.Width(),rc.Height(),(int)sr.left,(int)sr.top); }
+  void HideCard(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void Place(){
+    if(!GetSafeHwnd()) return;
+    CRect pr; if(GetOwner()) GetOwner()->GetWindowRect(pr); else { pr=CRect(0,0,1920,1080); }
+    int w=min(Px(900),max(Px(640),pr.Width()-Px(160)));
+    int h=min(Px(560),max(Px(380),pr.Height()-Px(240)));
+    MoveWindow(pr.left+(pr.Width()-w)/2, pr.top+(pr.Height()-h)/2, w, h);
+    SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    CRect rc; GetClientRect(rc);
+    closeR=CRect(rc.right-Px(36),Px(10),rc.right-Px(10),Px(36));
+    int by=rc.bottom-Px(52), bh=Px(32);
+    laterR=CRect(rc.right-Px(16)-Px(110),by,rc.right-Px(16),by+bh);
+    openR=CRect(laterR.left-Px(10)-Px(190),by,laterR.left-Px(10),by+bh);
+    notesR=CRect(Px(28),Px(96),rc.right-Px(28),by-Px(16));
+    Invalidate(FALSE); }
+  void Remember(){     // never prompt for this version again automatically
+    g_ini["ui.dismissedVersion"]=Narrow(version); g_iniDirty=true; SaveIni("update dismissed"); }
+  void Open(){
+    if(!pageText.empty()) ShellExecuteW(nullptr,L"open",pageText.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+    LogF("[UPDATE] release page opened");
+    Remember(); HideCard(); }
+  void Later(){ LogF("[UPDATE] later"); Remember(); HideCard(); }
+protected:
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(14,14,14)); return TRUE; }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(14,14,14),RGB(100,100,100),Px(8));
+    TxtW(&dc,CRect(Px(28),Px(22),rc.right-Px(48),Px(50)),L"Update available",
+         RGB(255,255,255),17,true,DT_LEFT|DT_VCENTER);
+    std::wstring sub=L"Unplugged "+version+L" is available - you are on ";
+    sub+=kAppVersion; sub+=L".";
+    TxtW(&dc,CRect(Px(28),Px(52),rc.right-Px(28),Px(78)),sub.c_str(),ACCENT2,13,false,DT_LEFT|DT_VCENTER);
+    TxtW(&dc,CRect(closeR),L"\x2715",hov==100?RGB(255,255,255):MID,13,false,DT_CENTER|DT_VCENTER);
+    // Release notes, word-wrapped and clipped to the space above the buttons.
+    ::SetBkMode(dc.m_hDC,TRANSPARENT);
+    int saved=dc.SaveDC();
+    dc.IntersectClipRect(notesR);
+    TxtW(&dc,notesR,notes.empty()?L"(no notes in this release)":notes.c_str(),
+         RGB(0xCC,0xCC,0xCC),13,false,DT_LEFT|DT_TOP|DT_WORDBREAK);
+    dc.RestoreDC(saved);
+    Btn(&dc,openR,L"Open download page",true,hov==1);
+    Btn(&dc,laterR,L"Later",true,hov==2); }
+  void Btn(CDC* dc,CRect r,const wchar_t* t,bool en,bool hv){
+    RR(dc,r,Px(8),en?(hv?ACCENT:RGB(44,44,48)):RGB(26,26,28));
+    StrokeR(dc,r,Px(8),en?(hv?ACCENT2:RGB(70,70,74)):RGB(40,40,42));
+    TxtW(dc,r,t,en?(hv?RGB(255,255,255):RGB(0xE0,0xE0,0xE0)):RGB(0x55,0x55,0x55),
+         13,false,DT_CENTER|DT_VCENTER); }
+  void OnMouseMove(UINT,CPoint p){
+    int h=0; if(openR.PtInRect(p)) h=1; else if(laterR.PtInRect(p)) h=2; else if(closeR.PtInRect(p)) h=100;
+    if(h!=hov){ hov=h; Invalidate(FALSE); } }
+  void OnLButtonDown(UINT,CPoint p){
+    if(openR.PtInRect(p)){ Open(); return; }
+    if(laterR.PtInRect(p)||closeR.PtInRect(p)){ Later(); return; } }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CUpdateCard,CUiWnd)
+  ON_WM_PAINT() ON_WM_ERASEBKGND() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+END_MESSAGE_MAP()
 
 // Shared first-run / Rename-input card (FirstRunDialog + InputConfigDialog).
 struct DlPort { std::wstring url; int locked=0,dr=0; };
@@ -6171,6 +6403,7 @@ class CMainFrame : public CFrameWnd {
 public:
   CTopStrip m_top; CStatusRail m_status; CSettingsRail m_settings; CTransportBar m_bar;
   CConfirmCard m_confirm; CSetupCard m_setup; CFoldersCard m_folders; CHelpCard m_help;
+  CUpdateCard m_update;
   CPresetCard m_presets; CChapterTip m_uiTip; CTitlePanel m_titlePanel;
   CToastCard m_toast; CSplashPane m_splash; CPosterPane m_lib; bool m_shutdown=false;
   std::wstring m_appMode,m_mediaFolder,m_cfgPath,m_inputUrl,m_inputLabel;
@@ -6379,6 +6612,7 @@ public:
     m_settings.CreateUi(this,903); m_bar.CreateUi(this,904);
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty; m_top.Invalidate(FALSE);
     m_confirm.CreateCard(this);              // top-level, hidden until the X raises it
+    m_update.CreateCard(this);               // "update available" card (start-up prompt)
     m_setup.CreateCard(this);                // first-run / Rename-input, hidden until requested
     m_folders.CreateCard(this); m_folders.Bind(&m_lib.lib);   // Library folders…
     m_toast.CreateCard(this);                                // playback feedback
@@ -6413,6 +6647,7 @@ public:
     LoadWallpaper(g_host);                      // 11 MB PNG decodes on a worker, not here
     m_splash.ShowSplash(); SetTimer(4,SPLASH_MS,nullptr);
     SetTimer(2,300,nullptr);
+    SetTimer(13,4000,nullptr);          // one-shot: the daily update check
     SetTimer(TID_POINTER,POINTER_MS,nullptr); }
   // Everything visible lives inside the monitor: the frame is 2px bigger on each
   // side so DWM's ring is off-screen.
@@ -6605,7 +6840,8 @@ public:
     // longer get stuck for want of a message, which is what made the pointer
     // invisible over the video until the user left the app.
     const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
-                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible();
+                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible() ||
+                      m_update.IsWindowVisible();
     if((m_vp || InFilePlayback()) && !card && UiIdleMs()>=2500 && !OverChrome()) CursorHide();
     else CursorShow();
   }
@@ -6620,7 +6856,8 @@ public:
   void OnChromeIdle(){
     if(!m_uiUp){ ChromeTimerStop(); return; }
     const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
-                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible();
+                      m_setup.IsWindowVisible()   || m_folders.IsWindowVisible() ||
+                      m_update.IsWindowVisible();
     // Mode-agnostic: VP is always "showing something", media needs a file loaded.
     if(!(m_vp || InFilePlayback()) || m_lib.IsWindowVisible() || card){
       ChromeTimerArm(CHROME_IDLE_MS); return; }
@@ -6851,6 +7088,28 @@ public:
       LogF("preset picker open (dirty on Default -> create-preset header)");
       m_presets.ShowWarning(); }
     else { LogF("preset picker open"); m_presets.Show(); }
+    return 0; }
+  afx_msg LRESULT OnUpdateNow(WPARAM,LPARAM){ StartUpdateCheck(true); return 0; }
+  afx_msg LRESULT OnUpdateDone(WPARAM user,LPARAM){
+    UpdateState s; { std::lock_guard<std::mutex> lk(g_updMtx); s=g_upd; }
+    // Stamp the attempt: success or failure, the next automatic try is a day out.
+    g_ini["ui.lastUpdateCheck"]=std::to_string((long long)time(nullptr));
+    g_iniDirty=true; SaveIni("update check");
+    if(s.failed){
+      LogF("[UPDATE] check failed (offline, blocked, or no release)");
+      if(user) ShowToast(L"Could not check for updates.",2600);
+      return 0; }
+    LogF("[UPDATE] remote %S local %S newer=%d", s.version.c_str(), kAppVersion, s.newer?1:0);
+    if(!s.newer){
+      if(user) ShowToast((L"You are on the latest version ("+std::wstring(kAppVersion)+L").").c_str(),2600);
+      return 0; }
+    if(!user){
+      // Silent for a version the user already answered "Later" to. A MANUAL
+      // check always prompts, because the user asked for it.
+      const std::wstring dismissed=Widen(IniGet("ui.dismissedVersion"));
+      if(!dismissed.empty()&&_wcsicmp(dismissed.c_str(),s.version.c_str())==0){
+        LogF("[UPDATE] %S was dismissed - not prompting", s.version.c_str()); return 0; } }
+    m_update.Show(s);
     return 0; }
   afx_msg LRESULT OnPresetLocked(WPARAM,LPARAM){
     // Default refused a change (RefuseLocked / the NLS toggle): say why, on the
@@ -7238,6 +7497,16 @@ protected:
     if(id==8){ KillTimer(8); m_toast.Hide(); }
     if(id==10){ KillTimer(10); m_titlePanel.Hide(); }
     if(id==12){ KillTimer(12); PresetFlushPending(); }
+    if(id==13){ KillTimer(13);
+      // One check a day, only when the user has left the switch on. The stamp is
+      // written when the check COMPLETES (success or failure), so an offline box
+      // does not retry on every launch.
+      Row* a=FindRow("sys.updateCheck");
+      const long long last=atoll(IniGet("ui.lastUpdateCheck").c_str());
+      const long long now=(long long)time(nullptr);
+      if(a&&a->on&&(last<=0||now-last>=24*3600)) StartUpdateCheck(false);
+      else LogF("[UPDATE] automatic check skipped (switch=%d last=%lld)",
+                a?a->on?1:0:-1,(long long)last); }
     CFrameWnd::OnTimer(id); }
   // The taskbar (Shell_TrayWnd) is itself a topmost appbar, so a full-monitor
   // WS_POPUP does not cover it and the light-theme bar showed as a white strip
@@ -7375,6 +7644,9 @@ protected:
     UiActivity();
     // The confirm card is non-modal but keyboard-first: Esc dismisses it rather
     // than toggling chrome, Enter is the Yes button.
+    if(m_update.IsWindowVisible()){
+      if(vk==VK_ESCAPE){ m_update.Later(); return; }
+      if(vk==VK_RETURN){ m_update.Open(); return; } }
     if(m_confirm.IsWindowVisible()){
       if(vk==VK_ESCAPE){ LogF("confirm dismissed by Esc"); m_confirm.Dismiss(); return; }
       if(vk==VK_RETURN){ LogF("confirm accepted by Enter"); m_confirm.Accept(); return; } }
@@ -7528,6 +7800,8 @@ BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_MESSAGE(WM_APP+52, &CMainFrame::OnDismissPopups)
   ON_MESSAGE(WM_APP+53, &CMainFrame::OnToggleNls)
   ON_MESSAGE(WM_APP+54, &CMainFrame::OnPresetLocked)
+  ON_MESSAGE(WM_APP+56, &CMainFrame::OnUpdateNow)
+  ON_MESSAGE(WM_UPDATE_DONE, &CMainFrame::OnUpdateDone)
 END_MESSAGE_MAP()
 
 class CNativeUiApp : public CWinApp {

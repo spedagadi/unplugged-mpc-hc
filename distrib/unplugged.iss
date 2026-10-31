@@ -70,6 +70,10 @@
 ; or collide with an MPC-HC installation on the same machine.
 AppId={{E4A7C2D8-9B31-4F6A-8C2E-5D7B1A9F3E64}
 AppName={#MyAppName}
+; The running app holds this mutex (native_ui.cpp, single-instance guard). Inno
+; uses it to refuse installing over a live instance instead of failing halfway
+; while s3engine.dll and the filters are locked.
+AppMutex=Unplugged.Desktop.2.Single
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
