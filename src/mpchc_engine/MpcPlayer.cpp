@@ -3119,6 +3119,13 @@ HRESULT MpcPlayer::SetMlSettings(const MlSettings& m)
 
 HRESULT MpcPlayer::SaveRendererSettings()
 {
+    // Deferred for the same reason as the LUT (LoadCubeLut): this is a call into
+    // the renderer from the caller's thread, and a rebuild may be replacing it.
+    if (m_gopThread.joinable()) {
+        pendingSaveSettings_ = true;
+        QueueSettingsApply();
+        return renderer_ ? S_OK : S_FALSE;
+    }
     if (!renderer_) return S_FALSE;
     CComQIPtr<IVideoRenderer> vr = renderer_;
     if (!vr) return S_FALSE;
@@ -3241,24 +3248,23 @@ HRESULT MpcPlayer::GrabFrame(const std::string& utf8Path)
 
 HRESULT MpcPlayer::LoadCubeLut(const std::string& utf8Path, int mode)
 {
-    if (!renderer_) return S_FALSE;
-    CComQIPtr<IExFilterConfig> cfg = renderer_;
-    if (!cfg) return S_FALSE;
-
-    // The filter's handler ignores a zero-size blob, so an unload is sent as a
-    // single NUL — which trims to the empty path that means "clear".
-    static const char kNul = '\0';
-    const bool unloading = utf8Path.empty();
-    LPVOID p = unloading ? (LPVOID)&kNul : (LPVOID)utf8Path.data();
-    const int n = unloading ? 1 : (int)utf8Path.size();
-    const HRESULT hr = cfg->Flt_SetBin("cmd_loadCubeLut", p, n);
-
-    // Mode is a separate command so A/B-ing modes never re-parses the file.
-    // Sent after the load, which leaves the mode untouched.
-    if (mode >= 0 && mode <= 3) {
-        cfg->Flt_SetInt("cubeLutMode", mode);
+    // REMEMBERED, APPLIED BY THE GRAPH OWNER — never called into the renderer
+    // from here. This used to do Flt_SetBin on the caller's (UI) thread, and a
+    // LUT push that arrived while a rebuild was replacing the renderer hung the
+    // whole app inside that COM call: observed 31 Oct, a Dolby Vision title
+    // from the Apple TV triggered a format-change rebuild, the shell pushed its
+    // settings on the new generation and then the LUT command that PushAll
+    // issues last — the UI thread never returned. QueueSettingsApply runs
+    // ApplyPendingSettings serially against every graph mutation, so the LUT
+    // lands on the renderer that exists AFTER the rebuild.
+    {
+        std::lock_guard<std::mutex> lk(m_lutMtx);
+        pendingLutPath_ = utf8Path;
+        pendingLutMode_ = (mode >= 0 && mode <= 3) ? mode : 3;
+        hasLut_ = true;
     }
-    return hr;
+    QueueSettingsApply();
+    return S_OK;
 }
 
 HRESULT MpcPlayer::GetMlSettings(MlSettings& m) const
@@ -3378,6 +3384,37 @@ void MpcPlayer::ApplyPendingSettings()
     Log("[ENGINE] ApplyPendingSettings: SetSettings ENTER");
     vr->SetSettings(s);
     Log("[ENGINE] ApplyPendingSettings: SetSettings RETURN");
+
+    // The pending calibration LUT, on the renderer that exists NOW (see
+    // LoadCubeLut). Taken only when there is a renderer to give it to, so a LUT
+    // set before the first build survives to that build.
+    if (!m_inGraphBuild) {
+        std::string lutPath; int lutMode = 3; bool has = false;
+        {
+            std::lock_guard<std::mutex> lk(m_lutMtx);
+            if (hasLut_) { has = true; lutPath = pendingLutPath_; lutMode = pendingLutMode_; hasLut_ = false; }
+        }
+        if (pendingSaveSettings_.exchange(false)) {
+            CComQIPtr<IVideoRenderer> vrSave = renderer_;
+            if (vrSave) vrSave->SaveSettings();
+        }
+        if (has) {
+            CComQIPtr<IExFilterConfig> cfg = renderer_;
+            if (cfg) {
+                // The filter's handler ignores a zero-size blob, so an unload is
+                // sent as a single NUL — which trims to the empty path that
+                // means "clear".
+                static const char kNul = '\0';
+                const bool unloading = lutPath.empty();
+                LPVOID p = unloading ? (LPVOID)&kNul : (LPVOID)lutPath.data();
+                const int n = unloading ? 1 : (int)lutPath.size();
+                const HRESULT hrLut = cfg->Flt_SetBin("cmd_loadCubeLut", p, n);
+                if (SUCCEEDED(hrLut)) cfg->Flt_SetInt("cubeLutMode", lutMode);
+                Log("[ENGINE] LUT applied on the settings path: mode=%d path='%s' hr=0x%08X",
+                    lutMode, lutPath.c_str(), (unsigned)hrLut);
+            }
+        }
+    }
     Log("[ENGINE] ApplyPendingSettings: hdr=%d ml=%d out=%d geo=%d pushed rebuild=%d",
         hasHdr_ ? 1 : 0, hasMl_ ? 1 : 0, hasOut_ ? 1 : 0, hasGeom_ ? 1 : 0,
         needRebuild ? 1 : 0);

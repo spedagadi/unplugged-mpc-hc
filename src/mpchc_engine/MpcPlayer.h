@@ -538,11 +538,21 @@ public:
     GeometrySettings pendingGeom_{};
     NlsSettings pendingNls_{};
     PostFxState pendingPostFx_{};
+    // Display-calibration LUT, remembered and applied by the graph owner. The
+    // UI thread must never call into the renderer while a rebuild may be in
+    // flight: Flt_SetBin to a dying renderer blocked it (see LoadCubeLut).
+    bool        hasLut_ = false;
+    std::string pendingLutPath_;
+    int         pendingLutMode_ = 3;
+    // Same rule for the renderer's own registry save: it is a call INTO the
+    // renderer, so it is deferred to the graph owner when a rebuild may run.
+    std::atomic<bool> pendingSaveSettings_{false};
     bool hasHdr_ = false, hasMl_ = false, hasOut_ = false, hasGeom_ = false,
          hasNls_ = false, hasPostFx_ = false;
     GeometrySettings geometry_{};
     NlsSettings nls_{};
     std::mutex m_geomMtx;
+    std::mutex m_lutMtx;      // guards hasLut_/pendingLutPath_/pendingLutMode_
     std::string m_lastNlsSrc;
     // Detected-bar watch. The renderer reports the band through GetMLStats, and a
     // one-shot read at injection time catches whatever the detector held at that
