@@ -137,6 +137,9 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 | **Exposure** | −5…+5 | 0 | A brightness dial that works **before** the tone curve, in thirds of a stop: ±1 = ±⅓ stop, ±3 = ±1 stop. Because it's pre-curve, the shoulder absorbs it — brightness without spending your highlights. The safest lever when a specific film looks dark or washed. |
 | **Shadow detail** | −5…+5 | 0 | How much texture survives in the dark end. **Positive** spreads dark values apart — you see fabric weave, night-scene layout, object edges — while true black stays black (it is *detail*, not a brightness lift). **Negative** compresses blacks together, for a denser, more "filmic" shadow that hides crushed masters. Never greys the image. |
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
+| **Output gamut** | `BT.709 (standard)` / `BT.2020 (wide)` | 709 | The colour space delivered. 709 is what SDR (and effectively every TV's SDR mode) expects. BT.2020 keeps wide colour *only* for a display actually in HDR/wide-gamut mode — on a normal SDR pipeline it makes colours wrong. Leave on 709 unless you know exactly why you changed it. |
+| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
+| **Highlight desat** | 0…1 | 0 | A companion to the row above for **the Unplugged curve**: at higher brightness levels, pull saturation toward the level's own neutral point (hue preserved). Measured against reference renderers, 0.50 matches; 0 is off. Note: it runs inside the grade, so it needs *Enable ML grade* (Zion tab) on. |
 
 **Exposure**, **Shadow detail** and **Contrast** are taste trims — they work
 the same on both tone curves. The Curve Settings section is the opposite: every
@@ -158,15 +161,7 @@ adjustment surface, and no Curve Settings section appears at all.
 | **GT7 shoulder reach** | 0.02…0.90 | 0.25 | Highlight headroom: **lower = longer shoulder**, more brightness band survives before detail merges to white; higher punches mid-highs but clips sooner. The first dial to turn down if explosions clip. |
 | **GT7 debug view** | `Off` + 4 greyscale modes | Off | Diagnostic overlays of the curve's internals. Leave Off for watching. |
 
-### Tone Mapping (delivery & gamut)
-
-| Setting | Choices / range | Default | What it does |
-| --- | --- | --- | --- |
-| **Output gamut** | `BT.709 (standard)` / `BT.2020 (wide)` | 709 | The colour space delivered. 709 is what SDR (and effectively every TV's SDR mode) expects. BT.2020 keeps wide colour *only* for a display actually in HDR/wide-gamut mode — on a normal SDR pipeline it makes colours wrong. Leave on 709 unless you know exactly why you changed it. |
-| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
-| **Highlight desat** | 0…1 | 0 | A companion to the row above for **the Unplugged curve**: at higher brightness levels, pull saturation toward the level's own neutral point (hue preserved). Measured against reference renderers, 0.50 matches; 0 is off. Note: it runs inside the grade, so it needs *Enable ML grade* (Zion tab) on. |
-
-### Display Target — calibrate these first
+### Display Target
 
 These describe **your TV/projector**, not the content. Set once per display.
 
@@ -177,7 +172,7 @@ These describe **your TV/projector**, not the content. Set once per display.
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
 | **Subtitle/OSD brightness** | 0…100 | 0 | How bright subtitle and on-screen text renders against the finished picture. 0 = normal. Raise if text gets lost in bright content — it lifts the text layer only, never the film. |
 
-### Post-FX — optional clean-up layers
+### Post-FX
 
 These run **after** tone mapping and grading, on the final image — they behave
 identically on SDR, HDR10 and Dolby Vision sources.
@@ -204,7 +199,7 @@ owns the whole tab, and there's a one-click undo for a session gone wrong.
 | **Enable ML grade** | On | The master switch for everything on this tab. Off = the render is pure tone curve + post-FX; every section below becomes decorative. Turning it on while **Mode** is `Off` also sets Mode to `Auto` — the switch is the master, and it says so in the row above it. |
 | **⟲ Reset grade to defaults** | — | Asks, then restores every row on this tab to its factory value. The quickest way out of a grade you can't diagnose. |
 
-### Tone Curve (grade section)
+### Tone Curve
 
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
@@ -244,7 +239,10 @@ enable switch even if the tone-curve Mode is Off.
 | **Ratio cap** | 1.0…2.0 | 1.4 | The halo limiter: the maximum contrast ratio one pixel's neighbourhood may be pushed to. Lower = gentler, no rims; higher = stronger effect, but >1.7 on hard edges is where halos come from. |
 | **Skin protect** | 0…1 | 0.65 | Faces get only this fraction of the effect — the difference between "pores" and "stubble texture on a model". |
 
-### Debug (diagnostics — leave Off for normal viewing)
+### Debug
+
+Diagnostics for finding out *why* the picture is what it is. Leave every row
+here Off for normal viewing.
 
 | Setting | What it does |
 | --- | --- |
@@ -306,13 +304,23 @@ the rest of the frame is graded.
 | **Zoom** | 50 – 200 % | 100 % | Scales the fitted picture. Above 100 % crops the overflow; use with Pan. 100 % is the neutral fit. |
 | **Pan X** | -100 – 100 % | 0 % | Moves a zoomed picture horizontally across its overflow. Has no effect while the picture fits inside the window. |
 | **Pan Y** | -100 – 100 % | 0 % | Moves a zoomed picture vertically across its overflow. Has no effect while the picture fits inside the window. |
+
+### Non-linear stretch
+
+A separate section in the rail, below **Geometry**. Everything here applies
+**live, including on a paused frame** — the geometry moves with the sliders and
+with **N**. That is deliberate: it is the only practical way to judge the sweet
+spot.
+
+| Setting | Choices / range | Default | What it does |
+| --- | --- | --- | --- |
 | **Enable NLS** | On/Off | Off | Non-linear stretch: expands the active picture toward the screen edges while keeping the central band close to its original geometry. Intended for scope screens, projectors and anamorphic setups. Uses Fill geometry automatically. |
 | **Bars removed** | 0 – 100 % | 100 % | How much of the letterbox the picture grows into. **0** shows it at its own aspect (bars untouched, no distortion); **100** fills the screen. The correction the fill costs scales with it — taking half the bars costs half the distortion — so this is the "how many of the black bars do I get rid of" dial. Whatever is left can be zoomed away, which spends side picture instead of shape. |
 | **Axis** | `Horizontal` / `Vertical` / `Split` | Horizontal | Which axis carries the aspect correction. **Horizontal** is the classic non-linear stretch/squeeze (all of it on the sides); **Vertical** pays the same correction on the other axis (for anamorphic setups). **Split** shares it between the two: the horizontal axis takes the **Split** percentage and the vertical the rest, so a 24 % correction becomes ~12 % up-and-down plus ~12 % sideways instead of 24 % in one direction — the same fill with half the distortion per axis. |
-| **Split** | 0 – 100 % | 50 % | Horizontal's share of the correction when **Axis = Split**. 100 % is the horizontal-only pass; 0 % is vertical-only; 50 % is even (the two axis factors then multiply to 1, so image area is kept). |
 | **Strength** | 0 – 100 % | 100 % | How much of the correction the warp actually applies. At 0 the fill still happens but nothing is corrected — the picture is stretched uniformly, which is the worst-case look you are tuning away from; at 100 the whole correction is redistributed. Use it to find the point where the shape starts to hurt. |
 | **Centre protection** | 0 – 90 % | 45 % | The fraction of the picture kept at correct geometry, measured from the middle out. Everything inside it is a uniform zoom — no distortion at all — and the whole correction is squeezed into the rim beyond it. Low values (35–45) spread the distortion gradually, which is gentler on the very edge but starts to bend faces around 72 % of the way out. High values (80–90) keep the middle, including faces near the sides, perfectly clean and dump everything into a narrow rim: extreme at the edge, but it is the part you would crop anyway. A *stretching* axis cannot be protected as far as a squeezing one (the map would run out of range), so the effective cap is lower when **Axis** puts the correction on the vertical side. |
 | **Curve** | 1.0 – 2.9 | 1.2 | Distribution of the stretch across the outer band. Higher values push more distortion toward the edges — the upper half of the range is what makes a very high **Centre protection** read as "clean middle, squeezed rim". |
+| **Split** | 0 – 100 % | 50 % | Horizontal's share of the correction when **Axis = Split**. 100 % is the horizontal-only pass; 0 % is vertical-only; 50 % is even (the two axis factors then multiply to 1, so image area is kept). |
 | **Max distortion** | 100 – 150 % | 140 % | Per-axis limit on the aspect correction, in **both** directions (e.g. 110 % = at most 10 % on each axis). Whatever the warp refuses to take is covered by cropping the axis that has slack — the sides for a picture still too wide, the top/bottom for one still too narrow — so this is the dial between "distort a little and crop a little" and "distort more and crop less". Setting it **below** what a title needs is also what lets Auto fill a hard case instead of letterboxing it (see Fill mode). Stretch mode ignores it, because Stretch never crops. |
 | **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small). **Crop** scales uniformly until the picture covers the screen and cuts the overflow — zero distortion, spends picture. **Auto** warps, capping each axis at **Max distortion**, and crops the remainder; it fills whenever the correction is inside **Fill limit** *or* **Max distortion** is set below the correction (an explicit budget — that is what makes a scope film fill a 16:9 screen), and shows the film letterboxed at its own aspect otherwise. **Off** letterboxes at the picture's own aspect. |
 | **Fill limit** | 100 – 200 % | 105 % | The largest aspect correction Auto will fill with when **Max distortion** is not the tighter number. Beyond it, Auto letterboxes instead of filling — unless Max distortion says otherwise. The live panel's **Fill cost** row shows what the current title needs — a 2.39 film on a 16:9 screen is 36 %. |
@@ -320,9 +328,9 @@ the rest of the frame is graded.
 
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does.
 
-Everything in this section applies **live, including on a paused frame** — the geometry moves with the sliders and with **N**. That is deliberate: it is the only practical way to judge the sweet spot. The Info panel's **Warp / Crop** row shows what the current settings are actually costing, so "why does it look like that" has a number next to it.
+While tuning, the Info panel's **Warp / Crop** row shows what the current settings are actually costing, so "why does it look like that" has a number next to it.
 
-### Output
+### Output (statistics & frame capture)
 
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
@@ -413,3 +421,4 @@ controls.
   SDR-path feature.
 - Subtitle *styling* (font, size, colour) is not in this panel; only track
   selection is.
+
