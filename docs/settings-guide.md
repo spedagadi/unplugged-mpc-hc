@@ -1,23 +1,33 @@
 # Unplugged Settings Guide
 
-For **Unplugged 1.3.0**. Covers every control visible in the settings panel:
-what it does, its full range, and what the picture does when you move it.
+For **Unplugged 2.0.0**. Covers every control visible in the settings panel:
+what it does, its full range, and what the picture does when you move it. A few
+advanced rows (renderer backend, deinterlacing, present timing, tray icon) are
+kept behind the internal switch and are listed under *Current limitations*.
 
 ## Playback keys
 
-Media Player mode only — live capture has no position to seek. Every binding
-is an ordinary key inside the Unplugged window: nothing is captured while
-another app has focus, so Unplugged never interferes with anything else
-running on the machine.
+Media Player mode only for the transport keys — live capture has no position to
+seek or pause. The chrome keys (↑ / F1 / Esc), volume, mute and **N** work in
+video processor mode as well. Every binding is an ordinary key inside the
+Unplugged window: nothing is captured while another app has focus, so Unplugged
+never interferes with anything else running on the machine.
 
 | Key | Action |
 | --- | --- |
-| Space | pause / resume |
-| ← / → | back / forward 30 s |
-| ↑ | show / hide the settings chrome while playing |
+| Space / Enter | pause / resume |
+| ← / → | back / forward 10 s; **Shift** = 60 s. While paused, one frame per press |
+| PgUp / PgDn | previous / next chapter |
+| Home / End | start / end of the title |
+| 0 – 9 | jump to 0 % – 90 % of the title |
+| ↑ or F1 | show / hide the full chrome |
 | + / − or ↓ | volume up / down |
 | M | mute |
+| N | NLS on / off (same as the transport-bar button) |
+| S | stop back to the library |
+| Ctrl+S | save the current frame as PNG (paused only) |
 | Esc | close settings → stop back to the library → quit the app, one layer per press |
+| Alt+F4 | asks before closing |
 
 ## How to get started
 
@@ -62,9 +72,11 @@ running on the machine.
   (Source, System) is always open.
 - **Toggles** flip ON/OFF with one click. **Option rows** (`‹ value ›`) cycle
   through their choices — click the right side to advance. **Sliders** are
-  dragged on the bar; hover the bar and use the **mouse wheel** for exact
-  single steps (1 unit on whole-number rows, 0.01 on decimal rows — this is how
-  you land on a measured value like 174 nits).
+  dragged on the bar; hover the bar and use the **mouse wheel** for one step of
+  that row (1 on whole-number rows; the row's own increment on decimals — 0.01
+  on most, 0.05 on NLS Curve, 0.001 on Display black) — this is how you land on
+  a measured value like 174 nits. With the panel focused, **←/→** move the row
+  focus; **↑** stays the chrome toggle everywhere, including here.
 - Everything applies **live** to the running picture and is saved immediately —
   except rows marked *[next open]* below, which take effect the next time a
   file or capture starts (they change which pipeline the renderer builds).
@@ -120,19 +132,27 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
 | **Convert to SDR** | On / Off *[next open]* | On | On: HDR video is tone-mapped into the normal (SDR) range this app renders. Off: the HDR signal is passed on for your TV itself to map — only sensible with an HDR-capable TV in HDR mode. When Off, everything else in this tab and the Zion tab stops mattering, because this app is no longer doing the picture. |
-| **SDR display nits** | 25…400 | 50 | The **measured** SDR white luminance of your display — a calibration number like *Static nits (max)* below, never a taste knob. Enter your measured value (a TV in a bright room typically 100–200; a projector in the dark 40–80) and leave it there. What a wrong number does: declared *below* your measurement, the picture runs bright and the highlights pay — the shoulder clips sooner and sky detail goes first; declared *above* it, films render dark with headroom unused. Brightness without lying about your panel is what **Exposure** is for. |
+| **SDR display nits** | 25…400 | 80 | The **measured** SDR white luminance of your display — a calibration number like *Static nits (max)* below, never a taste knob. Enter your measured value (a TV in a bright room typically 100–200; a projector in the dark 40–80) and leave it there. What a wrong number does: declared *below* your measurement, the picture runs bright and the highlights pay — the shoulder clips sooner and sky detail goes first; declared *above* it, films render dark with headroom unused. Brightness without lying about your panel is what **Exposure** is for. |
 | **Tone curve** | `Unplugged` / `GT7 Adapt` | `Unplugged` | How HDR's brightness range is squeezed into your display's. **Unplugged** — the house curve, and the safe choice for everything Dolby Vision: DV carries its own per-scene mastering and this curve respects it. **GT7 Adapt** — the house curve for HDR10/HLG, which blends the title's declared peak with what each scene measures. The taste trims below work on both; switching curve changes the Curve Settings dials shown. |
 | **Exposure** | −5…+5 | 0 | A brightness dial that works **before** the tone curve, in thirds of a stop: ±1 = ±⅓ stop, ±3 = ±1 stop. Because it's pre-curve, the shoulder absorbs it — brightness without spending your highlights. The safest lever when a specific film looks dark or washed. |
 | **Shadow detail** | −5…+5 | 0 | How much texture survives in the dark end. **Positive** spreads dark values apart — you see fabric weave, night-scene layout, object edges — while true black stays black (it is *detail*, not a brightness lift). **Negative** compresses blacks together, for a denser, more "filmic" shadow that hides crushed masters. Never greys the image. |
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
 
 **Exposure**, **Shadow detail** and **Contrast** are taste trims — they work
-the same on both tone curves. The Curve Settings dials are the opposite: they
-belong to one curve, so the rail hides them when that curve isn't selected.
-(On **Unplugged** no Curve Settings section appears at all — the trims above
-are the whole adjustment surface. It reappears with **GT7 Adapt** selected.)
+the same on both tone curves. The Curve Settings section is the opposite: its
+rows belong to one curve, so the rail shows only the selected curve's dials —
+three on **Unplugged**, nine on **GT7 Adapt**. **Title peak (nits)** is common
+to both.
 
-### Curve Settings (appears only for **GT7 Adapt**)
+### Curve Settings — **Unplugged**
+
+| Setting | Range | Default | What it does |
+| --- | --- | --- | --- |
+| **Title peak (nits)** | 100…4000 | 1000 | The content peak the curve squeezes from. Leave at 1000 unless you know the disc's MaxCLL. |
+| **Highlight neutral (head)** | 0…1 | 0.9 | Where the bright end is treated as fully neutral before any highlight desaturation. The shipped 0.9 is the value measured against reference renderers; lower pulls the shoulder toward grey sooner (calmer, flatter highlights), higher keeps colour further up into the peak. |
+| **Chroma desat (exp)** | −1.0…3.5 | 1.35 | The exponent that shapes how fast colour fades out of the brightest highlights. 1.0 is a gentle fade; the shipped 1.35 takes saturated highlights toward their own neutral; above ~2 the top end goes close to white. |
+
+### Curve Settings — **GT7 Adapt**
 
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
@@ -174,7 +194,7 @@ identically on SDR, HDR10 and Dolby Vision sources.
 | --- | --- | --- | --- |
 | **Adaptive sharpen** | On / Off | Off | Edge-adaptive detail: measures each edge against its local neighbourhood and limits itself, so it adds detail without white halos. Soft SD/HD sources benefit; clean 4K rarely needs it. |
 | **Sharpen strength** | 0.3…1.5 | 1.0 | How much of that adaptive detail to add. 0.3 is a whisper, 1.0 strong and still safe, ~1.2+ starts showing its hand on film grain. |
-| **Deband** | On / Off | Off | Removes the stepped bands that appear in slow gradients (sky fades, dark walls) — the banding the 10→8-bit conversion creates — by flattening each band edge then covering the work with fine grain. |
+| **Deband** | On / Off | On | Removes the stepped bands that appear in slow gradients (sky fades, dark walls) — the banding the 10→8-bit conversion creates — by flattening each band edge then covering the work with fine grain. On by default; only turn it off if you would rather keep the grain exactly as encoded. |
 | **Deband threshold** | 0…256 | 32 | How small a gradient step gets treated; pushing it high starts eating real picture detail. |
 | **Deband range** | 1…64 | 16 | How wide an area is blended per band. |
 | **Deband iterations** | 1…4 | 1 | Processing passes; 2 is usually the honest maximum. |
@@ -189,7 +209,7 @@ owns the whole tab, and there's a one-click undo for a session gone wrong.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| **Enable ML grade** | On | The master switch for everything on this tab. Off = the render is pure tone curve + post-FX; every section below becomes decorative. |
+| **Enable ML grade** | On | The master switch for everything on this tab. Off = the render is pure tone curve + post-FX; every section below becomes decorative. Turning it on while **Mode** is `Off` also sets Mode to `Auto` — the switch is the master, and it says so in the row above it. |
 | **⟲ Reset grade to defaults** | — | Asks, then restores every row on this tab to its factory value. The quickest way out of a grade you can't diagnose. |
 
 ### Tone Curve (grade section)
@@ -281,9 +301,9 @@ the rest of the frame is graded.
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
 | **Super Resolution** | On/Off | Off | The renderer's upscaler for small sources: SD/HD material on a 4K panel gets a genuine reconstruction pass instead of plain interpolation. Turning it On also enables the two plumbing switches it needs (behind the scenes, no action from you). Know its limits: it doesn't engage for 10-bit or HDR sources, needs RTX-class NVIDIA or Intel graphics, and a 4K source on a 4K display has nothing to upscale. Windows' and the NVIDIA panel's own settings are outside this app's reach. |
-| **Chroma upsampling** | `Nearest` / `Bilinear` / `CatmullRom` / `KrigBilateral` | Bilinear | How colour from 4:2:0 video (almost all of it) is expanded to full resolution. Nearest: raw blocks — diagnostic only. Bilinear: soft, never wrong. CatmullRom: a bit sharper. KrigBilateral: the sharpest colour edges (best on fine chroma detail like red text), the most GPU work. |
-| **Upscaling** | `Nearest` / `Mitchell` / `CatmullRom` / `Lanczos2` / `Lanczos3` / `Jinc2` | CatmullRom | The enlargement filter for smaller-than-display sources. Gentle climb from soft to sharp: Mitchell (very smooth) → CatmullRom (balanced default) → Lanczos2 → Lanczos3 (crisper, small risk of ringing on edges) → Jinc2 (sharpest, ringing-prone on grain). On noisy SD material, sharper is not better. |
-| **Downscaling** | `Box` / `Bilinear` / `Hamming` / `Bicubic` / `BicubicSharp` / `Lanczos` | Hamming | Shrinking a source to fit. Hamming is the balanced default: preserves detail without aliasing. Box/Bilinear go soft, Lanczos/BicubicSharp go crisp and can shimmer on fine patterns (thatches, fences). Matters most for 4K→1080p panels. |
+| **Chroma upsampling** | `CatmullRom` / `KrigBilateral` | KrigBilateral | How colour from 4:2:0 video (almost all of it) is expanded to full resolution. CatmullRom is the cheaper, always-safe filter; KrigBilateral reconstructs chroma edges from the luma (best on fine colour detail like red subtitle text) at noticeably more GPU cost. |
+| **Upscaling** | `Lanczos3` / `Jinc2` | Jinc2 | The enlargement filter for smaller-than-display sources. Jinc2 is the sharper reconstruction (the default, best for SD/HD onto 4K); Lanczos3 is a touch calmer, with less ringing on hard edges and grain. On noisy material, sharper is not better. |
+| **Downscaling** | `Lanczos` / `BicubicSharp` | Lanczos | Shrinking a source to fit. Lanczos keeps detail on fine patterns; BicubicSharp is a touch softer and calmer on grain. Matters most for 4K→1080p panels. |
 
 ### Geometry
 
@@ -298,15 +318,17 @@ the rest of the frame is graded.
 | **Bars removed** | 0 – 100 % | 100 % | How much of the letterbox the picture grows into. **0** shows it at its own aspect (bars untouched, no distortion); **100** fills the screen. The correction the fill costs scales with it — taking half the bars costs half the distortion — so this is the "how many of the black bars do I get rid of" dial. Whatever is left can be zoomed away, which spends side picture instead of shape. |
 | **Axis** | `Horizontal` / `Vertical` / `Split` | Horizontal | Which axis carries the aspect correction. **Horizontal** is the classic non-linear stretch/squeeze (all of it on the sides); **Vertical** pays the same correction on the other axis (for anamorphic setups). **Split** shares it between the two: the horizontal axis takes the **Split** percentage and the vertical the rest, so a 24 % correction becomes ~12 % up-and-down plus ~12 % sideways instead of 24 % in one direction — the same fill with half the distortion per axis. |
 | **Split** | 0 – 100 % | 50 % | Horizontal's share of the correction when **Axis = Split**. 100 % is the horizontal-only pass; 0 % is vertical-only; 50 % is even (the two axis factors then multiply to 1, so image area is kept). |
-| **Strength** | 0 – 100 % | 100 % | How much of the available correction is applied. 0 is off; 100 fills the screen. |
+| **Strength** | 0 – 100 % | 100 % | How much of the correction the warp actually applies. At 0 the fill still happens but nothing is corrected — the picture is stretched uniformly, which is the worst-case look you are tuning away from; at 100 the whole correction is redistributed. Use it to find the point where the shape starts to hurt. |
 | **Centre protection** | 0 – 90 % | 45 % | The fraction of the picture kept at correct geometry, measured from the middle out. Everything inside it is a uniform zoom — no distortion at all — and the whole correction is squeezed into the rim beyond it. Low values (35–45) spread the distortion gradually, which is gentler on the very edge but starts to bend faces around 72 % of the way out. High values (80–90) keep the middle, including faces near the sides, perfectly clean and dump everything into a narrow rim: extreme at the edge, but it is the part you would crop anyway. A *stretching* axis cannot be protected as far as a squeezing one (the map would run out of range), so the effective cap is lower when **Axis** puts the correction on the vertical side. |
-| **Curve** | 1.0 – 2.9 | 2.0 | Distribution of the stretch across the outer band. Higher values push more distortion toward the edges. |
+| **Curve** | 1.0 – 2.9 | 1.2 | Distribution of the stretch across the outer band. Higher values push more distortion toward the edges — the upper half of the range is what makes a very high **Centre protection** read as "clean middle, squeezed rim". |
 | **Max distortion** | 100 – 150 % | 140 % | Per-axis limit on the aspect correction, in **both** directions (e.g. 110 % = at most 10 % on each axis). Whatever the warp refuses to take is covered by cropping the axis that has slack — the sides for a picture still too wide, the top/bottom for one still too narrow — so this is the dial between "distort a little and crop a little" and "distort more and crop less". Setting it **below** what a title needs is also what lets Auto fill a hard case instead of letterboxing it (see Fill mode). Stretch mode ignores it, because Stretch never crops. |
 | **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small). **Crop** scales uniformly until the picture covers the screen and cuts the overflow — zero distortion, spends picture. **Auto** warps, capping each axis at **Max distortion**, and crops the remainder; it fills whenever the correction is inside **Fill limit** *or* **Max distortion** is set below the correction (an explicit budget — that is what makes a scope film fill a 16:9 screen), and shows the film letterboxed at its own aspect otherwise. **Off** letterboxes at the picture's own aspect. |
 | **Fill limit** | 100 – 200 % | 105 % | The largest aspect correction Auto will fill with when **Max distortion** is not the tighter number. Beyond it, Auto letterboxes instead of filling — unless Max distortion says otherwise. The live panel's **Fill cost** row shows what the current title needs — a 2.39 film on a 16:9 screen is 36 %. |
 | **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. |
 
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does.
+
+Everything in this section applies **live, including on a paused frame** — the geometry moves with the sliders and with **N**. That is deliberate: it is the only practical way to judge the sweet spot. The Info panel's **Warp / Crop** row shows what the current settings are actually costing, so "why does it look like that" has a number next to it.
 
 ### Output
 
@@ -328,10 +350,13 @@ Nothing asks for your screen size. The app is full-screen, so the window it cove
 
 ### App
 
-| Setting | What it does |
-| --- | --- |
-| **⟲ Reset renderer settings** | Deletes what the *renderer* stored in the registry (it keeps state of its own, and a previous machine's leftovers can ride along in a copy of the app). Your rail settings are re-applied immediately — this undoes registry state, not your configuration. |
-| **▶ First-time setup… (restarts app)** | Restarts into the setup wizard (stops playback). |
+| Setting | Choices | Default | What it does |
+| --- | --- | --- | --- |
+| **Report a problem** | button | — | The support action for a picture or playback problem. *Not wired in this build — it only writes a line to the log.* |
+| **Show context banner for settings** | On / Off | On | Draws the short explanation banner above the rows while you move around the panel. Off gives more rows on screen once you know the controls. |
+| **Play next item automatically** | On / Off | On | When a title ends, offers the next episode/film in the library after a five-second countdown; **Esc** (or the card's Cancel) stops it. Off returns to the library at the end of the title. |
+| **⟲ Reset renderer settings** | button | — | Deletes what the *renderer* stored in the registry (it keeps state of its own, and a previous machine's leftovers can ride along in a copy of the app). Your rail settings are re-applied immediately — this undoes registry state, not your configuration. |
+| **▶ First-time setup… (restarts app)** | button | — | Restarts into the setup wizard (stops playback). |
 
 ---
 
@@ -369,8 +394,8 @@ strength down), **Shadow detail** down.
 only raise **Threshold** if bands persist, and check **Grain** isn't at 0.
 
 **"DVD/Blu-ray on my 4K TV looks soft."** **Super Resolution** On (RTX GPU,
-SDR content). **Upscaling** to Lanczos2 for a crisper baseline — or leave
-CatmullRom and let SR do the work.
+SDR content). **Upscaling** to Jinc2 for a crisper baseline — or leave Lanczos3
+and let SR do the work.
 
 **New projector/TV?** Measure it (or use published numbers): **SDR display
 nits** from your white patch, **Static nits (max)** with the wheel, **Display
@@ -385,8 +410,13 @@ controls.
 - **Playback → Delay** (audio lip-sync) saves but does nothing yet.
 - **Zion → Chroma → Mode** saves but does nothing yet; the Default behaviour
   always runs.
-- Small enable-squares drawn beside some sliders are legacy chrome —
-  they don't click. Set a slider to its 0/neutral value to bypass it.
+- **System → Report a problem** saves a log line only; no report is sent.
+- **Hidden developer rows.** A set of renderer-level rows (Use Direct3D 11,
+  Texture format, the VP input-format switches, Deinterlacing, Swap effect,
+  Exclusive fullscreen, Wait for VBlank, Adjust present time, Reinit on display
+  change, Tray icon, Prefer DV over PQ/HLG) exists but is not shown by default.
+  Their shipped values are the right ones; they are kept out of the rail so the
+  picture controls are not buried.
 - Super Resolution is not available for HDR or 10-bit sources; it is a
   SDR-path feature.
 - Subtitle *styling* (font, size, colour) is not in this panel; only track
