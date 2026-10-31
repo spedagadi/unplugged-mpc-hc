@@ -210,12 +210,35 @@ static void PollOnce() {
             fflush(stdout);
             if (++g_cfg >= (int)(sizeof(kCfgs) / sizeof(kCfgs[0]))) {
                 Note("table done");
-                g_phase = 9;
-                PostQuitMessage(0);
+                g_phase = 20;
                 break;
             }
             Cmd((std::string("{\"a\":\"set\",\"sets\":\"") + kCfgs[g_cfg].sets + "\"}").c_str());
             g_phaseAt = now;
+        }
+        break;
+    // The picture CANVAS moving on a paused frame: the shell hides its chrome and
+    // asks for the vacated area. The destination rect must follow AND be redrawn,
+    // or the old (smaller) picture stays on screen with black were the panel was.
+    case 20:
+        if (now - g_phaseAt > 600) {
+            Cmd("{\"a\":\"videorect\",\"x\":0,\"y\":66,\"w\":624,\"h\":249}");
+            Note("videorect -> chrome-up canvas (paused)");
+            g_phase = 21; g_phaseAt = now;
+        }
+        break;
+    case 21:
+        if (now - g_phaseAt > 900) {
+            Cmd("{\"a\":\"videorect\",\"x\":0,\"y\":0,\"w\":0,\"h\":0}");
+            Note("videorect -> cleared (chrome hidden, paused)");
+            g_phase = 22; g_phaseAt = now;
+        }
+        break;
+    case 22:
+        if (now - g_phaseAt > 900) {
+            Note("videorect legs done");
+            g_phase = 9;
+            PostQuitMessage(0);
         }
         break;
     default:

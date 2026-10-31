@@ -482,12 +482,19 @@ MpcPlayer::MpcPlayer()
             // Calling into the renderer while a capture streams takes the lock the
             // capture thread holds; measured as a UI freeze and, with a chrome
             // toggle, a hung window that had to be killed.
-            if (m_videoRectPending.exchange(false)) ResizeVideo();
+            if (m_videoRectPending.exchange(false)) {
+                ResizeVideo();
+                // The picture CANVAS moved (the shell hid or raised its chrome).
+                // A paused frame only repaints when asked, so without this the
+                // old, smaller destination stayed on screen and the area the
+                // chrome vacated was left black until playback resumed.
+                if (snapshot_.state == State::Paused) m_redrawPending = true;
+            }
             // Same thread, AFTER the geometry above: a paused frame only repaints
             // when asked to, and asking before the new destination rect landed
             // drew the old one (NLS on/off on a paused frame looked dead).
             if (m_redrawPending.exchange(false) && snapshot_.state != State::Stopped) {
-                Log("[ENGINE] paused redraw after a settings change (geometry applied: %d)",
+                Log("[ENGINE] paused redraw after a geometry/settings change (geometry applied: %d)",
                     m_videoRectPending.load() ? 0 : 1);
                 if (CComQIPtr<IExFilterConfig> cfg = renderer_)
                     cfg->Flt_SetBool("cmd_redraw", true);
