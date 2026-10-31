@@ -6150,6 +6150,11 @@ public:
   bool m_firstRun=false; std::wstring m_pendingInputUrl,m_pendingMode;
   ULONGLONG m_nextPortPoll=0; int m_liveEotf=0,m_liveLocked=0; std::string m_portsSig;
   CAcquireCard m_acq; bool m_vp=false,m_vpAcq=false; int m_attempt=0; bool m_graphRan=false;
+  // VP mode keeps the picture canvas at the WHOLE window and lets the host's
+  // region clip it to the visible area, so no geometry call is needed when the
+  // chrome moves (see PlaceVideo). This remembers that the canvas has already
+  // been cleared once for this VP session.
+  bool m_vpRectCleared=false;
   double m_drawn=0,m_recv=0;
   // 1.3.0: _VP_MAX_RETRIES = 10 (main_window.py), one attempt per check tick.
   static const int VP_MAX_RETRY=10;
@@ -6210,6 +6215,7 @@ public:
     LogF("SOURCE ports=%d active='%S' labels=%d",(int)ports.size(),m_inputUrl.c_str(),(int)m_labels.size());
   }
   void StartVp(){ m_vp=true; m_vpAcq=true; m_attempt=0; m_mediaPath.clear();
+    m_vpRectCleared=false;   // a new capture session clears the canvas again
     // A capture graph counts as "a graph has run": switching modes in place after
     // one leaves the capture running behind the library screen (1.3.0 warns about
     // exactly this in _switch_mode), which is why the switch must restart instead.
@@ -6455,13 +6461,25 @@ public:
     const bool first = last.IsRectEmpty();
     last=vid;
     if(first) return;             // creation size, not a chrome transition
-    // In LIVE CAPTURE the geometry is never changed: the renderer's lock is held by
-    // the capture thread while it presents, so asking it to re-place the picture
-    // deadlocks the graph thread and takes the UI with it (measured: the log stops
-    // dead at the first chrome hide in VP). The host's region already keeps the
-    // picture out of the chrome's pixels, so the chrome still never overlaps it -
-    // the picture is simply clipped by the chrome instead of scaled around it.
-    if(m_vp) return;
+    // In LIVE CAPTURE the geometry is never changed per chrome transition: the
+    // renderer's lock is held by the capture thread while it presents, so asking
+    // it to re-place the picture deadlocks the graph thread and takes the UI with
+    // it (measured: the log stops dead at the first chrome hide in VP). The host's
+    // region already keeps the picture out of the chrome's pixels, so the chrome
+    // still never overlaps it - the picture is simply clipped by the chrome
+    // instead of scaled around it.
+    //
+    // For that to be true the canvas must be the WHOLE window. A rect left over
+    // from media mode (or from a previous session) made the engine SCALE the
+    // picture into it instead, so with the chrome hidden the strip it reserved was
+    // left black - reported as "16:9 content shows black bars in VP mode". Clear
+    // it once per VP session; the region does the rest.
+    if(m_vp){
+      if(!m_vpRectCleared){
+        int rc=Cmd("{\"a\":\"videorect\",\"x\":0,\"y\":0,\"w\":0,\"h\":0}");
+        LogF("vp: picture canvas cleared to the whole window rc=%d",rc);
+        m_vpRectCleared=true; }
+      return; }
     // Host-client coordinates: the engine positions the PICTURE inside the host.
     const int x=vid.left-origin.x, y=vid.top-origin.y, w=vid.Width(), h=vid.Height();
     LogF("video rect -> (%d,%d,%d,%d) %dx%d",x,y,x+w,y+h,w,h);
@@ -7000,7 +7018,7 @@ public:
     WriteMode(mode); m_appMode=want;
     if(m_graphRan){ LogF("mode switch after a graph ran -> restarting process"); RelaunchProcess(); return; }
     if(m_appMode==L"video_processor"){ m_lib.ShowLib(false); StartVp(); }
-    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; GoLibrary(); } }
+    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; m_vpRectCleared=false; GoLibrary(); } }
   afx_msg LRESULT OnSourceSelect(WPARAM,LPARAM){
     const std::wstring url=g_sourceUrl; if(url.empty()) return 0;
     m_pendingMode.clear();
@@ -7028,7 +7046,7 @@ public:
     LogF("first-run complete mode='%S' input='%S'",g_setupMode.c_str(),m_inputUrl.c_str());
     if(g_setupMode!=m_appMode){ WriteMode(g_setupMode.c_str()); RelaunchProcess(); }
     else if(g_setupMode==L"video_processor"){ m_lib.ShowLib(false); StartVp(); }
-    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; GoLibrary(); }
+    else { m_acq.Stop(); KillTimer(5); m_vp=false; m_vpAcq=false; m_vpRectCleared=false; GoLibrary(); }
     return 0;
   }
   afx_msg LRESULT OnRenameInputs(WPARAM,LPARAM){ m_setup.ShowRename(); return 0; }
