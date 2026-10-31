@@ -64,6 +64,10 @@ static const int RIGHT_W=440, RAIL_W=80, CAT_H=26, ROW_H=40, PAD=16,
   SECT_H=26, ICON_H=58, ICON_STEP=64, CONTROL_W=148, VALUE_W=58;
 
 static int g_dpi=96;
+// THE release identity, in one place: the title strip draws it and measures it.
+// The version resource (Unplugged.rc) and the installer carry the same number;
+// the strip's literal used to say 1.3.1 while those said 2.0.0.
+static const wchar_t* kAppTitle = L"Unplugged 2.0.0";
 static const int EDGE_BLEED=2;      // px the frame extends past the monitor, see OnCreate
 // Defined here (assigned by LoadWallpaper below) so the splash pane can pad its
 // clipped corners with the real wallpaper pixels behind it.
@@ -2644,7 +2648,7 @@ public:
   // button: it was never wired here (the handler only logged), and a support action
   // does not belong in the title strip. Info keeps the slot Report used to occupy,
   // so the strip's rhythm is unchanged.
-  CRect InfoR(CRect rc) const { int x=Px(14)+TextW(L"Unplugged 1.3.1",12,false)+Px(8);
+  CRect InfoR(CRect rc) const { int x=Px(14)+TextW(kAppTitle,12,false)+Px(8);
     int w=TextW(L"Info",12,false)+Px(16);
     return CRect(x,Px(8),x+w,rc.bottom-Px(8)); }
   CRect SettingsR(CRect rc) const { CRect p=PresetLblR(rc);
@@ -2662,7 +2666,7 @@ public:
 protected:
   void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc); Dbg(&dc,rc,&CTopStrip::Body); }
   void Body(CDC* dc,CRect rc){ FillR(dc,rc,PANEL);
-    TxtW(dc,VerR(rc),L"Unplugged 1.3.1",LO12,12,false,DT_LEFT|DT_VCENTER);
+    TxtW(dc,VerR(rc),kAppTitle,LO12,12,false,DT_LEFT|DT_VCENTER);
     CRect ir=InfoR(rc),sr=SettingsR(rc);
     if(infoOn||m_hov==5) RR(dc,ir,Px(4),m_hov==5?RGB(48,28,20):RGB(31,31,33));
     TxtW(dc,ir,L"Info",(infoOn||m_hov==5)?ACCENT2:LO12,12,false,DT_CENTER|DT_VCENTER);
