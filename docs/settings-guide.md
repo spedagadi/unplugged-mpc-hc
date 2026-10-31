@@ -101,12 +101,15 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 
 | In the card | What it does |
 | --- | --- |
-| The list | `Default` first, then your presets alphabetically. Click one to select it, then **Apply**. |
+| The list | `Default` first, then your presets alphabetically. **Click a preset to switch to it** — it applies immediately, and the card stays open so you can click through several to compare them on the same frame. |
 | **New** | Asks for a name (pre-filled `Preset 1`, `Preset 2`…) and creates a preset that starts as a **copy of the one you are using** — tune once, name it, and it is yours from then on. |
-| **Apply** | Loads the selected preset. Only the rows that differ are pushed to the running picture, so it applies live — including on a paused frame. |
 | **Rename** | Same settings, new name. |
 | **Delete** | Asks first. Deleting the preset you are on drops you back to `Default`. |
 | **Close** (×) / click outside | Closes the card. Nothing is lost: custom presets save themselves (below). |
+
+There is no **Apply** button: presets save themselves, so clicking one is the
+whole action, and switching while the card stays open is how you compare two
+setups against the same paused frame.
 
 ### `Default` is read-only — and custom presets save themselves
 
@@ -120,6 +123,11 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
   always repeatable. To start working, switch to a preset or create one with
   **New** — a new preset starts as a copy of the current values, so nothing is
   lost.
+- **Exception — Playback and Source.** The **Playback** and **Source** tabs are
+  never locked and never part of a preset. Choosing the audio mode, an input
+  device, rescanning ports or running first-time setup is a property of the
+  machine and the session, not of a look — so it stays available on `Default`,
+  and a preset never drags the input along with it.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
   **Display black (nits)**, **Convert to SDR** and **Output gamut** describe the
   screen you calibrated, not a look, so they are never part of a preset. They
@@ -142,9 +150,10 @@ are always editable, even on `Default`:
 > **SDR display nits · Static nits (max) · Display black (nits) ·
 > Convert to SDR · Output gamut**
 
-Also not part of a preset: the app rows on the System tab (context banner,
-auto-next), which input device is selected, and the playback position. Those
-belong to the app and the session, not to a look.
+Also not part of a preset: the **Playback** and **Source** tabs (audio mode,
+input device, setup), the app rows on the System tab (context banner,
+auto-next), and the playback position. Those belong to the app and the session,
+not to a look.
 
 One behaviour worth knowing: the preset you last used is **re-applied when the
 next picture comes up** (the first play or capture after launch), *after* the

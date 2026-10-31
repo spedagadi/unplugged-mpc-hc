@@ -1,4 +1,4 @@
-﻿// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
+// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
 // SOURCE IS ASCII-ONLY: all non-ASCII glyphs use \uXXXX escapes (a prior
 // PowerShell Set-Content double-encoded raw UTF-8 literals into mojibake).
 // Must match the identifier in Unplugged.rc (the executable's icon resource).
@@ -863,6 +863,11 @@ static bool PresetDeviceRow(const Row& r){
          !strcmp(r.key,"hdr.blackNits") || !strcmp(r.key,"hdr.convertToSdr") ||
          !strcmp(r.key,"hdr.outputGamut"); }
 static bool PresetEligible(const Row& r){
+  // Playback (0) and Source (1) are SESSION settings: which audio track/mode and
+  // which input the machine is on. They belong to the box, not to a look, so a
+  // preset never carries them - and, because they are ineligible, changing them
+  // on Default neither marks it dirty nor trips the read-only notice.
+  if(r.grp==0||r.grp==1) return false;
   return r.key&&*r.key&&(r.kind==0||r.kind==1||r.kind==2||r.kind==4)&&
          strncmp(r.key,"ui.",3)!=0 && !PresetDeviceRow(r);
 }
@@ -1401,7 +1406,7 @@ class CPresetCard : public CUiWnd {
   std::wstring pending_,err_;
   std::wstring src_;      // new preset's source (Default when empty)
   CEdit* edit_=nullptr; HBRUSH editBrush_=nullptr;
-  CRect listR,newR,applyR,renameR,delR,closeR,okR,cancelR;
+  CRect listR,newR,renameR,delR,closeR,okR,cancelR;
 public:
   ~CPresetCard(){ if(edit_){ if(edit_->GetSafeHwnd()) edit_->DestroyWindow(); delete edit_; } if(editBrush_) DeleteObject(editBrush_); }
   BOOL CreateCard(CWnd* owner){
@@ -1428,7 +1433,7 @@ public:
     LogF("preset card open (warn=1, active='%s')",Narrow(g_activePreset).c_str()); }
   bool HandAt(CPoint p) override {
     if(closeR.PtInRect(p)||okR.PtInRect(p)||cancelR.PtInRect(p)) return true;
-    if(mode_==0) return RowAt(p)>=0||newR.PtInRect(p)||applyR.PtInRect(p)||
+    if(mode_==0) return RowAt(p)>=0||newR.PtInRect(p)||
                        renameR.PtInRect(p)||delR.PtInRect(p);
     return false; }
   void LoadNames(){
@@ -1467,10 +1472,9 @@ private:
   void Layout(){
     if(!GetSafeHwnd()) return; CRect rc; GetClientRect(rc);
     closeR=CRect(rc.right-Px(36),Px(10),rc.right-Px(10),Px(36));
-    int by=rc.bottom-Px(50),bw=(rc.Width()-Px(32)-Px(18))/4;
+    int by=rc.bottom-Px(50),bw=(rc.Width()-Px(32)-Px(12))/3;
     newR=CRect(Px(16),by,Px(16)+bw,by+Px(32));
-    applyR=CRect(newR.right+Px(6),by,newR.right+Px(6)+bw,by+Px(32));
-    renameR=CRect(applyR.right+Px(6),by,applyR.right+Px(6)+bw,by+Px(32));
+    renameR=CRect(newR.right+Px(6),by,newR.right+Px(6)+bw,by+Px(32));
     delR=CRect(renameR.right+Px(6),by,renameR.right+Px(6)+bw,by+Px(32));
     listR=CRect(Px(16),Px(92),rc.right-Px(16),by-Px(12));
     okR=CRect(Px(16),by,Px(16)+Px(96),by+Px(32));
@@ -1547,7 +1551,6 @@ protected:
       std::wstring target=TargetName();
       bool custom=_wcsicmp(target.c_str(),L"Default")!=0;
       Btn(dc,newR,L"New\x2026",true,hov_==101);
-      Btn(dc,applyR,L"Apply",msel_>=0,hov_==102);
       Btn(dc,renameR,L"Rename\x2026",custom,hov_==103);
       Btn(dc,delR,L"Delete",custom,hov_==104);
     } else if(mode_==1||mode_==2){
@@ -1577,15 +1580,15 @@ protected:
     }
     if(!warn_&&mode_==0){
       bool custom=_wcsicmp(g_activePreset.c_str(),L"Default")!=0;
-      const wchar_t* hint=custom?L"Changes save automatically. Select a preset, then Apply."
-                                :L"Select a preset, then Apply.";
+      const wchar_t* hint=custom?L"Changes save automatically. Click a preset to switch."
+                                :L"Click a preset to switch. Create one to change anything.";
       TxtW(dc,CRect(Px(16),Px(54),rc.right-Px(16),Px(88)),hint,
         MID,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); }
   }
   void OnMouseMove(UINT,CPoint p){ int h=-1; CRect rc; GetClientRect(rc);
     if(mode_==0){
       int i=RowAt(p); if(i>=0) h=i;
-      else if(newR.PtInRect(p)) h=101; else if(applyR.PtInRect(p)) h=102;
+      else if(newR.PtInRect(p)) h=101;
       else if(renameR.PtInRect(p)) h=103; else if(delR.PtInRect(p)) h=104;
     } else if(okR.PtInRect(p)) h=105; else if(cancelR.PtInRect(p)) h=106;
     if(mode_==1){ CRect rc; GetClientRect(rc);
@@ -1596,18 +1599,20 @@ protected:
     if(closeR.PtInRect(p)){ HideCard(); return; }
     if(mode_==0){
       int i=RowAt(p);
-      if(i>=0){ msel_=i; Invalidate(FALSE); return; }
+      if(i>=0){
+        // ONE CLICK SWITCHES. Presets save themselves, so there is nothing to
+        // commit and no reason for a second click; keeping the card open lets
+        // the user click through presets to compare them on the same frame.
+        msel_=i;
+        if(ApplyPreset(names_[i])){ warn_=false;
+          LogF("preset switch '%s' (card stays open)",Narrow(names_[i]).c_str()); }
+        Refresh(); Invalidate(FALSE); return; }
       std::wstring target=TargetName();
       bool custom=_wcsicmp(target.c_str(),L"Default")!=0;
       if(newR.PtInRect(p)){
         std::wstring base=L"Preset"; int n=1;
         while(PresetExists(base+L" "+std::to_wstring(n))) ++n;
         BeginInput(1,base+L" "+std::to_wstring(n)); return; }
-      if(applyR.PtInRect(p)&&msel_>=0){
-        if(ApplyPreset(names_[msel_])){ warn_=false;
-          LogF("preset card close (apply '%s')",Narrow(names_[msel_]).c_str());
-          HideCard(); }
-        return; }
       if(renameR.PtInRect(p)&&custom){ BeginInput(2,target); return; }
       if(delR.PtInRect(p)&&custom){ mode_=3; pending_=target; Place(); return; }
     } else if(mode_==1||mode_==2){
@@ -1812,6 +1817,10 @@ protected:
 // and warning — is what makes "Default" mean something, and it sends the user to
 // the presets, which save automatically.
   bool RowLocked(const Row& r){
+    // Playback and Source are exempt: choosing the INPUT and running first-time
+    // setup are not "the look". A user must be able to switch to the other box
+    // while Default is active, or Default would be a dead end.
+    if(r.grp==0||r.grp==1) return false;
     return _wcsicmp(g_activePreset.c_str(),L"Default")==0 && !PresetDeviceRow(r); }
   void RefuseLocked(){
     // A refusal the user must SEE, not a bottom-strip label: Default is the
