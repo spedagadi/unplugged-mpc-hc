@@ -21,6 +21,18 @@
 #include "DeckLinkAPI_h.h"   // DeckLink C++ SDK (vendored; GUIDs live in DeckLinkAPI_i.c)
 #include "DeckLinkSourceControl.h"   // IDeckLinkSourceControl (engine control surface)
 
+// Values from DeckLink SDK 14.2 (DeckLinkAPI.h) that this vendored header
+// predates. They are stable ABI — a detected-colours-space fourcc, a frame
+// flag bit and a frame-metadata fourcc — so they are named here instead of
+// forking the whole SDK header:
+//   bmdColorspaceDolbyVisionNative       = 0x446f5669 (IDeckLinkStatus detected colorspace)
+//   bmdFrameContainsDolbyVisionMetadata  = 1 << 4     (IDeckLinkVideoFrame::GetFlags)
+//   bmdDeckLinkFrameMetadataDolbyVision  = 0x646f7669 (frame metadata item)
+constexpr LONGLONG kBmdColorspaceDolbyVisionNative = 0x446f5669;
+constexpr DWORD    kBmdFrameContainsDolbyVisionMetadata = 1u << 4;
+constexpr BMDDeckLinkFrameMetadataID kBmdFrameMetadataDolbyVision =
+    (BMDDeckLinkFrameMetadataID)0x646f7669;
+
 // 2026-09-20 — every COM status/metadata query made on the VideoInputFrameArrived
 // callback thread is "known to stall this driver" (the two blocks below say so,
 // and the worker's format-change handler moves its status read onto the worker
@@ -119,8 +131,8 @@ struct CaptureState {
     BMDDisplayMode mode = bmdModeHD1080p50;
     BMDDisplayMode pendingMode = bmdModeHD1080p50;
     LONG   formatOutstanding = 0;  // a format change arrived and is unhandled
-    LONG   colorspace = 0;    // 0=unk 1=601 2=709 3=bt2020
-    LONG   eotf = 0;          // 0=unk 1=gamma 2=PQ 3=HLG
+    LONG   colorspace = 0;    // 0=unk 1=601 2=709 3=bt2020 (incl. DV-native)
+    LONG   eotf = 0;          // 0=unk 1=gamma 2=PQ 3=HLG 4=DV (PQ-coded)
     unsigned long long frames = 0, skipped = 0, delivered = 0;
     unsigned long long gateDropped = 0, renegotiations = 0, formatEvents = 0, droppedQueue = 0;
     LONG64 prevRefUs = 0;     // last hwRef (µs); fallback for a failed/zero read
@@ -131,6 +143,12 @@ struct CaptureState {
     LONG   hdrMetaTick = 0;            // countdown to the next ST 2086 hand-off (1 Hz)
     LONG   hdrMetaLogged = 0;          // values logged once, then only when they change
     double hdrCll = 0.0, hdrFall = 0.0, hdrMaxMLL = 0.0, hdrMinMLL = 0.0;  // last read
+    // Per-frame metadata (IDeckLinkVideoFrameMetadataExtensions): the ONLY place
+    // the card reports the EOTF (bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc)
+    // and the DV item; IDeckLinkStatus has no transfer-function field. Logged on
+    // change so an SDR / HDR10 / DV switch is visible without guessing.
+    LONG   frameMetaLogged = 0;
+    LONGLONG frameMetaCs = -1, frameMetaEotf = -1;
     // ST 2086 is read OFF the SDK callback: the callback hands a ref-held frame to
     // the worker (which owns all SDK calls), so no metadata COM work runs on the
     // delivery thread. hdrSampleFrame is AddRef'd by the callback, Release'd by the
@@ -731,6 +749,35 @@ void CDeckLinkOutputPin::SampleHdrMetadata()
 
     CComPtr<IDeckLinkVideoFrameMetadataExtensions> meta;
     if (SUCCEEDED(frame->QueryInterface(IID_IDeckLinkVideoFrameMetadataExtensions, (void**)&meta)) && meta) {
+        // Colours space and EOTF as SIGNALLED, per frame. These are integers in
+        // the SDK's idl (everything else in this interface is a float — asking
+        // GetInt on those is what once produced "the card cannot supply ST 2086").
+        // Logged with raw values: this is the measurement that tells DV
+        // (colorspace = bmdColorspaceDolbyVisionNative) from an SDR/BT.2020
+        // conversion, which the status interface cannot do on its own.
+        LONGLONG mcs = -1, meotf = -1;
+        const HRESULT hCs = meta->GetInt(bmdDeckLinkFrameMetadataColorspace, &mcs);
+        const HRESULT hEo = meta->GetInt(bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc, &meotf);
+        unsigned char dvBuf[64] = {};
+        unsigned int dvSize = sizeof(dvBuf);
+        const HRESULT hDv = meta->GetBytes(kBmdFrameMetadataDolbyVision, dvBuf, &dvSize);
+        const DWORD fflags = frame->GetFlags();
+
+        m_st.Lock();
+        const bool metaChanged = (m_st.frameMetaLogged == 0)
+            || m_st.frameMetaCs != mcs || m_st.frameMetaEotf != meotf;
+        m_st.frameMetaCs = mcs; m_st.frameMetaEotf = meotf; m_st.frameMetaLogged = 1;
+        m_st.Unlock();
+        if (metaChanged) {
+            StateLog(&m_st, "[FRAMEMETA] flags=0x%08X hdr=%d dv=%d | colorspace=%#llx (hr=0x%08X) EOTF=%lld (hr=0x%08X) | DV bytes hr=0x%08X size=%u",
+                (unsigned)fflags,
+                (fflags & bmdFrameContainsHDRMetadata) ? 1 : 0,
+                (fflags & kBmdFrameContainsDolbyVisionMetadata) ? 1 : 0,
+                (unsigned long long)(SUCCEEDED(hCs) ? mcs : 0), (unsigned)hCs,
+                (long long)(SUCCEEDED(hEo) ? meotf : -1), (unsigned)hEo,
+                (unsigned)hDv, dvSize);
+        }
+
         double cll = 0.0, fall = 0.0, mMax = 0.0, mMin = 0.0;
         const HRESULT hCll  = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel, &cll);
         const HRESULT hFall = meta->GetFloat(bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel, &fall);
@@ -885,6 +932,7 @@ void CDeckLinkOutputPin::WorkerLoop()
                 CComPtr<IDeckLinkStatus> ist;
                 if (SUCCEEDED(m_input->QueryInterface(IID_IDeckLinkStatus, (void**)&ist)) && ist) {
                     LONGLONG v = 0;
+                    bool dvNative = false;
                     if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputColorspace, &v))) {
                         // 0 (unknown) is a real answer and must stay 0, not become
                         // "BT.709". The old `: 2` fallback reported a detection that
@@ -892,9 +940,20 @@ void CDeckLinkOutputPin::WorkerLoop()
                         // BT.709 and the panel showed it as fact. 0 already behaves as
                         // BT.709 in the media type below (both else-branches default
                         // to 709), so nothing downstream changes — only the claim does.
-                        m_st.colorspace = (v == (LONGLONG)bmdColorspaceRec2020) ? 3
+                        //
+                        // bmdColorspaceDolbyVisionNative is what the driver reports for
+                        // a Dolby Vision signal — and it used to fall into the "unknown"
+                        // bucket above, so a DV title read as BT.709 + SDR on the panel
+                        // (reported 31 Oct). It is DV, and DV is PQ-coded: colours
+                        // space 3 + eotf 4 below, same as the fingerprint path.
+                        dvNative = (v == kBmdColorspaceDolbyVisionNative);
+                        m_st.colorspace = dvNative                        ? 3
+                                        : (v == (LONGLONG)bmdColorspaceRec2020) ? 3
                                         : (v == (LONGLONG)bmdColorspaceRec601)  ? 1
                                         : (v == (LONGLONG)bmdColorspaceRec709)  ? 2 : 0;
+                        StateLog(&m_st, "[DECKLINK][src] detected colorspace raw=%#llx -> %d%s",
+                            (unsigned long long)v, m_st.colorspace,
+                            dvNative ? " (Dolby Vision native)" : "");
                     }
                     // OBSERVATION ONLY — the two mode status items, logged side by side.
                     //
@@ -925,7 +984,8 @@ void CDeckLinkOutputPin::WorkerLoop()
                         StateLog(&m_st, "[DECKLINK][src] signalLocked=%lld", (long long)v);
                     }
                     if (SUCCEEDED(ist->GetInt(bmdDeckLinkStatusDetectedVideoInputDynamicRange, &v))) {
-                        if (v & bmdDynamicRangeHDRStaticHLG)      m_st.eotf = 3;
+                        if (dvNative)                             m_st.eotf = 4;  // colours space already said DV
+                        else if (v & bmdDynamicRangeHDRStaticHLG) m_st.eotf = 3;
                         else if (v & bmdDynamicRangeHDRStaticPQ)  m_st.eotf = 2;
                         // DV fingerprint (probed 2026-09-14, Dune DV disc):
                         // player sends BT.2020 but REPLACES the HDR10 static
@@ -1426,10 +1486,18 @@ STDMETHODIMP CDeckLinkCaptureCallback::VideoInputFrameArrived(
     // QI/GetFloat reads. ST 2086 is static per title, so 1 Hz misses nothing. Not
     // gated on kInCallbackDriverQueries (that flag is for the in-callback *probe*);
     // this is a hand-off, not a query.
-    if (videoFrame && (videoFrame->GetFlags() & bmdFrameContainsHDRMetadata)
-            && InterlockedDecrement(&m_st->hdrMetaTick) <= 0) {
+    // Frames are handed off for TWO reasons now:
+    //   * the ST 2086 read (HDR-flagged frames, ~1 Hz);
+    //   * the frame-metadata probe (colorspace / EOTF / DV flag). An SDR or DV
+    //     signal carries no HDR flag, so the first ~2 s of every stream are
+    //     sampled regardless — otherwise the only instrument that can name DV
+    //     or report the EOTF never gets a frame to look at.
+    if (videoFrame && InterlockedDecrement(&m_st->hdrMetaTick) <= 0) {
+        const DWORD fflags = videoFrame->GetFlags();
+        const bool want = (fflags & (bmdFrameContainsHDRMetadata | kBmdFrameContainsDolbyVisionMetadata)) != 0
+                       || m_st->frames <= 48;
         InterlockedExchange(&m_st->hdrMetaTick, 24);            // next hand-off ~1 s at 24 fps
-        if (InterlockedCompareExchange(&m_st->hdrSamplePending, 1, 0) == 0) {
+        if (want && InterlockedCompareExchange(&m_st->hdrSamplePending, 1, 0) == 0) {
             videoFrame->AddRef();                               // keep alive for the worker
             m_st->hdrSampleFrame = videoFrame;                  // one in flight (guarded above)
             SetEvent(m_st->hdrSampleEvent);

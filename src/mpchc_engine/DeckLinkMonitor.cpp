@@ -126,6 +126,7 @@ int DeckLinkMonitor::MapIcs(const SignalInfo& si) const
         switch (si.dynamic_range) {
         case 1: return 4; // PQ
         case 2: return 5; // HLG
+        case 3: return 4; // DV-native: the driver said so (bmdColorspaceDolbyVisionNative)
         case 0: return 4; // DV fingerprint (probed): 2020 + no static-HDR flag = Dolby Vision, PQ-coded
         default: return 3; // 2020-SDR
         }

@@ -1371,9 +1371,10 @@ public:
     const char* M=Sect(st,"media"),*C=Sect(st,"cfg"),*H=Sect(st,"hdr"),*R=Sect(st,"render"),*D=Sect(st,"dl"),*S=Sect(st,"signal");
     double w=0,hh=0,fps=0,tf=0,dovi=0,hdrf=0,cll=0,fall=0,mmax=0,mmin=0,scP=0,scA=0,sdrN=0,conv=0,curve=0,
            draw=0,drop=0,skip=0,recv=0,lag=0,delv=0,dsk=0,gate=0,qd=0,ren=0,refUs=0,pos=0,
-           sigCs=0,sigDr=0,sigLocked=0,dlEotf=0,dlMeta=0;
+           sigCs=0,sigDr=0,sigLocked=0,dlEotf=0,dlMeta=0,prim=0;
     char subtype[32]="",state[32]="";
     JNumAt(M,"w",w); JNumAt(M,"h",hh); JNumAt(M,"fps",fps); JNumAt(M,"tf",tf); JNumAt(M,"dovi",dovi); JNumAt(M,"hdr",hdrf);
+    JNumAt(M,"prim",prim);   // engine videoStreamInfo.colorspace: 1=601 2=709 3=2020
     JStrAt(M,"subtype",subtype,sizeof(subtype));
     JNumAt(C,"cll",cll); JNumAt(C,"fall",fall); JNumAt(C,"mmax",mmax); JNumAt(C,"mmin",mmin);
     JNumAt(C,"scPeak",scP); JNumAt(C,"scAvg",scA); JNumAt(C,"sdrNits",sdrN); JNumAt(C,"convSdr",conv);
@@ -1400,8 +1401,24 @@ public:
       AF(L"DISPLAY",L"%.0f \x00D7 %.0f \x00B7 %.2f:1",dw,dh,dw/dh);
     }
     A(L"PIXEL FORMAT", strstr(subtype,"P010")?L"YCbCr 4:2:0 \x00B7 10-bit": strstr(subtype,"P210")?L"YCbCr 4:2:2 \x00B7 10-bit": subtype[0]?L"":L"\x2014");
-    A(L"COLORSPACE", sigClass==3?L"Dolby Vision":L"BT.2020");
-    A(L"TRANSFER (EOTF)", sigClass==3?L"Dolby Vision": ((int)tf==15?L"PQ (HDR10)": (int)tf==16?L"HLG":L"BT.1886 (Gamma 2.4)"));
+    // COLOURSPACE and TRANSFER are read from the capture filter's media type,
+    // not assumed. The old rows printed BT.2020 and BT.1886 for everything that
+    // was not DV, which turned an ordinary SDR BT.709 title into a bogus
+    // "BT.2020 + BT.1886" mix on screen (reported 31 Oct).
+    // MFVideoTransFunc: 5=BT.709 13=BT.2020 15=PQ 16=HLG; 1..8 plain gammas.
+    A(L"COLORSPACE", sigClass==3?L"Dolby Vision":
+                     ((int)prim==3)?L"BT.2020": ((int)prim==2)?L"BT.709":
+                     ((int)prim==1)?L"BT.601":L"\x2014");
+    const wchar_t* tfl=L"\x2014";
+    if(sigClass==3) tfl=L"Dolby Vision";
+    else switch((int)tf){
+      case 1:  tfl=L"Gamma 1.0"; break;   case 2:  tfl=L"Gamma 1.8"; break;
+      case 3:  tfl=L"Gamma 2.0"; break;   case 4:  tfl=L"Gamma 2.2"; break;
+      case 5:  tfl=L"BT.709"; break;      case 6:  tfl=L"SMPTE 240M"; break;
+      case 7:  tfl=L"sRGB"; break;        case 8:  tfl=L"Gamma 2.8"; break;
+      case 13: tfl=L"BT.2020"; break;     case 15: tfl=L"PQ (HDR10)"; break;
+      case 16: tfl=L"HLG"; break; }
+    A(L"TRANSFER (EOTF)", tfl);
     AF(L"SOURCE FPS",L"%.3f fps",fps);
     A(L"HDR FORMAT", sigClass==3?L"Dolby Vision": sigClass==2?L"HLG":
                      ((sigClass==1)?L"HDR10 / PQ":L"SDR"));
@@ -2761,7 +2778,13 @@ static const wchar_t* DrLabel(int dr){ switch(dr){ case 1:return L"HDR PQ"; case
 static int DrClassify(int locked,int cs,int dr,int eotf,double tf,double hdrMeta,double dovi){
   if(dr==3) return 3;                                  // the poll already said so
   if(eotf==4||dovi>0.5) return 3;                      // explicit DV coding / RPU
-  if(locked>0 && cs==2 && dr==0) return 3;             // BT.2020 + SDR = the DV signature
+  // BT.2020 + SDR is the DV signature, but it is ALSO what a player emits when
+  // it converts HDR to SDR and keeps the wide gamut (Panasonic "SDR/BT.2020"):
+  // that output carries the BT.709 transfer (tf=5), while a DV base layer is PQ
+  // (tf=15). Measured 31 Oct: the UB820's SDR/BT.2020 signal was being labelled
+  // Dolby Vision. Requiring PQ - or no media type yet, which is the first-run
+  // dialog's situation - keeps the two apart.
+  if(locked>0 && cs==2 && dr==0 && ((int)tf==15 || tf<1.0)) return 3;
   if(locked>0 && (int)tf==15 && hdrMeta<0.5) return 3; // PQ base, no ST 2086
   if(eotf==3||dr==2||(int)tf==16) return 2;
   if(eotf==2||dr==1||(int)tf==15) return 1;
@@ -3657,7 +3680,13 @@ struct Lib{
       const char* cols[]={"ALTER TABLE items ADD COLUMN probe_json TEXT",
         "ALTER TABLE items ADD COLUMN probe_key TEXT",
         "ALTER TABLE items ADD COLUMN genre TEXT",
-        "ALTER TABLE items ADD COLUMN art_checked REAL DEFAULT 0"};
+        "ALTER TABLE items ADD COLUMN art_checked REAL DEFAULT 0",
+        // The year comes from the file name at scan time. A title whose name
+        // carries none (RRR.mkv) had no year anywhere, while its neighbour
+        // (Dune.2021.mkv) did — and the playing card, which renders the
+        // library row, inherited the gap. year_checked throttles a one-time
+        // OMDb lookup so an unmatched title is not re-asked every scan.
+        "ALTER TABLE items ADD COLUMN year_checked REAL DEFAULT 0"};
       for(const char* sql:cols){ SQ::ST s=0;
         if(!SQ::p_prep(db,sql,-1,&s,nullptr)){ SQ::p_step(s); SQ::p_fin(s); } } }
     ok=true; LogF("library: index open, %ld present titles",Count()); return true; }
@@ -3921,16 +3950,22 @@ struct Lib{
       SQ::p_bind_dbl(s,17,(double)time(nullptr));
       SQ::p_step(s); SQ::p_fin(s); ++added;
     } else {
-      SQ::ST s=Prep("UPDATE items SET path=?,root=?,folder=?,size=?,mtime=?,kind=?,title=?,year=?,"
+      // year: a scan must not erase a year that was filled from OMDb (the file
+// name gave none). Keep the stored value when the parse yields 0; a real
+// parsed year still wins. Without this every scan reset the row to 0 and the
+// backfill re-asked OMDb for the same titles on every start (seen 31 Oct).
+      SQ::ST s=Prep("UPDATE items SET path=?,root=?,folder=?,size=?,mtime=?,kind=?,title=?,"
+        "year=CASE WHEN ?=0 THEN COALESCE(year,0) ELSE ? END,"
         "season=?,episode=?,episode_title=?,show_folder=?,art=?,season_art=?,show_art=?,present=1,"
         "missing_since=NULL WHERE pkey=?");
       if(!s) return;
       BText(s,1,path); BText(s,2,rkey); BText(s,3,folder);
       SQ::p_bind_i64(s,4,size); SQ::p_bind_dbl(s,5,mtime);
-      BText(s,6,p.kind); BText(s,7,p.title); SQ::p_bind_i64(s,8,p.year);
-      SQ::p_bind_i64(s,9,season); SQ::p_bind_i64(s,10,ep); BText(s,11,p.epTitle);
-      BText(s,12,showFolder); BText(s,13,art); BText(s,14,seasonArt); BText(s,15,showArt);
-      BText(s,16,pkey);
+      BText(s,6,p.kind); BText(s,7,p.title);
+      SQ::p_bind_i64(s,8,p.year); SQ::p_bind_i64(s,9,p.year);
+      SQ::p_bind_i64(s,10,season); SQ::p_bind_i64(s,11,ep); BText(s,12,p.epTitle);
+      BText(s,13,showFolder); BText(s,14,art); BText(s,15,seasonArt); BText(s,16,showArt);
+      BText(s,17,pkey);
       SQ::p_step(s); SQ::p_fin(s); ++updated; } }
   void ScanRoot(const std::wstring& rkey,const std::wstring& rpath,int& added,int& updated,int& missing){
     DWORD attr=GetFileAttributesW(rpath.c_str());
@@ -4049,7 +4084,8 @@ struct Lib{
     return v; }
   bool FetchPoster(const std::wstring& key,const std::wstring& title,int year,
                    const std::wstring& kind,std::wstring& outPath,
-                   std::wstring* genreOut=nullptr,bool needPoster=true){
+                   std::wstring* genreOut=nullptr,bool needPoster=true,
+                   int* yearOut=nullptr){
     outPath.clear();
     // Try the literal title, then a country-stripped variant. OMDb has "Euphoria"
     // but not the scanner's "Euphoria US" from the folder name.
@@ -4071,6 +4107,12 @@ struct Lib{
            Narrow(title).c_str(),Narrow(cand).c_str(),msg.c_str());
       js.clear(); }
     if(js.empty()) return false;
+    // The reply's own release year, for titles whose file name carries none.
+    // OMDb sends it as a string ("2022", or "2019-2023" for a series), so the
+    // leading number is the year. Set before the needPoster early-return: a
+    // metadata-only lookup has no poster to fetch but still has the year.
+    if(yearOut){ *yearOut=0; const int y=_wtoi(JStr(js,"Year").c_str());
+      if(y>=1870&&y<=2100) *yearOut=y; }
     if(genreOut){ std::wstring g=JStr(js,"Genre"); if(!g.empty()&&g!=L"N/A") *genreOut=g; }
     if(!needPoster) return false;
     std::wstring imdb=JStr(js,"imdbID"), poster=JStr(js,"Poster");
@@ -4154,20 +4196,27 @@ struct Lib{
 // whose current art is not an `omdb_`/`wiki_` file are re-fetched once a week.
     double now=(double)time(nullptr), cutoff=now-7*86400;
     int budget=key.empty()?0:120;
-    struct Q{ std::wstring pkey,path,title; int year; bool needArt,needGenre; };
+    struct Q{ std::wstring pkey,path,title; int year; bool needArt,needGenre,needYear; };
     std::vector<Q> movies;
-    { char sql[512]; snprintf(sql,sizeof(sql),
-        "SELECT pkey,path,title,year,COALESCE(art,''),COALESCE(genre,''),COALESCE(art_checked,0) "
+    // needYear: a movie has no year at all (the file name carried none) and has
+    // not been asked about recently. Once OMDb supplies one it stops matching;
+    // when OMDb has no answer either, year_checked throttles the retry.
+    { char sql[1024]; snprintf(sql,sizeof(sql),
+        "SELECT pkey,path,title,year,COALESCE(art,''),COALESCE(genre,''),COALESCE(art_checked,0),"
+        "COALESCE(year_checked,0) "
         "FROM items WHERE present=1 AND kind='movie' AND ("
         "COALESCE(genre,'')='' OR "
         "(instr(COALESCE(art,''),'omdb_')=0 AND instr(COALESCE(art,''),'wiki_')=0 "
-        " AND COALESCE(art_checked,0)<%.0f)) LIMIT 120",cutoff);
+        " AND COALESCE(art_checked,0)<%.0f) OR "
+        "(COALESCE(year,0)=0 AND COALESCE(year_checked,0)<%.0f)) LIMIT 120",cutoff,cutoff);
       SQ::ST s=Prep(sql);
       if(s){ while(SQ::p_step(s)==SQ::ROW){ Q q; q.pkey=Col(s,0); q.path=Col(s,1);
         q.title=Col(s,2); q.year=(int)SQ::p_i64(s,3);
         std::wstring art=Col(s,4); q.needGenre=Col(s,5).empty();
         q.needArt=!IsOnlineArt(art)&&(SQ::p_dbl?SQ::p_dbl(s,6):0.0)<cutoff;
-        if(q.needArt||q.needGenre) movies.push_back(q); } SQ::p_fin(s); } }
+        const double yearChecked=SQ::p_dbl?SQ::p_dbl(s,7):(double)SQ::p_i64(s,7);
+        q.needYear=(q.year==0&&yearChecked<cutoff);
+        if(q.needArt||q.needGenre||q.needYear) movies.push_back(q); } SQ::p_fin(s); } }
     struct SQSh{ std::wstring title,art; bool needArt,needGenre; };
     std::vector<SQSh> shows;
     { char sql[768]; snprintf(sql,sizeof(sql),
@@ -4187,15 +4236,27 @@ struct Lib{
     if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+28,0,(LPARAM)total);
     for(auto&m:movies){
       if(budget<=0) break;
-      std::wstring p,genre; bool got=false; bool tried=false;
-      if(m.needArt||m.needGenre){ --budget; tried=true;
-        got=FetchPoster(key,m.title,m.year,L"movie",p,&genre,m.needArt); }
+      std::wstring p,genre; bool got=false; bool tried=false; int omdbYear=0;
+      if(m.needArt||m.needGenre||m.needYear){ --budget; tried=true;
+        got=FetchPoster(key,m.title,m.year,L"movie",p,&genre,m.needArt,&omdbYear); }
       if(m.needArt&&!got) got=FetchWikiPoster(m.title,m.year,p);
       if(got){ SQ::ST u=Prep("UPDATE items SET art=?,art_checked=? WHERE pkey=?");
         if(u){ BText(u,1,p); SQ::p_bind_dbl(u,2,now); BText(u,3,m.pkey);
           SQ::p_step(u); SQ::p_fin(u); ++changed; } }
       else if(tried&&m.needArt) SetArtCheckedPkey(m.pkey,now);
       if(!genre.empty()&&SetGenre(m.path,genre)) ++changed;
+      // The year the file name never provided. OMDb's own answer is used only
+      // when the item has NO year — a scanned year is the release as shipped
+      // and stays authoritative.
+      if(m.year==0){
+        if(omdbYear>0){ SQ::ST u=Prep("UPDATE items SET year=? WHERE pkey=?");
+          if(u){ SQ::p_bind_i64(u,1,omdbYear); BText(u,2,m.pkey);
+            SQ::p_step(u); SQ::p_fin(u); ++changed;
+            LogF("library year: '%s' -> %d (from OMDb; file name carried none)",
+                 Narrow(m.title).c_str(),omdbYear); } }
+        else if(tried){ SQ::ST u=Prep("UPDATE items SET year_checked=? WHERE pkey=?");
+          if(u){ SQ::p_bind_dbl(u,1,now); BText(u,2,m.pkey); SQ::p_step(u); SQ::p_fin(u); } }
+      }
       ++done; if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+28,(WPARAM)done,(LPARAM)total);
       if(changed&&GetTickCount()-lastReady>500){ lastReady=GetTickCount();
         if(n&&::IsWindow(n)) ::PostMessageW(n,WM_APP+35,0,0); } }

@@ -4061,6 +4061,13 @@ void MpcPlayer::RefreshLive()
             if (t) m_liveRenderTf = (int)wcstol(t + 3, nullptr, 10);
             const wchar_t* p = wcsstr(pipe.c_str(), L"prim=");
             if (p) m_liveRenderPrim = (int)wcstol(p + 5, nullptr, 10);
+            // m_liveRenderPrim is the renderer's DXVA2_ExtendedFormat value
+            // (2 = BT.709, 9 = BT.2020). The status JSON and its consumers use
+            // this engine's 1=601 2=709 3=2020, so the raw value must NOT be
+            // published: 9 mapped to nothing and the Info panel's COLORSPACE
+            // row came up empty for file playback (reported 31 Oct: RRR,
+            // Civil War, both HDR10 where the pin media type carries no
+            // primaries and the renderer's reading is the only one there is).
             // The renderer consumed a valid DV RPU on this source (m_Dovi.bValid).
             // The token is "dovi=", and it must be read from the FULL pipeline line
             // — NOT with a bare wcsstr on "dovi" — because "Dolby Vision" appears in
@@ -4358,7 +4365,9 @@ std::string MpcPlayer::GetUiStatusJson() const
         vs.subtypeName.c_str(),
         (vs.hdr || m_liveRenderTf == MFVideoTransFunc_2084 || m_liveRenderTf == MFVideoTransFunc_HLG || m_liveDovi) ? 1 : 0,
         (vs.transferFunction != 0) ? vs.transferFunction : m_liveRenderTf,
-        (vs.colorspace != 0) ? vs.colorspace : m_liveRenderPrim,
+        (vs.colorspace != 0) ? vs.colorspace
+                                  // DXVA2 -> engine convention (see m_liveRenderPrim above)
+                                  : (m_liveRenderPrim == 9 ? 3 : m_liveRenderPrim == 2 ? 2 : 0),
         vs.pixelFormat,
         m_liveDovi,
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits,

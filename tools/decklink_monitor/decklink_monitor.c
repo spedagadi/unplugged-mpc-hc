@@ -49,6 +49,13 @@
 
 #include "DeckLinkAPI.h"
 
+/* DeckLink SDK 14.2 value this header version may predate. The driver reports
+ * a Dolby Vision input with this detected colours space - it is an authoritative
+ * DV answer, not a heuristic. Fourcc is stable ABI. */
+#ifndef BMD_COLORSPACE_DOLBY_VISION_NATIVE
+#define BMD_COLORSPACE_DOLBY_VISION_NATIVE ((LONGLONG)0x446f5669)
+#endif
+
 /* Signal info struct — defined here, used in forward decl and implementation */
 typedef struct {
     int colorspace;     /* 0=Rec601 1=Rec709 2=Rec2020 */
@@ -296,7 +303,8 @@ int vf_dl_poll_all_ports(char out_urls[][128], int* out_locked, int* out_dr, int
                     LONGLONG cs = 0;
                     if (SUCCEEDED(st->lpVtbl->GetInt(st,
                             bmdDeckLinkStatusDetectedVideoInputColorspace, &cs)) &&
-                        cs == (LONGLONG)bmdColorspaceRec2020) {
+                        (cs == (LONGLONG)BMD_COLORSPACE_DOLBY_VISION_NATIVE ||
+                         cs == (LONGLONG)bmdColorspaceRec2020)) {
                         out_dr[total] = 3;
                     } else {
                         out_dr[total] = 0;
@@ -430,7 +438,12 @@ int vf_dl_get_signal_info(VFSignalInfo* out)
     hr = g_status->lpVtbl->GetInt(g_status,
         bmdDeckLinkStatusDetectedVideoInputColorspace, &val);
     if (FAILED(hr)) val = bmdColorspaceRec709;   /* safe default */
-    if      (val == (LONGLONG)bmdColorspaceRec2020) out->colorspace = 2;
+    /* BMD_COLORSPACE_DOLBY_VISION_NATIVE is a real DETECTED colours space: the
+     * driver reports it for a Dolby Vision input. It must not fall into the
+     * Rec709 bucket - that is what made a DV title read as BT.709 + SDR. */
+    const int dvNative = (val == (LONGLONG)BMD_COLORSPACE_DOLBY_VISION_NATIVE);
+    if      (dvNative)                              out->colorspace = 2; /* PQ in BT.2020 */
+    else if (val == (LONGLONG)bmdColorspaceRec2020) out->colorspace = 2;
     else if (val == (LONGLONG)bmdColorspaceRec601)  out->colorspace = 0;
     else                                             out->colorspace = 1; /* Rec709 */
 
@@ -438,7 +451,9 @@ int vf_dl_get_signal_info(VFSignalInfo* out)
     val = 0;
     hr = g_status->lpVtbl->GetInt(g_status,
         bmdDeckLinkStatusDetectedVideoInputDynamicRange, &val);
-    if (FAILED(hr)) {
+    if (dvNative) {
+        out->dynamic_range = 3;   /* Dolby Vision (native) - see the colours-space block */
+    } else if (FAILED(hr)) {
         out->dynamic_range = 0;   /* assume SDR on failure */
     } else if (val & (LONGLONG)bmdDynamicRangeHDRStaticHLG) {
         out->dynamic_range = 2;   /* HLG */
