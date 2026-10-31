@@ -303,6 +303,14 @@ paused leg now logs `applied WxH@x,y` as it changes (fit 571x321 -> fill 624x436
 -> crop 641x436 -> half-bars 597x379 ...), where before only sample arrivals
 produced entries.
 
+**Follow-on (engine, `d20bb31f1`):** the same deferral made the chrome's
+auto-hide leave a black rectangle where the settings rail had been. The shell
+DID move the video rect (log: 3162x1998 -> 3834x2154) and the engine computed the
+new destination, but only *settings pushes* asked for a paused repaint - a canvas
+change did not. The live loop now requests the redraw after consuming a queued
+picture-rect change while paused. Verified in the dest-rect trace: the canvas
+shrinking logs `applied 443x249@90,66`, releasing it logs `applied 571x321@26,0`.
+
 **Staging trap:** `Install_Unplugged_64.cmd` registers the .ax IN PLACE (it copies
 nothing); the Program Files copy is only replaced by the installer. After
 rebuilding, check the hash of whatever the CLSIDs point at, not the file you
