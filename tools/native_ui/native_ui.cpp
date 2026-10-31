@@ -6647,7 +6647,11 @@ public:
     LoadWallpaper(g_host);                      // 11 MB PNG decodes on a worker, not here
     m_splash.ShowSplash(); SetTimer(4,SPLASH_MS,nullptr);
     SetTimer(2,300,nullptr);
-    SetTimer(13,4000,nullptr);          // one-shot: the daily update check
+    SetTimer(14,4000,nullptr);          // one-shot: the daily update check
+    // NOT 13: that is TID_POINTER (the 100 ms pointer sampler). Reusing it here
+    // replaced the sampler with this one-shot and then killed it, which took the
+    // bottom-edge reveal and the cursor rules down with it, four seconds after
+    // every launch.
     SetTimer(TID_POINTER,POINTER_MS,nullptr); }
   // Everything visible lives inside the monitor: the frame is 2px bigger on each
   // side so DWM's ring is off-screen.
@@ -7498,10 +7502,11 @@ protected:
     if(id==8){ KillTimer(8); m_toast.Hide(); }
     if(id==10){ KillTimer(10); m_titlePanel.Hide(); }
     if(id==12){ KillTimer(12); PresetFlushPending(); }
-    if(id==13){ KillTimer(13);
+    if(id==14){ KillTimer(14);
       // One check a day, only when the user has left the switch on. The stamp is
       // written when the check COMPLETES (success or failure), so an offline box
-      // does not retry on every launch.
+      // does not retry on every launch. Timer 14 is free; 13 is the pointer
+      // sampler and must never be reused (see OnCreate).
       Row* a=FindRow("sys.updateCheck");
       const long long last=atoll(IniGet("ui.lastUpdateCheck").c_str());
       const long long now=(long long)time(nullptr);
