@@ -1814,8 +1814,10 @@ protected:
   bool RowLocked(const Row& r){
     return _wcsicmp(g_activePreset.c_str(),L"Default")==0 && !PresetDeviceRow(r); }
   void RefuseLocked(){
-    g_toastText = L"Default is read-only — switch to a preset (or create one) to change this";
-    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0);
+    // A refusal the user must SEE, not a bottom-strip label: Default is the
+    // locked baseline, and a quiet toast read as "the app is broken" rather than
+    // "this is read-only". The frame raises the centred OK card (WM_APP+54).
+    if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+54,0,0);
     LogF("settings: change refused (Default is read-only)"); }
   void OnLButtonDown(UINT f,CPoint p){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+52,0,0); int t=HitTab(p); if(t>=0){ SetGroup(t); return; }
     int kind,idx; int li=Hit(p,kind,idx);
@@ -2395,7 +2397,7 @@ public:
   // decide - it exists so the user learns the rule the moment they break it.
   void ShowPresetReadOnly(){ action=6;
     wcscpy_s(title,L"Default is read-only");
-    wcscpy_s(msg,L"Changes made on Default are never saved.\n\nCreate a preset to keep them.");
+    wcscpy_s(msg,L"Default is the locked baseline: picture changes are refused while it is active.\n\nSwitch to a preset, or create one, to change anything.");
     wcscpy_s(oklbl,L"OK"); Show(); }
   // "Up next" countdown card (5 s, user choice). Cancel/Esc aborts, Play now skips it.
   void ShowNext(const wchar_t* item){ action=5; wcscpy_s(title,L"Up next");
@@ -6841,6 +6843,12 @@ public:
       m_presets.ShowWarning(); }
     else { LogF("preset picker open"); m_presets.Show(); }
     return 0; }
+  afx_msg LRESULT OnPresetLocked(WPARAM,LPARAM){
+    // Default refused a change (RefuseLocked / the NLS toggle): say why, on the
+    // card, and wait for OK. Ignored while another card is up so a run of clicks
+    // on locked rows cannot stack notices.
+    if(!m_confirm.IsWindowVisible()){ LogF("preset locked notice shown"); m_confirm.ShowPresetReadOnly(); }
+    return 0; }
   afx_msg LRESULT OnPresetDirty(WPARAM w,LPARAM){
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
     m_top.Invalidate(FALSE);
@@ -6995,7 +7003,9 @@ public:
     Row* r=FindRow("geo.nls");
     if(!r) return 0;
     if(_wcsicmp(g_activePreset.c_str(),L"Default")==0){
-      ShowToast(L"Default is read-only — switch to a preset to change this",3000);
+      // Same rule as the rail: Default is locked, and the refusal is a centred
+      // card, not a strip label that reads as a bug.
+      PostMessageW(WM_APP+54,0,0);
       LogF("NLS toggle refused (Default is read-only)"); return 0; }
     r->on=!r->on;
     PushRow(*r);
@@ -7508,6 +7518,7 @@ BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_MESSAGE(WM_APP+51, &CMainFrame::OnToastText)
   ON_MESSAGE(WM_APP+52, &CMainFrame::OnDismissPopups)
   ON_MESSAGE(WM_APP+53, &CMainFrame::OnToggleNls)
+  ON_MESSAGE(WM_APP+54, &CMainFrame::OnPresetLocked)
 END_MESSAGE_MAP()
 
 class CNativeUiApp : public CWinApp {

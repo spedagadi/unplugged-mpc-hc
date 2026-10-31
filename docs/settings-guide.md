@@ -110,13 +110,16 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 
 ### `Default` is read-only — and custom presets save themselves
 
-- **`Default` is read-only for the picture settings.** Moving a row still
-  changes the picture, but nothing is being kept as a preset: a warning appears
-  in the **centre of the screen** — *"Default is read-only — Changes made on
-  Default are never saved. Create a preset to keep them."* — and stays until you
-  press **OK** (Enter or Esc also dismiss it). The strip shows `Default  *`, and
-  opening the card puts it in its *Create a preset* mode. That is the intended
-  workflow: tune, then **New**.
+- **`Default` is locked.** Trying to change any picture row while it is active is
+  **refused** — the control does not move — and a warning appears in the
+  **centre of the screen**, *"Default is read-only — Default is the locked
+  baseline: picture changes are refused while it is active. Switch to a preset,
+  or create one, to change anything."*, which stays until you press **OK**
+  (Enter or Esc also dismiss it). The **N** key behaves the same way. That is
+  deliberate: `Default` is the compiled baseline, so what you see there is
+  always repeatable. To start working, switch to a preset or create one with
+  **New** — a new preset starts as a copy of the current values, so nothing is
+  lost.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
   **Display black (nits)**, **Convert to SDR** and **Output gamut** describe the
   screen you calibrated, not a look, so they are never part of a preset. They
