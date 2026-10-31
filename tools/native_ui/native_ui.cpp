@@ -136,7 +136,34 @@ static LRESULT CALLBACK HostProc(HWND h,UINT m,WPARAM w,LPARAM l){
 // UI-thread stall that shows the system busy cursor at open (the "spinner").
 // t=<ms since first log line> lets one run prove where the seconds go.
 static DWORD g_t0=0;
-static void LogF(const char* f,...){ static FILE* lg=nullptr; if(!lg) lg=fopen("native_ui_log.txt","a");
+// The log must survive being installed. It used to be fopen("native_ui_log.txt")
+// - CWD-relative and with no fallback - so a copy under Program Files (started
+// from a shortcut, CWD = the install dir) wrote NOTHING, and every field
+// diagnosis lost its first and only evidence. Order: beside the exe, then the
+// per-user folder the engine already uses.
+static FILE* OpenLogOnce(){
+  static FILE* lg=nullptr;
+  static bool tried=false;
+  if(tried) return lg;
+  tried=true;
+  wchar_t exe[MAX_PATH]={0};
+  ::GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring dir(exe); size_t p=dir.find_last_of(L'\\'); if(p!=std::wstring::npos) dir.resize(p);
+  std::wstring cand[2];
+  cand[0]=dir+L"\\native_ui_log.txt";
+  wchar_t base[MAX_PATH]={0}; DWORD n=::GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
+  if(n&&n<MAX_PATH){
+    const std::wstring root=std::wstring(base)+L"\\Unplugged";
+    const std::wstring logs=root+L"\\logs";
+    ::CreateDirectoryW(root.c_str(),nullptr); ::CreateDirectoryW(logs.c_str(),nullptr);
+    cand[1]=logs+L"\\native_ui_log.txt"; }
+  for(const auto& c:cand){
+    if(c.empty()) continue;
+    FILE* f=nullptr;
+    if(_wfopen_s(&f,c.c_str(),L"a")==0&&f){ lg=f; break; } }
+  return lg;
+}
+static void LogF(const char* f,...){ static FILE* lg=OpenLogOnce();
   if(!lg)return; if(!g_t0) g_t0=GetTickCount();
   SYSTEMTIME st; GetLocalTime(&st);
   fprintf(lg,"%02u:%02u:%02u.%03d t=%lu ",st.wHour,st.wMinute,st.wSecond,st.wMilliseconds,
