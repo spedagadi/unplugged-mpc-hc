@@ -3170,9 +3170,17 @@ BEGIN_MESSAGE_MAP(CTitlePanel,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSA
 // confirm card, so no pane can cover it.
 class CAcquireCard : public CUiWnd {
 public:
+  // The failure card offers a way off a dead port: 1.3.0 put a "Switch input…"
+  // combo beside Try Again and emitted the chosen URL. The native card shows
+  // the same choice as a list that expands under the two buttons.
+  struct Inp{ std::wstring url,label; };
   std::wstring label, attempt, title=L"Acquiring signal…";
   bool failed=false; int frame=0, hov=0;
-  CRect retryR, mediaR, exitR;
+  std::vector<Inp> inputs; bool listOpen=false; std::wstring switchUrl;
+  CRect retryR, switchR, mediaR, exitR; std::vector<CRect> rowR;
+  ULONGLONG openedAt=0;   // guards the first moments after the list appears
+  void SetInputs(const std::vector<Inp>& v){ inputs=v; if(inputs.empty()) listOpen=false; }
+  std::wstring TakeSwitchUrl(){ std::wstring u; u.swap(switchUrl); return u; }
   static const wchar_t* SPIN[10];
   // WS_EX_NOACTIVATE for the same reason as the confirm card: it must never take
   // activation (and so never drop the frame's topmost state). Keyboard stays with
@@ -3184,15 +3192,30 @@ public:
   int CardW(){
     int content=max(TextW(title.c_str(),15,true),
       TextW(label.c_str(),13,false)+TextW(L"Input:",12,false)+Px(6));
-    if(failed) content=max(content,max(TextW(L"\x21BA  Try Again",13,true),
-      max(TextW(L"\x25A2  Open Media Player",12,false),TextW(L"\x2715  Exit Unplugged",12,false)))+Px(40));
+    if(failed){ int b=max(TextW(L"\x21BA  Try Again",13,true),
+      max(TextW(L"\x25A2  Open Media Player",12,false),TextW(L"\x2715  Exit Unplugged",12,false)));
+      if(!inputs.empty()){
+        b=max(b,max(TextW(L"\x21BA  Try Again",13,true),TextW(L"Switch input \x25BE",12,false)));
+        for(const auto&i:inputs) b=max(b,TextW(i.label.c_str(),12,false)); }
+      content=max(content,b+Px(40)); }
     return max(Px(360),content+Px(72)); }
-  int CardH(){ return Px(28+16+10+46+10+22+10+20+10+18+28)+(failed?Px(6+38+8+38+8+38):0); }
-  void Place(){ if(!GetSafeHwnd())return; int w=CardW(),h=CardH();
-    CRect pr; GetOwner()->GetWindowRect(pr);
-    MoveWindow(pr.left+(pr.Width()-w)/2,pr.top+(pr.Height()-h)/2,w,h);
+  int CardH(){ int h=Px(28+16+10+46+10+22+10+20+10+18+28);
+    if(failed){ h+=Px(6)+Px(46);                 // the Try Again / Switch input row
+      if(listOpen) h+=(int)inputs.size()*Px(46);
+      h+=Px(38)+Px(8)+Px(38); }                  // Media Player, Exit
+    return h; }
+  // keepTopLeft: grow downward from the current top-left instead of re-centring.
+    // Opening the input list MUST use it. Re-centring moved the whole card up by
+    // half the list's height, the list appeared under the pointer the user had
+    // just clicked the button with, and the next click selected a port — reported
+    // 31 Oct as "the switch input click is extra sensitive". A dropdown that
+    // opens downward leaves the button where the user's pointer already is.
+    void Place(bool keepTopLeft=false){ if(!GetSafeHwnd())return; int w=CardW(),h=CardH();
+    if(keepTopLeft){ CRect wr; GetWindowRect(&wr); MoveWindow(wr.left,wr.top,w,h); }
+    else { CRect pr; GetOwner()->GetWindowRect(pr);
+      MoveWindow(pr.left+(pr.Width()-w)/2,pr.top+(pr.Height()-h)/2,w,h); }
     ApplyDwmRound(m_hWnd); Invalidate(FALSE); }
-  void Start(const std::wstring& lbl){ failed=false; label=lbl; attempt.clear();
+  void Start(const std::wstring& lbl){ failed=false; listOpen=false; label=lbl; attempt.clear();
     title=L"Acquiring signal…"; frame=0; Place();
     ShowWindow(SW_SHOWNOACTIVATE);
     SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -3233,19 +3256,52 @@ protected:
     TxtW(d2,CRect(Px(36),y,rc.right-Px(36),y+Px(18)),attempt.c_str(),RGB(0x66,0x66,0x66),12,false,DT_CENTER|DT_VCENTER);
     y+=Px(18);
     if(failed){ y+=Px(6); int bw=rc.Width()-Px(72),x0=(rc.Width()-bw)/2;
-      int rw=max(Px(160),TextW(L"\x21BA  Try Again",13,true)+Px(40)); if(rw>bw)rw=bw;
-      retryR=CRect(x0,y,x0+rw,y+Px(38));
-      mediaR=CRect(x0,y+Px(46),x0+bw,y+Px(46)+Px(38));
-      exitR =CRect(x0,y+Px(92),x0+bw,y+Px(92)+Px(38));
-      Btn(&dc,retryR,L"\x21BA  Try Again",true,hov==1);
-      Btn(&dc,mediaR,L"\x25A2  Open Media Player",false,hov==2);
-      Btn(&dc,exitR,L"\x2715  Exit Unplugged",false,hov==3); } }
+      if(!inputs.empty()){
+        // 1.3.0's row: Try Again | Switch input, equal width.
+        int half=(bw-Px(8))/2;
+        retryR =CRect(x0,y,x0+half,y+Px(38));
+        switchR=CRect(x0+half+Px(8),y,x0+bw,y+Px(38));
+        Btn(&dc,retryR,L"\x21BA  Try Again",true,hov==1);
+        Btn(&dc,switchR,listOpen?L"Switch input \x25B4":L"Switch input \x25BE",false,hov==2||listOpen);
+      } else {
+        retryR=CRect(x0,y,x0+bw,y+Px(38));
+        switchR=CRect();
+        Btn(&dc,retryR,L"\x21BA  Try Again",true,hov==1); }
+      y+=Px(46);
+      rowR.clear();
+      if(listOpen){ for(size_t i=0;i<inputs.size();++i){
+          CRect r(x0,y+(int)i*Px(46),x0+bw,y+(int)i*Px(46)+Px(38));
+          rowR.push_back(r);
+          Btn(&dc,r,inputs[i].label.c_str(),false,hov==(int)(10+i)); }
+        y+=(int)inputs.size()*Px(46); }
+      mediaR=CRect(x0,y,x0+bw,y+Px(38));
+      exitR =CRect(x0,y+Px(46),x0+bw,y+Px(46)+Px(38));
+      Btn(&dc,mediaR,L"\x25A2  Open Media Player",false,hov==3);
+      Btn(&dc,exitR,L"\x2715  Exit Unplugged",false,hov==4); } }
   afx_msg void OnTimer(UINT_PTR id){ if(id==9){ frame=(frame+1)%10; CRect rc; GetClientRect(rc);
       InvalidateRect(rc,FALSE); } CWnd::OnTimer(id); }
   void OnMouseMove(UINT f,CPoint p){ if(!failed){ if(hov){hov=0;Invalidate(FALSE);} return; }
-    int h=retryR.PtInRect(p)?1:mediaR.PtInRect(p)?2:exitR.PtInRect(p)?3:0;
+    int h=retryR.PtInRect(p)?1:((!switchR.IsRectEmpty()&&switchR.PtInRect(p))?2:0);
+    if(!h){ for(size_t i=0;i<rowR.size();++i) if(rowR[i].PtInRect(p)){ h=10+(int)i; break; } }
+    if(!h){ h=mediaR.PtInRect(p)?3:exitR.PtInRect(p)?4:0; }
     if(h!=hov){ hov=h; Invalidate(FALSE); } }
   void OnLButtonDown(UINT f,CPoint p){ if(!failed)return; CWnd* fr=GetOwner(); if(!fr)return;
+    if(!switchR.IsRectEmpty()&&switchR.PtInRect(p)){
+      listOpen=!listOpen; hov=0;
+      if(listOpen) openedAt=GetTickCount64();
+      // Opening grows downward from the anchor (dropdown); closing re-centres.
+      Place(listOpen);
+      LogF("acquire: switch list %s",listOpen?"open":"closed"); return; }
+    if(listOpen){
+      for(size_t i=0;i<rowR.size();++i) if(rowR[i].PtInRect(p)){
+        // A click in the first 300 ms is the same gesture that opened the list,
+        // not a choice; a real selection is a separate click on a visible row.
+        if(GetTickCount64()-openedAt<300) return;
+        switchUrl=inputs[i].url; listOpen=false;
+        LogF("acquire: switch to '%s'",Narrow(inputs[i].label).c_str());
+        fr->PostMessageW(WM_APP+57,0,0); return; }
+      // Anywhere else while the list is up closes it, like a dropdown.
+      listOpen=false; hov=0; Place(false); return; }
     if(retryR.PtInRect(p)){ LogF("acquire: Try Again pressed");  fr->PostMessageW(WM_APP+7,0,0); }
     else if(mediaR.PtInRect(p)){ LogF("acquire: Open Media Player pressed"); fr->PostMessageW(WM_APP+8,0,0); }
     else if(exitR.PtInRect(p)){ LogF("acquire: Exit pressed");   fr->PostMessageW(WM_APP+5,0,0); } }
@@ -6578,6 +6634,14 @@ public:
     auto it=m_labels.find(url); if(it!=m_labels.end()&&!it->second.empty()) return it->second;
     return InputLabel(url);
   }
+  // Every OTHER named port, for the failure card's "Switch input" list. The
+  // current port is excluded, exactly as 1.3.0's combo did.
+  std::vector<CAcquireCard::Inp> OtherInputs() const {
+    std::vector<CAcquireCard::Inp> v;
+    for(const auto&kv:m_labels){ if(kv.second.empty()||kv.first==m_inputUrl) continue;
+      CAcquireCard::Inp i; i.url=kv.first; i.label=kv.second; v.push_back(i); }
+    return v;
+  }
   void WriteConfigValue(const char* key,const std::string& value,bool quoted){
     if(m_cfgPath.empty()) return;
     std::string j=ReadTextFile(m_cfgPath),pat=std::string("\"")+key+"\"";
@@ -7144,6 +7208,30 @@ public:
     if(md){ JNumAt(md,"tf",tf); JNumAt(md,"dovi",dv); }
     m_liveEotf=(int)eotf; m_liveLocked=(int)locked;
     m_liveCs=(int)cs; m_liveTf=tf; m_liveHdrMeta=hm; m_liveDovi=dv;
+    // LIVE CAPTURE WATCHDOG. When the source device is switched off or
+    // unplugged in video processor mode, the engine's decider stops the graph
+    // and the window falls back to the wallpaper - from the sofa that is
+    // indistinguishable from a hang, and the user has to click through to the
+    // Source tab to find out why. Re-run the launch acquisition (the same
+    // 10-attempt card) instead. Frames drawn is the test, not frames delivered
+    // (delivering and showing are different things); the signal-locked check
+    // keeps a slow graph rebuild - where the lock stays up - from tripping it.
+    // The failure card, once shown, is left alone: it already offers Try Again,
+    // Switch input, Media Player and Exit, and must not be re-armed under the
+    // user's pointer.
+    {
+      static int s_lastDrawn=-1; static ULONGLONG s_lastChange=0;
+      const bool live=(m_appMode==L"video_processor")&&m_graphRan&&!m_vpAcq
+                     &&!m_firstRun&&!m_acq.failed;
+      if(!live||(int)m_drawn!=s_lastDrawn){ s_lastDrawn=(int)m_drawn; s_lastChange=GetTickCount64(); }
+      else if(m_liveLocked==0&&GetTickCount64()-s_lastChange>=6000){
+        LogF("vp: live capture stalled (drawn %d frozen %llu ms, signal unlocked) - re-acquiring",
+             (int)m_drawn,(unsigned long long)(GetTickCount64()-s_lastChange));
+        s_lastChange=GetTickCount64();
+        m_acq.SetInputs(OtherInputs());
+        StartVp();
+      }
+    }
     const bool file=InFilePlayback();
     if(file){ m_pos=p100/1e7; m_dur=d100/1e7; if(m_pos<0||m_pos>1e6)m_pos=0; if(m_dur<0||m_dur>1e6)m_dur=0; }
     else { m_pos=0; m_dur=0; }
@@ -7462,6 +7550,17 @@ public:
   afx_msg LRESULT OnPickLut(WPARAM,LPARAM){ PickCubeLut(); return 0; }
   // WM_APP+7 acquire retry, +8 overlay->media player, +9 library->video processor.
   afx_msg LRESULT OnAcqRetry(WPARAM,LPARAM){ m_acq.Stop(); KillTimer(5); StartVp(); return 0; }
+  // The failure card's "Switch input" list. 1.3.0 changed the active port and
+  // restarted capture in place (no process restart), so this does the same:
+  // persist the choice, retarget the engine, and re-arm the 10-attempt card.
+  afx_msg LRESULT OnAcquireSwitchInput(WPARAM,LPARAM){
+    const std::wstring url=m_acq.TakeSwitchUrl(); if(url.empty()) return 0;
+    LogF("acquire: switching input to '%S' (in place)",url.c_str());
+    m_acq.Stop(); KillTimer(5);
+    m_inputUrl=url; m_inputLabel=InputLabel(url); WriteActiveInput(url);
+    RefreshSourcePorts(true);
+    StartVp();
+    return 0; }
   afx_msg LRESULT OnToMedia(WPARAM,LPARAM){ RequestModeSwitch(L"media_player"); return 0; }
   afx_msg LRESULT OnToVp(WPARAM,LPARAM){ RequestModeSwitch(L"video_processor"); return 0; }
   // 1.3.0 _switch_mode: if a graph has EVER run in this process, switching modes
@@ -7642,7 +7741,9 @@ protected:
       if(m_drawn>0){ KillTimer(5); m_vpAcq=false; m_acq.Stop();
         LogF("vp: signal acquired (%d frames drawn) - overlay dismissed",(int)m_drawn); }
       else { m_acq.Attempt(m_attempt+1,VP_MAX_RETRY);
-        if(++m_attempt>=VP_MAX_RETRY){ KillTimer(5); m_vpAcq=false; m_acq.Fail(); } } }
+        if(++m_attempt>=VP_MAX_RETRY){ KillTimer(5); m_vpAcq=false;
+          m_acq.SetInputs(OtherInputs());   // the failure card must offer the other ports
+          m_acq.Fail(); } } }
     if(id==6){
       if(m_nextPath.empty()) KillTimer(6);
       else { int left=5-(int)((GetTickCount64()-m_nextAt)/1000); if(left<0) left=0;
@@ -7985,6 +8086,7 @@ BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_MESSAGE(WM_APP+53, &CMainFrame::OnToggleNls)
   ON_MESSAGE(WM_APP+54, &CMainFrame::OnPresetLocked)
   ON_MESSAGE(WM_APP+56, &CMainFrame::OnUpdateNow)
+  ON_MESSAGE(WM_APP+57, &CMainFrame::OnAcquireSwitchInput)
   ON_MESSAGE(WM_UPDATE_DONE, &CMainFrame::OnUpdateDone)
 END_MESSAGE_MAP()
 
