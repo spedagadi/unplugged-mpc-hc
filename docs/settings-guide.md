@@ -110,11 +110,17 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 
 ### `Default` is read-only — and custom presets save themselves
 
-- **`Default`** is the built-in starting point. You can change anything while it
-  is active and the picture follows, but those changes are **not stored as a
-  preset** — the strip shows `Default  *` to say so, and opening the card offers
-  to turn what you have into a new preset. That is the intended workflow: tune,
-  then **New**.
+- **`Default` is read-only for the picture settings.** Moving a row still
+  changes the picture, but nothing is being kept as a preset: a popup says
+  **"Default is read-only. Create a preset to save changes."**, the strip shows
+  `Default  *`, and opening the card puts it in its *Create a preset* mode.
+  That is the intended workflow: tune, then **New**.
+- **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
+  **Display black (nits)**, **Convert to SDR** and **Output gamut** describe the
+  screen you calibrated, not a look, so they are never part of a preset. They
+  can be changed at any time — on `Default` or on any preset — the change
+  applies to every preset, and it neither marks the preset dirty nor shows the
+  popup.
 - **Any preset of your own is live.** There is no Save button: as soon as you
   change a row, the preset file is rewritten (about a third of a second later,
   so a slider drag lands once). The `*` next to the name only means a write is
@@ -125,7 +131,8 @@ The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 ### What a preset does *not* contain
 
 Five rows describe the **display you calibrated, not your taste**, so they stay
-with the machine and switching presets never changes them:
+with the machine and switching presets never changes them — and, as above, they
+are always editable, even on `Default`:
 
 > **SDR display nits · Static nits (max) · Display black (nits) ·
 > Convert to SDR · Output gamut**

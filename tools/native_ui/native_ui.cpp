@@ -6827,7 +6827,15 @@ public:
   afx_msg LRESULT OnPresetDirty(WPARAM w,LPARAM){
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
     m_top.Invalidate(FALSE);
-    if(w) LogF("preset: Default changed -> top-strip marker only (no auto-open)");
+    // w==1: the FIRST non-device change made while Default is active. Say so out
+    // loud — Default is locked, so the picture is moving and nothing is being
+    // kept. A toast rather than opening the card: an auto-opened card takes
+    // focus out of the rail mid-drag. The '*' marker and the card's own warning
+    // header stay as the persistent reminders.
+    if(w){
+      LogF("preset: Default changed -> read-only notice shown");
+      ShowToast(L"Default is read-only. Create a preset to save changes.",3600);
+    }
     else if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
     return 0; }
   afx_msg LRESULT OnPresetState(WPARAM,LPARAM){
