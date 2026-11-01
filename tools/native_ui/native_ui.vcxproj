@@ -63,6 +63,15 @@
       <AdditionalLibraryDirectories>$(ProjectDir)vendor\webview2\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
+  <!-- The OMDb key is compiled in as masked bytes. The header is generated here
+       (never committed) from the untracked _omdb_key.py; with no key file the
+       header declares length 0 and the app falls back to Wikipedia. -->
+  <ItemDefinitionGroup>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)gen_omdb_key.ps1"</Command>
+      <Message>Generating the embedded OMDb key</Message>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="native_ui.cpp" />
     <ResourceCompile Include="Unplugged.rc" />

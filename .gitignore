@@ -69,6 +69,9 @@ ipch
 
 # OMDb API key shipped with the app - never committed
 src/unplugged-ui/src/mpvprocessor/media/_omdb_key.py
+# Generated from it at build time (masked bytes compiled into the exe); still a
+# reversible encoding of the key, so it must never enter the public repo either.
+/tools/native_ui/omdb_key_generated.h
 
 # Native UI (tools/native_ui) - the MFC shell that replaces the PyQt one.
 # The source, project file, docs and the WebView2 vendor headers/lib are tracked;

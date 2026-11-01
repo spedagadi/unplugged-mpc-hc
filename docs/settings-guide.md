@@ -1,15 +1,13 @@
 # Unplugged Settings Guide
 
 For **Unplugged 2.0.0**. Covers every control visible in the settings panel:
-what it does, its full range, and what the picture does when you move it. A few
-advanced rows (renderer backend, deinterlacing, present timing, tray icon) are
-kept behind the internal switch and are listed under *Current limitations*.
+what it does, its full range, and what the picture does when you move it.
 
 ## Playback keys
 
 Media Player mode only for the transport keys — live capture has no position to
-seek or pause. The chrome keys (↑ / F1 / Esc), volume, mute and **N** work in
-video processor mode as well. Every binding is an ordinary key inside the
+seek or pause. The chrome keys (↑ / F1 / Esc) and **N** work in video processor
+mode as well. Every binding is an ordinary key inside the
 Unplugged window: nothing is captured while another app has focus, so Unplugged
 never interferes with anything else running on the machine.
 
@@ -26,7 +24,7 @@ never interferes with anything else running on the machine.
 | N | NLS on / off (same as the transport-bar button) |
 | S | stop back to the library |
 | Ctrl+S | save the current frame as PNG (paused only) |
-| Esc | close settings → stop back to the library → quit the app, one layer per press |
+| Esc | close settings → stop back to the library → recover the chrome, one layer per press |
 | Alt+F4 | asks before closing |
 
 ## How to get started
@@ -78,8 +76,8 @@ never interferes with anything else running on the machine.
   a measured value like 174 nits. With the panel focused, **←/→** move the row
   focus; **↑** stays the chrome toggle everywhere, including here.
 - Everything applies **live** to the running picture and is saved immediately —
-  except rows marked *[next open]* below, which take effect the next time a
-  file or capture starts (they change which pipeline the renderer builds).
+  including **Convert to SDR** and the debug passthroughs, which reselect the
+  converter/shader in place rather than rebuilding the pipeline.
 - Your settings are plain text at `%LOCALAPPDATA%\Unplugged\s3_shell.ini`.
   Every row writes itself there on first start, so you can back it up, or
   hand-edit a value a slider can't reach (like `hdr.maxNits` above 1000).
@@ -90,11 +88,17 @@ never interferes with anything else running on the machine.
 
 ## Presets
 
-A preset is a saved snapshot of every **settings row across all tabs** — tone
+A preset is a saved snapshot of the rows that describe the **picture** — tone
 curve and trims, the Zion grade, Output scalers, Geometry and non-linear
-stretch, and the Playback audio rows. It is how you keep, say, a **Projector**
-setup and a **Daylight TV** setup side by side instead of re-tuning when the
-room or the display changes.
+stretch — plus the System switches that are not UI-only. It does **not** contain
+the **Playback** or **Source** tabs (see below). It is how you keep, say, a
+**Projector** setup and a **Daylight TV** setup side by side instead of
+re-tuning when the room or the display changes.
+
+**First start:** the app creates five presets — `Preset 1` … `Preset 5` — and
+makes `Preset 1` active. On an upgrade they are seeded from your existing
+settings, so nothing changes on screen; on a fresh install they start from the
+compiled defaults. Rename them as you like.
 
 The active preset's name is shown in the title strip as `Preset  Name  ▾`.
 **Click it** to open the preset card.
@@ -151,9 +155,10 @@ are always editable, even on `Default`:
 > Convert to SDR · Output gamut**
 
 Also not part of a preset: the **Playback** and **Source** tabs (audio mode,
-input device, setup), the app rows on the System tab (context banner,
+input device, setup), the two UI-only rows on the System tab (context banner,
 auto-next), and the playback position. Those belong to the app and the session,
-not to a look.
+not to a look. The other System switches (automatic update check, tray icon) are
+ordinary rows and do travel with a preset.
 
 One behaviour worth knowing: the preset you last used is **re-applied when the
 next picture comes up** (the first play or capture after launch), *after* the
@@ -208,13 +213,13 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
-| **Convert to SDR** | On / Off *[next open]* | On | On: HDR video is tone-mapped into the normal (SDR) range this app renders. Off: the HDR signal is passed on for your TV itself to map — only sensible with an HDR-capable TV in HDR mode. When Off, everything else in this tab and the Zion tab stops mattering, because this app is no longer doing the picture. |
+| **Convert to SDR** | On / Off | On | On: HDR video is tone-mapped into the normal (SDR) range this app renders. Off: the HDR signal is passed on for your TV itself to map — only sensible with an HDR-capable TV in HDR mode. When Off, everything else in this tab and the Zion tab stops mattering, because this app is no longer doing the picture. |
 | **SDR display nits** | 25…400 | 80 | The **measured** SDR white luminance of your display — a calibration number like *Static nits (max)* below, never a taste knob. Enter your measured value (a TV in a bright room typically 100–200; a projector in the dark 40–80) and leave it there. What a wrong number does: declared *below* your measurement, the picture runs bright and the highlights pay — the shoulder clips sooner and sky detail goes first; declared *above* it, films render dark with headroom unused. Brightness without lying about your panel is what **Exposure** is for. |
 | **Tone curve** | `Unplugged` / `GT7 Adapt` | `Unplugged` | How HDR's brightness range is squeezed into your display's. **Unplugged** — the house curve, and the safe choice for everything Dolby Vision: DV carries its own per-scene mastering and this curve respects it. **GT7 Adapt** — the house curve for HDR10/HLG, which blends the title's declared peak with what each scene measures. The taste trims below work on both; switching curve changes the Curve Settings dials shown. |
 | **Exposure** | −5…+5 | 0 | A brightness dial that works **before** the tone curve, in thirds of a stop: ±1 = ±⅓ stop, ±3 = ±1 stop. Because it's pre-curve, the shoulder absorbs it — brightness without spending your highlights. The safest lever when a specific film looks dark or washed. |
 | **Shadow detail** | −5…+5 | 0 | How much texture survives in the dark end. **Positive** spreads dark values apart — you see fabric weave, night-scene layout, object edges — while true black stays black (it is *detail*, not a brightness lift). **Negative** compresses blacks together, for a denser, more "filmic" shadow that hides crushed masters. Never greys the image. |
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
-| **Output gamut** | `BT.709 (standard)` / `BT.2020 (wide)` | 709 | The colour space delivered. 709 is what SDR (and effectively every TV's SDR mode) expects. BT.2020 keeps wide colour *only* for a display actually in HDR/wide-gamut mode — on a normal SDR pipeline it makes colours wrong. Leave on 709 unless you know exactly why you changed it. |
+| **Output gamut** | `BT.709 (standard)` / `BT.2020 (wide)` | `BT.709 (standard)` | The colour space delivered. 709 is what SDR (and effectively every TV's SDR mode) expects. BT.2020 keeps wide colour *only* for a display actually in HDR/wide-gamut mode — on a normal SDR pipeline it makes colours wrong. Leave on 709 unless you know exactly why you changed it. |
 | **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
 | **Highlight desat** | 0…1 | 0 | A companion to the row above for **the Unplugged curve**: at higher brightness levels, pull saturation toward the level's own neutral point (hue preserved). Measured against reference renderers, 0.50 matches; 0 is off. Note: it runs inside the grade, so it needs *Enable ML grade* (Zion tab) on. |
 
@@ -323,7 +328,7 @@ here Off for normal viewing.
 
 | Setting | What it does |
 | --- | --- |
-| **HDR passthrough** *[next open]* | Bypasses this app's entire picture pipeline and hands the raw signal to the display — the "is it the renderer or the TV" test. On a non-HDR display you'll see flat/green-grey nonsense; that's expected, not broken. Mutually exclusive with the next row by design. |
+| **HDR passthrough** | Bypasses this app's entire picture pipeline and hands the raw signal to the display — the "is it the renderer or the TV" test. Applies immediately (it swaps the shader the render loop binds, with no pipeline rebuild). On a non-HDR display you'll see flat/green-grey nonsense; that's expected, not broken. Mutually exclusive with the next row by design. |
 | **Tone curve passthrough** | Skips the **Zion ML grade** and nothing else: the picture is what the tone curve alone delivers — HDR converted to SDR by the selected curve, no per-scene model, no grade. It applies live. This is the A/B for the *grade*: if the picture is right here and wrong with the grade on, the grade is the suspect; if it is already wrong here, the tone curve or the display side is. Also auto-switches HDR passthrough off. |
 | **Frame log** | Writes a verbose per-frame telemetry line to the engine log (`%USERPROFILE%\.unplugged\logs\engine.log`) — what each stage computed, frame by frame. The thing to turn on when asking "why did the picture change there". |
 | **MC heat** | Replaces the picture with a greyscale map of where the micro-contrast engine is working, so a visible seam can be matched to a mask edge. |
@@ -391,16 +396,16 @@ spot.
 
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
-| **Enable NLS** | On/Off | Off | Non-linear stretch: expands the active picture toward the screen edges while keeping the central band close to its original geometry. Intended for scope screens, projectors and anamorphic setups. Uses Fill geometry automatically. |
+| **Enable NLS** | On/Off | Off | Non-linear stretch: expands the active picture toward the screen edges while keeping the central band close to its original geometry. Intended for scope screens, projectors and anamorphic setups. Off by default; switching it on with the stock settings fills a letterboxed scope title immediately — the rows below are for tuning that result, not for making it happen. |
 | **Bars removed** | 0 – 100 % | 100 % | How much of the letterbox the picture grows into. **0** shows it at its own aspect (bars untouched, no distortion); **100** fills the screen. The correction the fill costs scales with it — taking half the bars costs half the distortion — so this is the "how many of the black bars do I get rid of" dial. Whatever is left can be zoomed away, which spends side picture instead of shape. |
-| **Axis** | `Horizontal` / `Vertical` / `Split` | Horizontal | Which axis carries the aspect correction. **Horizontal** is the classic non-linear stretch/squeeze (all of it on the sides); **Vertical** pays the same correction on the other axis (for anamorphic setups). **Split** shares it between the two: the horizontal axis takes the **Split** percentage and the vertical the rest, so a 24 % correction becomes ~12 % up-and-down plus ~12 % sideways instead of 24 % in one direction — the same fill with half the distortion per axis. |
+| **Axis** | `Horizontal` / `Vertical` / `Split` | Split | Which axis carries the aspect correction. **Horizontal** is the classic non-linear stretch/squeeze (all of it on the sides); **Vertical** pays the same correction on the other axis (for anamorphic setups). **Split** shares it between the two: the horizontal axis takes the **Split** percentage and the vertical the rest, so a 24 % correction becomes ~12 % up-and-down plus ~12 % sideways instead of 24 % in one direction — the same fill with half the distortion per axis. |
 | **Strength** | 0 – 100 % | 100 % | How much of the correction the warp actually applies. At 0 the fill still happens but nothing is corrected — the picture is stretched uniformly, which is the worst-case look you are tuning away from; at 100 the whole correction is redistributed. Use it to find the point where the shape starts to hurt. |
 | **Centre protection** | 0 – 90 % | 45 % | The fraction of the picture kept at correct geometry, measured from the middle out. Everything inside it is a uniform zoom — no distortion at all — and the whole correction is squeezed into the rim beyond it. Low values (35–45) spread the distortion gradually, which is gentler on the very edge but starts to bend faces around 72 % of the way out. High values (80–90) keep the middle, including faces near the sides, perfectly clean and dump everything into a narrow rim: extreme at the edge, but it is the part you would crop anyway. A *stretching* axis cannot be protected as far as a squeezing one (the map would run out of range), so the effective cap is lower when **Axis** puts the correction on the vertical side. |
 | **Curve** | 1.0 – 2.9 | 1.2 | Distribution of the stretch across the outer band. Higher values push more distortion toward the edges — the upper half of the range is what makes a very high **Centre protection** read as "clean middle, squeezed rim". |
 | **Split** | 0 – 100 % | 50 % | Horizontal's share of the correction when **Axis = Split**. 100 % is the horizontal-only pass; 0 % is vertical-only; 50 % is even (the two axis factors then multiply to 1, so image area is kept). |
 | **Max distortion** | 100 – 150 % | 140 % | Per-axis limit on the aspect correction, in **both** directions (e.g. 110 % = at most 10 % on each axis). Whatever the warp refuses to take is covered by cropping the axis that has slack — the sides for a picture still too wide, the top/bottom for one still too narrow — so this is the dial between "distort a little and crop a little" and "distort more and crop less". Setting it **below** what a title needs is also what lets Auto fill a hard case instead of letterboxing it (see Fill mode). Stretch mode ignores it, because Stretch never crops. |
 | **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small). **Crop** scales uniformly until the picture covers the screen and cuts the overflow — zero distortion, spends picture. **Auto** warps, capping each axis at **Max distortion**, and crops the remainder; it fills whenever the correction is inside **Fill limit** *or* **Max distortion** is set below the correction (an explicit budget — that is what makes a scope film fill a 16:9 screen), and shows the film letterboxed at its own aspect otherwise. **Off** letterboxes at the picture's own aspect. |
-| **Fill limit** | 100 – 200 % | 105 % | The largest aspect correction Auto will fill with when **Max distortion** is not the tighter number. Beyond it, Auto letterboxes instead of filling — unless Max distortion says otherwise. The live panel's **Fill cost** row shows what the current title needs — a 2.39 film on a 16:9 screen is 36 %. |
+| **Fill limit** | 100 – 200 % | 200 % | The largest aspect correction Auto will fill with when **Max distortion** is not the tighter number. The default 200 % means Auto fills every realistic scope title (a 2.39 film on a 16:9 screen needs about 134 %); lower it to make Auto letterbox sooner, or set **Max distortion** below the correction to state a distortion budget and let the rest be cropped. The live panel's **Fill cost** row shows what the current title needs. |
 | **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. |
 
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does.
@@ -501,14 +506,12 @@ controls.
 - **Zion → Chroma → Mode** saves but does nothing yet; the Default behaviour
   always runs.
 - **System → Report a problem** saves a log line only; no report is sent.
-- **Hidden developer rows.** A set of renderer-level rows (Use Direct3D 11,
-  Texture format, the VP input-format switches, Deinterlacing, Swap effect,
-  Exclusive fullscreen, Wait for VBlank, Adjust present time, Reinit on display
-  change, Tray icon, Prefer DV over PQ/HLG) exists but is not shown by default.
-  Their shipped values are the right ones; they are kept out of the rail so the
-  picture controls are not buried.
 - Super Resolution is not available for HDR or 10-bit sources; it is a
   SDR-path feature.
+- With strong non-linear stretch, fine text can look slightly soft — both axes
+  are being resampled when **Axis = Split**. Lower **Strength** or **Centre
+  protection** if it bothers you.
+- Disc images (ISO) and BDMV folder playback are not supported; rip to a file.
 - Subtitle *styling* (font, size, colour) is not in this panel; only track
   selection is.
 

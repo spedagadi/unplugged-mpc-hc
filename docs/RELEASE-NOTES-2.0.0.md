@@ -146,7 +146,7 @@ that into dials:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.0.0.exe` | 127,000,899 bytes | `43DDF45A2C8E2949D1F0D46012EA15B4FB69D3FB1427DBE292366F166C0E7C00` |
+| `Unplugged-setup-2.0.0.exe` | 127,017,620 bytes | `666AA55491E39B764AC2D5980876D9072653350D5E1690896426C361EF26BAED` |
 
 ## Source and licences
 

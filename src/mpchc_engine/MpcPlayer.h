@@ -939,6 +939,9 @@ private:
     // this is the fallback that fills the panel's Transfer/Primaries/HDR rows.
     int m_liveRenderTf   = 0;
     int m_liveRenderPrim = 0;
+    // The renderer's own "active: yes|no" for the Zion grade, published so the
+    // app can show it (Info panel). -1 = not reported yet.
+    std::atomic<int> m_liveMlActive{-1};
     // Whether the renderer consumed a Dolby Vision RPU (m_Dovi.bValid) on this
     // source — parsed from the pipeline dump's dovi= token. A DV Profile 5 file
     // carries no colour description in its VUI, so the panel's tf=/prim= rows read

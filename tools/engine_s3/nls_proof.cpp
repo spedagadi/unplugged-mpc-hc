@@ -90,6 +90,14 @@ static const Cfg kCfgs[] = {
       "nls_proof_8_auto_def140.bmp" },
     { "auto-def110",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.1",
       "nls_proof_9_auto_def110.bmp" },
+    // The 2.0.0 stock defaults after 2026-11-01: Auto, Fill limit 200, Axis Split
+    // 50, full strength. This is the leg that answers "does enabling NLS fill a
+    // scope title with everything left at default" - it must fill, at Split 50's
+    // per-axis cost, with no crop.
+    { "auto-lim200",    "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_13_auto_lim200.bmp" },
     // Rim mode: protect the middle almost to the edge and dump the whole
     // correction into a narrow rim (the operator's "extreme at the edges, keep
     // the centre intact"). Horizontal axis, because a stretching axis cannot be

@@ -4089,6 +4089,12 @@ void MpcPlayer::RefreshLive()
         const std::wstring mlState = Field(L"mode: ");
         const std::wstring mlGates = Field(L"gates: ");
         Log("[live] ml: %ls | %ls", mlState.c_str(), mlGates.c_str());
+        // Publish the renderer's own verdict so the app can SHOW whether the
+        // grade is running. Until now "active: yes|no" existed only in this
+        // log, and the operator had no way to tell a working grade from an
+        // inert one (reported 31 Oct).
+        m_liveMlActive = (mlState.find(L"active: yes") != std::wstring::npos) ? 1
+                       : (mlState.find(L"active: no")  != std::wstring::npos) ? 0 : -1;
         // Renderer-reported color truth. The file-path pin media type often
         // carries NO color info (flags=0), while the renderer learned the
         // transfer from the decoded stream — parse the numbers it already
@@ -4428,7 +4434,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         "\"csZoneLo\":%.3f,\"csCap\":%.3f,\"csSkin\":%.3f,"
         "\"face\":%d,\"faceStr\":%.3f,\"faceFeather\":%.3f,\"faceExpand\":%.3f,"
         "\"sky\":%d,\"skyStr\":%.3f,\"person\":%d,\"persStr\":%.3f,\"skinPres\":%.3f,"
-        "\"bars\":%d,\"barsHighlight\":%d,\"debugLog\":%d,\"debugCopy\":%d,"
+        "\"bars\":%d,\"barsHighlight\":%d,\"debugLog\":%d,\"debugCopy\":%d,\"active\":%d,"
         "\"shadowZoneCeil\":%.3f,\"shadowSkin\":%.3f,\"shadowCap\":%.3f,"
         "\"shadowVis\":%d,\"contrastVis\":%d,\"faceVis\":%d,\"skyVis\":%d,\"personOv\":%d},"
         "\"out\":{\"d3d11\":%d,\"tex\":%d,\"nv12\":%d,\"p010\":%d,\"yuy2\":%d,\"other\":%d,"
@@ -4459,7 +4465,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         ml.skyEnabled ? 1 : 0, ml.skyStrength,
         ml.personEnabled ? 1 : 0, ml.personStrength, ml.skinPreserve,
         ml.barsEnabled ? 1 : 0, ml.barsHighlight ? 1 : 0,
-        ml.debugLog ? 1 : 0, ml.debugCopy ? 1 : 0,
+        ml.debugLog ? 1 : 0, ml.debugCopy ? 1 : 0, m_liveMlActive.load(),
         ml.shadowZoneCeil, ml.shadowSkinProtect, ml.shadowRatioCap,
         ml.shadowDebugVis ? 1 : 0, ml.contrastDebugVis ? 1 : 0, ml.faceDebugVis ? 1 : 0,
         ml.skyDebugVis ? 1 : 0, ml.personOverlay ? 1 : 0,
