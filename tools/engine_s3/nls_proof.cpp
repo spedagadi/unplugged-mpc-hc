@@ -15,12 +15,14 @@
 //   - Split 50 warps BOTH axes (0.899/1.113 here) - neither axis carries the
 //     whole correction.
 //   - Split 50 + Max distortion 110 clamps each axis and the geometry crops the
-//     slack axis ([GEOM] dest wider than client).
+//     slack axis ([GEOM] dest wider than client). Max 101/105/110/116 must give
+//     DIFFERENT warp/crop pairs; identical numbers mean the cap is not reaching
+//     both the geometry and the shader (the 2026-11-03 dead-parameter state).
 //   - Vertical leaves the horizontal axis at 1.000 and puts 1/k on y.
 //   - Crop mode logs "no pass (crop to fill)"; Off logs warp 0.
-//   - auto-def140 logs "fill refused" and auto-def110 fills: the Auto gate moved
-//     only for users who set a budget below the correction, so a traditional
-//     setup keeps letterboxing.
+//   - Auto always fills to Bars removed (Fill limit is retired): bars100 fills
+//     fully, bars50 keeps half the bars at half the correction, bars0 is the
+//     plain fit rect with no pass and no crop.
 //
 // NOT a criterion: frame equality. A grab returns the renderer's last DRAWN
 // frame, and while paused a settings change does not always force a redraw, so
@@ -82,10 +84,10 @@ static const Cfg kCfgs[] = {
       "nls_proof_6_vertical.bmp" },
     { "crop",           "geo.nlsFillMode=2;geo.nlsAxis=1",
       "nls_proof_7_crop.bmp" },
-    // The Auto gate, at the DEFAULT Fill limit: with Max distortion above what the
-    // fill needs the picture letterboxes exactly as before (the traditional
-    // setup); with an explicit budget below it, Auto fills and crops the rest.
-    // This title needs 24 %, so 140 % must refuse and 110 % must fill.
+    // The Max distortion budget, Fill limit retired: both legs fill, but 140
+    // lets the warp take more of the correction and 110 pushes the difference
+    // into the geometry crop. (This leg pair predates the retirement of Fill
+    // limit; geo.nlsFillLimit is still accepted and ignored.)
     { "auto-def140",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.4",
       "nls_proof_8_auto_def140.bmp" },
     { "auto-def110",    "geo.nlsFillMode=0;geo.nlsFillLimit=1.05;geo.nlsAxis=1;geo.nlsMax=1.1",
@@ -98,6 +100,61 @@ static const Cfg kCfgs[] = {
                         "geo.nlsSplit=0.5;geo.nlsMax=1.4;geo.nlsStrength=1;"
                         "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
       "nls_proof_13_auto_lim200.bmp" },
+    // Bars removed is authoritative in Auto too (regression 2026-11-03): the
+    // geometry must follow the dial. The old code forced barFill=1.0 in Auto
+    // while the shader kept reading the slider, so the destination stayed fully
+    // filled and lowering the value only removed the shader's compensation -
+    // "the image gets squeezed horizontally". On a clean scope source:
+    //   bars100 -> dest = full client, ratio < 1
+    //   bars50  -> dest half-way between fit and fill, ratio closer to 1
+    //   bars0   -> dest = the plain fit rect, no NLS pass at all
+    { "auto-bars100",   "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=1;"
+                        "geo.nlsBars=1;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_22_auto_bars100.bmp" },
+    { "auto-bars50",    "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=1;"
+                        "geo.nlsBars=0.5;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_23_auto_bars50.bmp" },
+    { "auto-bars0",     "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=1;"
+                        "geo.nlsBars=0;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_24_auto_bars0.bmp" },
+    // 28 Years Later / AVSForum workflow legs (2026-11-01): Crop is the zero-
+    // distortion reference; Auto at Max 101 should be nearly identical, then
+    // raising Max should trade crop for warp, ending at no crop.
+    { "crop-ref",       "geo.nls=1;geo.nlsFillMode=2;geo.nlsAxis=3;geo.nlsSplit=0.5;"
+                        "geo.nlsBars=1;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_14_crop_ref.bmp" },
+    { "auto101-split",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsBars=1;geo.nlsMax=1.01;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_15_auto101_split.bmp" },
+    { "auto105-split",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsBars=1;geo.nlsMax=1.05;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_16_auto105_split.bmp" },
+    { "auto110-split",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsBars=1;geo.nlsMax=1.10;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_17_auto110_split.bmp" },
+    { "auto116-split",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsBars=1;geo.nlsMax=1.16;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_18_auto116_split.bmp" },
+    { "auto101-horiz",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=1;"
+                        "geo.nlsBars=1;geo.nlsMax=1.01;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_19_auto101_horiz.bmp" },
+    { "auto101-bars50", "geo.nls=1;geo.nlsFillMode=0;geo.nlsFillLimit=2.0;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsBars=0.5;geo.nlsMax=1.01;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_20_auto101_bars50.bmp" },
+    { "crop-bars50",    "geo.nls=1;geo.nlsFillMode=2;geo.nlsAxis=3;geo.nlsSplit=0.5;"
+                        "geo.nlsBars=0.5;geo.nlsMax=1.4;geo.nlsStrength=1;"
+                        "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_21_crop_bars50.bmp" },
     // Rim mode: protect the middle almost to the edge and dump the whole
     // correction into a narrow rim (the operator's "extreme at the edges, keep
     // the centre intact"). Horizontal axis, because a stretching axis cannot be
@@ -115,6 +172,8 @@ static const Cfg kCfgs[] = {
 };
 
 static std::string g_outDir;
+static double g_seekSec = 300.0;   // argv[4]: where to seek before the legs
+static double g_watchSec = 0.0;    // argv[5]: >0 = play this long, no test legs
 
 static std::string FieldOf(const char* j, const char* key) {
     const std::string k = std::string("\"") + key + "\":\"";
@@ -192,12 +251,26 @@ static void PollOnce() {
     // same), and every leg is then the same picture.
     case 1:
         if (now - g_phaseAt > 1200) {
-            Cmd("{\"a\":\"seek\",\"pos\":3000000000}");   // 5:00
+            char sb[96];
+            snprintf(sb, sizeof(sb), "{\"a\":\"seek\",\"pos\":%.0f}", g_seekSec * 10000000.0);
+            Cmd(sb);
             g_phase = 2; g_phaseAt = now;
         }
         break;
     case 2:
         if (now - g_phaseAt > 2500) {
+            if (g_watchSec > 0.0) {
+                // Watch mode: play across the requested span without pausing or
+                // pushing config legs, then quit. Used for aspect transitions
+                // (scope <-> IMAX) where the question is what the band latch and
+                // geometry do over time, not what one paused frame looks like.
+                if (now - g_phaseAt > (DWORD)(g_watchSec * 1000.0)) {
+                    Note("watch done");
+                    g_phase = 9;
+                    PostQuitMessage(0);
+                }
+                break;
+            }
             Cmd("{\"a\":\"pause\"}");
             g_phase = 3; g_phaseAt = now;
         }
@@ -265,6 +338,8 @@ int main(int argc, char** argv) {
         : "C:\\code\\unplugged-mpc-hc\\bin\\app\\Release\\s3engine.dll";
     const char* file = (argc > 2) ? argv[2] : "C:\\htpc\\Everest.2015_4kuhd.mkv";
     g_outDir = (argc > 3) ? argv[3] : "C:\\code\\unplugged-mpc-hc\\tools\\engine_s3";
+    if (argc > 4) g_seekSec = atof(argv[4]);
+    if (argc > 5) g_watchSec = atof(argv[5]);
 
     g_t0 = GetTickCount();
     HMODULE hm = LoadLibraryA(dll);
@@ -306,6 +381,13 @@ int main(int argc, char** argv) {
     // The minimum the media path needs (same as sub_proof): SDR conversion on a
     // known curve, grading on - the NLS rows are the only variable.
     Cmd("{\"a\":\"set\",\"sets\":\"hdr.convertToSdr=1;hdr.sdrNits=127;hdr.toneMapCurve=7;ml.enable=1;ml.mode=0\"}");
+    if (g_watchSec > 0.0) {
+        // Reproduce an aspect transition with the operator's Auto recipe: fill
+        // to Bars removed 100, no cap binding, Horizontal axis.
+        Cmd("{\"a\":\"set\",\"sets\":\"geo.nls=1;geo.nlsBars=1;geo.nlsFillMode=0;"
+            "geo.nlsAxis=1;geo.nlsMax=1.4;geo.nlsStrength=1;geo.nlsCenter=0.45;"
+            "geo.nlsCurve=1.2\"}");
+    }
     Cmd((std::string("{\"a\":\"open\",\"url\":\"") + JsonEscape(file) + "\"}").c_str());
 
     SetTimer(g_hwnd, 1, 200, nullptr);

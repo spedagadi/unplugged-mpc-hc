@@ -573,6 +573,7 @@ public:
     // black card must not be stretched to fill on a guess.
     std::atomic<bool>  m_nlsBandKnown{false};
     std::atomic<float> m_nlsBandTop{0.0f}, m_nlsBandBot{0.0f};
+    std::atomic<float> m_nlsBandLeft{0.0f}, m_nlsBandRight{0.0f};
     // True when ResizeVideo has already cropped the band through the destination
     // rect, so the shader must NOT crop again (it would double-crop) and only
     // applies the residual warp. Set by ResizeVideo, read by ApplyPostFx.
@@ -582,6 +583,12 @@ public:
     // panel can show "needs 136 % / limit 105 %" — the number a user needs to set
     // Fill limit knowingly instead of by trial and error.
     std::atomic<int>   m_nlsNeedPct{0};
+    // What the correction would be at Bars removed = 100 for this title. The
+    // panel shows it next to the current cost so the Bars removed dial reads as
+    // "how much of the maximum distortion am I willing to pay": max at 100 %,
+    // falling to 0 when the bars are all kept. Same units and space as
+    // m_nlsNeedPct; both are computed from NlsPartialFill.
+    std::atomic<int>   m_nlsCostMaxPct{0};
     // True when the picture is being fitted to the window at all — cropped by the
     // destination rect, warped by the shader, or both. Set by ResizeVideo, which
     // owns the fill decision (it is the same fillLimit test for a title WITH bars
@@ -738,6 +745,11 @@ public:
     // NEVER read the renderer itself: a read landing on the UI tick during an
     // HDMI blip freezes the app (observed). UI uses only these cache getters.
     void RefreshLive();
+    // Per-frame band watcher. Runs from the live loop at the frame cadence
+    // (kBandWatchMs), not the 1 s telemetry tick, so a scope<->IMAX cut
+    // re-latches before the new frame is drawn. Reads only GetMLStats and
+    // publishes the latched band atomics.
+    void WatchBand();
     bool GetLiveRendererStats(RenderStats& o) const;
     bool GetLiveMlStats(std::wstring& o) const;
     bool GetLiveMlSettings(MlSettings& o) const;

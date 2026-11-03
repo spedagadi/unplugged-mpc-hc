@@ -1,4 +1,4 @@
-// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
+﻿// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
 // SOURCE IS ASCII-ONLY: all non-ASCII glyphs use \uXXXX escapes (a prior
 // PowerShell Set-Content double-encoded raw UTF-8 literals into mojibake).
 // Must match the identifier in Unplugged.rc (the executable's icon resource).
@@ -28,6 +28,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <regex>
@@ -361,6 +362,9 @@ static bool g_showInternals = false;
 // UI-only SYSTEM settings (noeng rows): the context-help card and auto-next.
 // 1.3.0 always showed the card and had no auto-next; both are user-controlled here.
 static bool g_helpBanner = true, g_autoNext = true;
+// Ratings are shown by default. The SYSTEM row carries the OMDb disclaimer:
+// a missing/N/A value comes from OMDb, not from the title being unrated.
+static bool g_showImdbRating = true;
 // Persisted chrome layout: panels are off until the user explicitly turns them on.
 static bool g_showInfo=false, g_showSettings=false;
 // Presets: Default is virtual (compiled row defaults) and always present; custom
@@ -371,6 +375,9 @@ struct Row;
 static void PresetInitFromIni();
 static bool WritePresetFile(const std::wstring& name,bool announce=true);
 static void PresetNoteRowChanged(const Row& r);
+static std::string IniValue(const Row& r);
+static void PushRow(const Row& r);
+static void SaveIni(const char* why);
 
 struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
   double mn,mx,step,val; bool on; int opt; const wchar_t* const* opts; int nopts; const int* optvals;
@@ -542,6 +549,7 @@ static Row g_rows[]={
  {4,1,L"GEOMETRY",L"Pan X","geo.panX",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"GEOMETRY",L"Pan Y","geo.panY",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,0,L"NON-LINEAR STRETCH",L"Enable NLS","geo.nls",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,8,L"NON-LINEAR STRETCH",L"Screen","ui.nlsPreset",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
  // How much of the letterbox the fill takes: 0 leaves the picture at its own
  // aspect, 100 fills the screen. The distortion scales with it, so this is the
  // "how many of the black bars do I get rid of" dial.
@@ -557,13 +565,11 @@ static Row g_rows[]={
  // Split: horizontal's share of the correction, in per cent (50 = even). Only
  // used when Axis = Split; the vertical axis takes the rest.
  {4,1,L"NON-LINEAR STRETCH",L"Split","geo.nlsSplit",0,100,1,50,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {4,1,L"NON-LINEAR STRETCH",L"Max distortion","geo.nlsMax",100,150,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Max distortion","geo.nlsMax",100,200,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,2,L"NON-LINEAR STRETCH",L"Fill mode","geo.nlsFillMode",0,0,0,0,false,0,kNlsFillMode,4,kNlsFillModeV,{},0,0,0,0},
- // 200, not 105: Auto uses this only for the SQUEEZE direction, and a 2.39 film
- // on 16:9 needs 134 %. At 105 Auto refused, so enabling NLS visibly did nothing
- // until the user discovered this row. Max distortion (140) remains the real
- // budget; the slider still lets a user tighten it.
- {4,1,L"NON-LINEAR STRETCH",L"Fill limit","geo.nlsFillLimit",100,200,1,200,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // Fill limit is retired: Auto now always fills to the Bars removed dial, and
+ // Max distortion is the only budget. The engine still accepts geo.nlsFillLimit
+ // so old presets load cleanly, but there is no row to set it any more.
  {4,0,L"NON-LINEAR STRETCH",L"Lock band","geo.nlsLock",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,2,L"OUTPUT",L"Swap effect","out.swapEffect",0,0,0,0,false,1,kSwap,2,nullptr,{},0,0,1,0},
  {4,0,L"OUTPUT",L"Exclusive fullscreen","out.exclusiveFS",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
@@ -584,6 +590,7 @@ static Row g_rows[]={
  {5,3,L"App",L"Report a problem","__report",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,0,L"App",L"Show context banner for settings","ui.helpBanner",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,0,L"App",L"Play next item automatically","ui.autoNext",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
+ {5,0,L"App",L"Show IMDb ratings","ui.showImdbRating",0,0,0,0,true,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,3,L"App",L"\x27F2  Reset renderer settings","sys.resetRenderer",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {5,3,L"App",L"\x25B6  First-time setup\x2026 (restarts app)","src.setup",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
 };
@@ -592,7 +599,104 @@ static const int NROWS=_countof(g_rows);
 static void SyncUiFlags(){
   for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
     if(!strcmp(r.key,"ui.helpBanner")) g_helpBanner=r.on;
-    else if(!strcmp(r.key,"ui.autoNext")) g_autoNext=r.on; } }
+    else if(!strcmp(r.key,"ui.autoNext")) g_autoNext=r.on;
+    else if(!strcmp(r.key,"ui.showImdbRating")) g_showImdbRating=r.on; } }
+
+// ---- NLS presets -------------------------------------------------------------
+// `nls_presets` is deliberately separate from the main look presets. A main
+// preset is a look (tone map, HDR, post-FX); it links to one NLS preset by id.
+// NLS presets live in their own directory so a screen recipe can be reused,
+// shipped read-only, or overridden per user without rewriting the look.
+struct NlsPreset{ std::wstring id,name; double screenAR=0; int revision=1;
+                  bool readOnly=false; std::map<std::string,std::string> values; };
+static std::vector<NlsPreset> g_nlsPresets;
+static std::wstring g_nlsPresetId,g_nlsPresetName;
+static std::wstring NlsExeDir(){
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring d(exe); size_t p=d.find_last_of(L'\\');
+  return p==std::wstring::npos?std::wstring(L"."):d.substr(0,p); }
+static std::wstring NlsUserDir(){
+  wchar_t la[MAX_PATH]={0};
+  if(GetEnvironmentVariableW(L"LOCALAPPDATA",la,MAX_PATH))
+    return std::wstring(la)+L"\\Unplugged\\nls_presets";
+  return NlsExeDir()+L"\\nls_presets"; }
+static bool ReadNlsPresetFile(const std::wstring& path,bool shipped,NlsPreset& p){
+  wchar_t b[512]={0};
+  GetPrivateProfileStringW(L"nls_preset",L"id",L"",b,512,path.c_str());
+  p.id=b; if(p.id.empty()) return false;
+  GetPrivateProfileStringW(L"nls_preset",L"name",L"",b,512,path.c_str());
+  p.name=b[0]?b:p.id;
+  GetPrivateProfileStringW(L"nls_preset",L"screen_ar",L"",b,32,path.c_str());
+  p.screenAR=_wtof(b);
+  GetPrivateProfileStringW(L"nls_preset",L"revision",L"1",b,32,path.c_str());
+  p.revision=_wtoi(b);
+  GetPrivateProfileStringW(L"nls_preset",L"read_only",shipped?L"1":L"0",b,32,path.c_str());
+  p.readOnly=_wtoi(b)!=0;
+  for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+    if(!r.key||strncmp(r.key,"geo.nls",7)!=0) continue;
+    wchar_t v[512]={0};
+    GetPrivateProfileStringW(L"values",Widen(r.key).c_str(),L"",v,512,path.c_str());
+    if(*v) p.values[r.key]=Narrow(v); }
+  return true; }
+static int NlsPresetIndex(const std::wstring& id){
+  for(size_t i=0;i<g_nlsPresets.size();++i)
+    if(_wcsicmp(g_nlsPresets[i].id.c_str(),id.c_str())==0) return (int)i;
+  return -1; }
+static std::wstring NlsPresetIdAt(int i){
+  return (i>=0&&i<(int)g_nlsPresets.size())?g_nlsPresets[i].id:std::wstring(); }
+static std::wstring NlsPresetNameAt(int i){
+  return (i>=0&&i<(int)g_nlsPresets.size())?g_nlsPresets[i].name:std::wstring(); }
+static void LoadNlsPresets(){
+  g_nlsPresets.clear();
+  auto scan=[&](const std::wstring& dir,bool shipped){
+    WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((dir+L"\\*.ini").c_str(),&fd);
+    if(h==INVALID_HANDLE_VALUE) return;
+    do{ if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+      NlsPreset p; if(!ReadNlsPresetFile(dir+L"\\"+fd.cFileName,shipped,p)) continue;
+      int at=NlsPresetIndex(p.id);
+      if(at>=0) g_nlsPresets[at]=p;   // user file overrides shipped by id
+      else g_nlsPresets.push_back(p);
+    } while(FindNextFileW(h,&fd));
+    FindClose(h); };
+  const std::wstring exe=NlsExeDir();
+  scan(exe+L"\\nls_presets",true);
+  scan(exe+L"\\_internal\\nls_presets",true);
+  scan(NlsUserDir(),false);
+  // A fresh install with no data file still needs a usable dropdown. These are
+  // the compiled fallbacks; the installer copy can override both by id.
+  if(g_nlsPresets.empty()){
+    for(int n=0;n<2;++n){
+      NlsPreset p; p.id=(n==0)?L"16x9-balanced":L"scope-balanced";
+      p.name=(n==0)?L"16:9 \x2014 Balanced":L"Scope \x2014 Balanced";
+      p.screenAR=(n==0)?1.7778:2.39; p.readOnly=false;
+      for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
+        if(r.key&&strncmp(r.key,"geo.nls",7)==0) p.values[r.key]=IniValue(r); }
+      p.values["geo.nls"]="1"; p.values["geo.nlsAxis"]="3";
+      p.values["geo.nlsMax"]="200"; p.values["geo.nlsFillMode"]="0";
+      g_nlsPresets.push_back(p); } }
+  // Auto is the default screen choice; keep it first regardless of directory
+  // enumeration order, then sort the rest by display name.
+  std::sort(g_nlsPresets.begin(),g_nlsPresets.end(),[](const NlsPreset&a,const NlsPreset&b){
+    const bool aa=(_wcsicmp(a.id.c_str(),L"auto")==0), bb=(_wcsicmp(b.id.c_str(),L"auto")==0);
+    if(aa!=bb) return aa;
+    return _wcsicmp(a.name.c_str(),b.name.c_str())<0; });
+  // Populate the row's display names. The persisted id is applied by the
+  // settings loader once g_ini has been read.
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
+    if(!strcmp(r.key,"ui.nlsPreset")){
+      r.names.clear(); for(auto&p:g_nlsPresets) r.names.push_back(p.name); } }
+  LogF("nls presets: %d loaded",(int)g_nlsPresets.size()); }
+static bool SetRowFromText(Row& r,const std::wstring& val){
+  if(val.empty()) return false;
+  bool diff=false;
+  if(r.kind==0){ bool on=_wtoi(val.c_str())!=0; if(on!=r.on){ r.on=on; diff=true; } }
+  else if(r.kind==1){ double v=wcstod(val.c_str(),nullptr); if(v<r.mn)v=r.mn; if(v>r.mx)v=r.mx;
+    if(v!=r.val){ r.val=v; diff=true; } }
+  else if(r.kind==2){ const int o=_wtoi(val.c_str()); int idx=o;
+    if(r.optvals){ idx=-1; for(int j=0;j<r.nopts;++j) if(r.optvals[j]==o) idx=j; }
+    if(idx>=0&&idx<r.nopts&&idx!=r.opt){ r.opt=idx; diff=true; } }
+  else if(r.kind==4){ std::wstring f=val; if(f!=r.file){ r.file=f; diff=true; } }
+  return diff; }
 // The port of s3shell_panel.py's KEY_MAP (row key -> MpcPlayer::ApplySettingsFlat
 // name). Without it the engine silently discards the push: ApplySettingsFlat matches
 // on the SHORT name (hdr.convSdr, not hdr.convertToSdr) and an unmatched name sets
@@ -720,6 +824,7 @@ static std::string IniValue(const Row& r){
   if(r.kind==0&&!strcmp(r.key,"out.superRes")) return r.on?"4":"0"; // SUPERRES_1440p
   if(r.kind==0) return r.on?"True":"False";
   if(r.kind==4) return Narrow(r.file);
+  if(r.kind==8) return Narrow(NlsPresetIdAt(r.opt));
   char b[64];
   if(r.kind==1){
     if(IsIntSlider(r.key)){ snprintf(b,sizeof(b),"%d",(int)floor(r.val+0.5)); return b; }
@@ -739,6 +844,34 @@ static std::string IniValue(const Row& r){
   else snprintf(b,sizeof(b),"%d",r.opt);
   return b;
 }
+static bool ApplyNlsPresetById(const std::wstring& id){
+  int idx=NlsPresetIndex(id); if(idx<0) return false;
+  const NlsPreset p=g_nlsPresets[idx];
+  g_nlsPresetId=p.id; g_nlsPresetName=p.name;
+  g_ini["ui.nlsPreset"]=Narrow(p.id); g_iniDirty=true;
+  const bool prev=g_applyingPreset; g_applyingPreset=true;
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i];
+    if(!r.key||strncmp(r.key,"geo.nls",7)!=0) continue;
+    auto it=p.values.find(r.key);
+    if(it!=p.values.end()&&SetRowFromText(r,Widen(it->second))) PushRow(r); }
+  g_applyingPreset=prev;
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
+    if(!strcmp(r.key,"ui.nlsPreset")) r.opt=idx; }
+  SaveIni("nls preset");
+  LogF("nls preset: applied '%s'",Narrow(p.name).c_str());
+  return true; }
+static bool ApplyNlsPresetByIndex(int idx){
+  if(idx<0||idx>=(int)g_nlsPresets.size()) return false;
+  return ApplyNlsPresetById(g_nlsPresets[idx].id); }
+static void SelectNlsPresetRowFromIni(){
+  const std::wstring id=Widen(IniGet("ui.nlsPreset"));
+  int idx=id.empty()?-1:NlsPresetIndex(id);
+  if(idx<0&&!g_nlsPresets.empty()) idx=0;
+  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
+    if(!strcmp(r.key,"ui.nlsPreset")){ r.opt=idx<0?0:idx;
+      if(idx>=0){ g_nlsPresetId=g_nlsPresets[idx].id; g_nlsPresetName=g_nlsPresets[idx].name;
+        if(IniGet("ui.nlsPreset")!=Narrow(g_nlsPresetId)){
+          g_ini["ui.nlsPreset"]=Narrow(g_nlsPresetId); g_iniDirty=true; } } } } }
 static void SaveIni(const char* why){
   if(!g_iniDirty) return;
   if(g_iniPath.empty()) g_iniPath=SettingsIniPath();
@@ -920,6 +1053,7 @@ static void CaptureDefaults(){
 }
 static void LoadSettingsIni(){
   CaptureDefaults();       // born defaults, before any persisted value is applied
+  LoadNlsPresets();        // names/ids before the ui.nlsPreset row is selected
   g_iniPath=SettingsIniPath(); g_ini.clear();
   std::ifstream in(g_iniPath.c_str(),std::ios::binary); std::string line;
   while(std::getline(in,line)){ line=IniTrim(line);
@@ -964,6 +1098,7 @@ static void LoadSettingsIni(){
       }
     }
   }
+  SelectNlsPresetRowFromIni();
   SyncUiFlags();       // ui.helpBanner / ui.autoNext from the persisted rows
   g_showInfo=IniBool(IniGet("ui.showInfo"));
   g_showSettings=IniBool(IniGet("ui.showSettings"));
@@ -986,8 +1121,7 @@ static void PushAll(){
       const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                       !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
                       !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||!strcmp(r.key,"geo.nlsBars")||
-                      !strcmp(r.key,"geo.nlsMax")||
-                      !strcmp(r.key,"geo.nlsFillLimit"))
+                      !strcmp(r.key,"geo.nlsMax"))
                       ?r.val/100.0:r.val;
       snprintf(b,sizeof(b),"%s=%g",ek,v);
     }
@@ -1044,8 +1178,7 @@ static void PushRow(const Row& r){ char b[192];
     const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                     !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
                     !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||!strcmp(r.key,"geo.nlsBars")||
-                    !strcmp(r.key,"geo.nlsMax")||
-                    !strcmp(r.key,"geo.nlsFillLimit"))
+                    !strcmp(r.key,"geo.nlsMax"))
                     ?r.val/100.0:r.val;
     snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%g\"}",ek,v); break; }
   case 2: snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%d\"}",ek,r.optvals?r.optvals[r.opt]:r.opt); break;
@@ -1174,6 +1307,9 @@ static bool WritePresetFile(const std::wstring& name,bool announce){
   std::wstring path=PresetFilePath(name,true); if(path.empty()) return false;
   DeleteFileW(path.c_str());
   WritePrivateProfileStringW(L"preset",L"name",name.c_str(),path.c_str());
+  // The main preset links to the geometry preset. NLS rows are still written as
+  // a fallback snapshot, so old builds and a missing nls_presets file still work.
+  WritePrivateProfileStringW(L"preset",L"nls_preset",g_nlsPresetId.c_str(),path.c_str());
   for(const Row& r:g_rows){
     if(!PresetEligible(r)) continue;
     wchar_t val[4096]={0};
@@ -1224,6 +1360,23 @@ static bool ApplyPreset(const std::wstring& name){
     g_applyingPreset=true;
     for(Row* r:changed) PushRow(*r);
     g_applyingPreset=false; }
+  // A main preset can reference an NLS preset by id. The reference is applied
+  // after its row snapshot, so the shared geometry preset wins. Missing ids
+  // leave the snapshot in place and are logged, never silently zeroed.
+  if(!path.empty()){
+    wchar_t nid[256]={0};
+    GetPrivateProfileStringW(L"preset",L"nls_preset",L"",nid,256,path.c_str());
+    if(*nid){
+      if(!ApplyNlsPresetById(nid))
+        LogF("preset apply '%s': NLS preset '%S' missing; using snapshot",
+             Narrow(name).c_str(),nid);
+    } else {
+      // This main preset has no NLS link. Do not let the autosave pick up the
+      // globally selected NLS id and attach one behind the user's back; that
+      // turned a Crop test preset into Auto on the next save (reported
+      // 2026-11-03).
+      g_nlsPresetId.clear(); g_nlsPresetName.clear();
+    } }
   SetActivePreset(name,false);
   // Say which mode this apply leaves the engine with: "preset apply" alone cannot
   // be lined up against the renderer's `mode: Off active: no`, which is the exact
@@ -1392,11 +1545,14 @@ protected:
     CBitmap* ob=mem.SelectObject(&bmp); mem.SetBkMode(TRANSPARENT);
     (static_cast<T*>(this)->*body)(&mem,CRect(0,0,rc.Width(),rc.Height()));
     dc->BitBlt(rc.left,rc.top,rc.Width(),rc.Height(),&mem,0,0,SRCCOPY); mem.SelectObject(ob); }
-  void DrawSlider(CDC* dc,CRect cr,double f,bool hot){ if(f<0)f=0; if(f>1)f=1; int cy=cr.CenterPoint().y;
-    RR(dc,CRect(cr.left,cy-Px(4),cr.right,cy+Px(4)),Px(2),TEXT);
+  void DrawSlider(CDC* dc,CRect cr,double f,bool hot,bool enabled=true){ if(f<0)f=0; if(f>1)f=1; int cy=cr.CenterPoint().y;
+    // Disabled rows (Split while Axis is not Split) still show their value but
+    // in LO, with no accent fill and no hot knob: the row is reachable for its
+    // help text, not for editing.
+    RR(dc,CRect(cr.left,cy-Px(4),cr.right,cy+Px(4)),Px(2),enabled?TEXT:LO);
     int x=cr.left+(int)(f*cr.Width());
-    if(x>cr.left+Px(2)) RR(dc,CRect(cr.left,cy-Px(4),x,cy+Px(4)),Px(2),ACCENT);
-    RR(dc,CRect(x-Px(6),cy-Px(8),x+Px(6),cy+Px(8)),Px(2),hot?ACCENT2:ACCENT2); }
+    if(x>cr.left+Px(2)) RR(dc,CRect(cr.left,cy-Px(4),x,cy+Px(4)),Px(2),enabled?ACCENT:LO);
+    RR(dc,CRect(x-Px(6),cy-Px(8),x+Px(6),cy+Px(8)),Px(2),enabled?ACCENT2:LO); }
   DECLARE_MESSAGE_MAP()
 };
 BEGIN_MESSAGE_MAP(CUiWnd,CWnd) ON_MESSAGE(WM_MOUSEACTIVATE,&CUiWnd::OnMouseActivateMsg)
@@ -1505,19 +1661,33 @@ public:
     AF(L"APL (AVG)", scA>0?L"%d nits":L"\x2014", PqToNits(scA));
     if(sdrN>0){ wchar_t tb[48]; swprintf_s(tb,L"%.0f nits%s",sdrN,conv?L" (SDR)":L""); A(L"TARGET PEAK",tb); } else A(L"TARGET PEAK",L"\x2014");
     // What NLS would have to do to fill THIS title, next to the user's budget:
-    // the number "Fill limit" should be set against (a 2.39 film on a 16:9 screen
-    // needs ~36 %). Without it the row can only be tuned by trial and error.
+    // MAX COST is the correction at Bars removed 100, COST NOW what the current
+    // value applies, and WARP H/V the per-axis share actually handed to the
+    // shader after Max distortion. Without these the budget rows can only be
+    // tuned by trial and error.
     if(const char* N=Sect(st,"nls")){
-      double nOn=0,nNeed=0,nLim=0,nFill=0,nWarp=0,nCrop=0;
-      JNumAt(N,"on",nOn); JNumAt(N,"need",nNeed); JNumAt(N,"limit",nLim);
-      JNumAt(N,"filling",nFill); JNumAt(N,"warp",nWarp); JNumAt(N,"crop",nCrop);
+      double nOn=0,nNeed=0,nFill=0,nCrop=0;
+      double nBars=0,nMax=0,nWx=0,nWy=0,nCap=0;
+      JNumAt(N,"on",nOn); JNumAt(N,"need",nNeed);
+      JNumAt(N,"filling",nFill); JNumAt(N,"crop",nCrop);
+      JNumAt(N,"bars",nBars); JNumAt(N,"max",nMax);
+      JNumAt(N,"wx",nWx); JNumAt(N,"wy",nWy); JNumAt(N,"cap",nCap);
       if(nOn!=0){
         S_(L"NON-LINEAR STRETCH");
-        AF(L"FILL COST",L"%d %% total",(int)nNeed);
-        AF(L"FILL LIMIT",L"%d %%",(int)nLim);
+        // The dial and its two endpoints. "max" is the correction at Bars
+        // removed = 100 % for this title; "need" is what the current value
+        // applies, so the pair reads as a budget being spent, and at 0 % the
+        // panel says so explicitly (0 of max, no warp).
+        AF(L"BARS REMOVED",L"%d %%",(int)nBars);
+        AF(L"MAX COST (100 %%)",L"%d %%",(int)nMax);
+        AF(L"COST NOW",L"%d %%",(int)nNeed);
+        // Signed per-axis correction after the Split: negative is compression
+        // (the direction that was visible as "the image squeezes"), positive is
+        // stretch. This is the geometry's split, not the total.
+        AF(L"WARP H / V",L"%+d %% / %+d %%",(int)nWx,(int)nWy);
+        AF(L"MAX DISTORTION",L"%d %%",(int)nCap);
         A(L"FILLING", nFill!=0?L"yes":L"no");
-        // The split, spelled out: this is what "Fill limit" actually bought.
-        AF(L"WARP / CROP",L"%d %% / %d %%",(int)nWarp,(int)nCrop);
+        AF(L"GEOM CROP",L"%d %%",(int)nCrop);
       } }
     S_(L"PERFORMANCE");
     AF(L"DISPLAY FPS",L"%.2f fps",draw);
@@ -1947,6 +2117,7 @@ public:
     if(m_focus<0) m_focus=d>0?0:nv-1; else m_focus=max(0,min(nv-1,m_focus+d));
     m_kb=true; ShowHelp(m_focus); Invalidate(FALSE); }
   bool StepRow(Row& r,int d){ if(r.kind!=1)return false;
+    if(RowInert(r)){ LogF("settings: '%S' is inert (Axis is not Split)",r.label); return true; }
     double v=r.val+d*r.step; v=floor(v/r.step+0.5)*r.step;
     if(v<r.mn)v=r.mn; if(v>r.mx)v=r.mx; if(v==r.val)return true;
     r.val=v; LogF("slider step '%S' -> %g",r.label,r.val); PushRow(r); ShowHelp(m_focus); Invalidate(FALSE); return true; }
@@ -2046,19 +2217,23 @@ protected:
       // and rendered "Unplugged" as "Unp…" and "BT.709 (standard)" as "BT.…"
       // (reported at 3840x2160). The label column gives that space up instead —
       // a label ellipsizes gracefully, a value cannot.
-      const int ctlW = (r.kind==2) ? Px(210) : Px(CONTROL_W);
+      // Kind 8 (Screen) is a dropdown like kind 2: same column, same chevron
+      // spacing. It used to get its own 240 px column, which made its chevrons
+      // sit apart from every other control in the tab (reported 2026-11-03).
+      const int ctlW = (r.kind==2 || r.kind==8) ? Px(210) : Px(CONTROL_W);
       int labW = wide? Px(104) : (r.kind==1?Px(RAIL_W+150-8):(Px(RIGHT_W)-ctlW));
-      if(r.kind!=6) TxtW(dc,CRect(cx0+Px(PAD+6),y,cx0+Px(PAD+6)+labW,y+RowH()),r.label,TEXT,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      const bool inert=RowInert(r);
+      if(r.kind!=6) TxtW(dc,CRect(cx0+Px(PAD+6),y,cx0+Px(PAD+6)+labW,y+RowH()),r.label,inert?LO:TEXT,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
       int cright=rc.right;
       if(r.kind==0){ int w=Px(46),h=Px(22); CRect sw(cright-Px(PAD)-w,y+(RowH()-h)/2,cright-Px(PAD),y+(RowH()-h)/2+h);
         FillR(dc,sw,r.on?ACCENT:OFF_BG); HBRUSH hb=CreateSolidBrush(r.on?ACCENT2:BORDER); ::FrameRect(dc->GetSafeHdc(),&sw,hb); DeleteObject(hb);
         TxtW(dc,sw,r.on?L"ON":L"OFF",r.on?RGB(0,0,0):MID,13,false,DT_CENTER|DT_VCENTER); }
-      else if(r.kind==1){ CRect cr=SliderR(y,rc); DrawSlider(dc,cr,(r.val-r.mn)/(r.mx-r.mn),i==m_hover);
+      else if(r.kind==1){ CRect cr=SliderR(y,rc); DrawSlider(dc,cr,(r.val-r.mn)/(r.mx-r.mn),i==m_hover,!inert);
         wchar_t a[16],b2[16]; swprintf_s(a,L"%.0f",r.mn); swprintf_s(b2,L"%.0f",r.mx);
-        TxtW(dc,CRect(cr.left,cr.bottom+Px(3),cr.left+Px(60),cr.bottom+Px(19)),a,MID,13);
-        TxtW(dc,CRect(cr.right-Px(60),cr.bottom+Px(3),cr.right,cr.bottom+Px(19)),b2,MID,13,false,DT_RIGHT);
+        TxtW(dc,CRect(cr.left,cr.bottom+Px(3),cr.left+Px(60),cr.bottom+Px(19)),a,inert?LO:MID,13);
+        TxtW(dc,CRect(cr.right-Px(60),cr.bottom+Px(3),cr.right,cr.bottom+Px(19)),b2,inert?LO:MID,13,false,DT_RIGHT);
         wchar_t v[32]; swprintf_s(v,L"%.4g",r.val);
-        TxtW(dc,CRect(cright-Px(58),y,cright-Px(PAD),y+RowH()),v,TEXT,13,false,DT_RIGHT|DT_VCENTER); }
+        TxtW(dc,CRect(cright-Px(58),y,cright-Px(PAD),y+RowH()),v,inert?LO:TEXT,13,false,DT_RIGHT|DT_VCENTER); }
       else if(r.kind==6){ // SOURCE port: radio, friendly name, live signal badge
         if(r.on) RR(dc,CRect(cx0+2,y,rc.right-2,y+RowH()),Px(6),ACTIVE_BG);
         TxtW(dc,CRect(cx0+Px(6),y,cx0+Px(24),y+RowH()),L"\x25CF",r.on?ACCENT:MID,13,false,DT_CENTER|DT_VCENTER,g_fontFam);
@@ -2112,6 +2287,17 @@ protected:
     // while Default is active, or Default would be a dead end.
     if(r.grp==0||r.grp==1) return false;
     return _wcsicmp(g_activePreset.c_str(),L"Default")==0 && !PresetDeviceRow(r); }
+  // Split is meaningless unless the correction is being shared between axes:
+  // the engine only reads geo.nlsSplit when Axis == Split. Grey it out (and
+  // refuse edits) in the other two positions instead of accepting a slider that
+  // changes nothing (reported 2026-11-03).
+  bool RowInert(const Row& r) const {
+    if(!r.key||strcmp(r.key,"geo.nlsSplit")) return false;
+    for(int i=0;i<NROWS;++i){ const Row&a=g_rows[i];
+      if(a.key&&!strcmp(a.key,"geo.nlsAxis")){
+        const int axis=a.optvals?a.optvals[a.opt]:a.opt;
+        return axis!=3; } }   // 3 = Split (kNlsAxisV)
+    return true; }
   void RefuseLocked(){
     // A refusal the user must SEE, not a bottom-strip label: Default is the
     // locked baseline, and a quiet toast read as "the app is broken" rather than
@@ -2149,7 +2335,20 @@ protected:
     else if(r.kind==4){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+15,0,0); }
     else if(r.kind==2){ if(r.nopts>1){r.opt=(r.opt+1)%r.nopts; PushRow(r);} }
     else if(r.kind==5||r.kind==7){ int c=(int)r.names.size(); if(c>1){r.opt=(r.opt+1)%c; PushRow(r);} }
+    else if(r.kind==8){
+      int c=(int)r.names.size();
+      if(c>1){ r.opt=(r.opt+1)%c; ApplyNlsPresetByIndex(r.opt); SaveRowIni(r);
+        // The link lives in the main preset, not in a settings row, so mark it
+        // dirty explicitly (PresetEligible excludes ui.*).
+        if(_wcsicmp(g_activePreset.c_str(),L"Default")!=0){
+          g_presetDirty=true; g_ini["ui.presetDirty"]="True"; g_iniDirty=true;
+          SaveIni("nls preset link");
+          if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+48,0,0); } }
+      Invalidate(FALSE); }
     else {
+      // Split is greyed while Axis is not Split: the engine ignores it there,
+      // so accepting a drag would only promise a change that cannot happen.
+      if(RowInert(r)){ LogF("settings: '%S' is inert (Axis is not Split)",r.label); return; }
       // CLICK-TO-SET on the track, then drag to fine-tune — every kind-1 row, so
       // all sliders behave the same (a 25..400 nits slider can be clicked near 100
       // instead of wheel-stepping to it). The hit area is the track plus a generous
@@ -3233,6 +3432,92 @@ public:
 };
 BEGIN_MESSAGE_MAP(CTitlePanel,CUiWnd) ON_WM_PAINT() ON_WM_ERASEBKGND() END_MESSAGE_MAP()
 
+// Themed popup menu for the library's right-click actions.
+//
+// The Windows menu (CMenu::TrackPopupMenu) was the only surface in the app that
+// ignored the design tokens: a light system popup over the dark library. This is
+// the same top-level, topmost card as the other dialogs - PANEL body, BORDER
+// edge, rounded corners, a header naming the item being acted on, and the accent
+// bar + ACTIVE_BG row on hover.
+class CCtxCard : public CUiWnd {
+public:
+  std::wstring header;
+  std::vector<std::wstring> items;
+  std::function<void(int)> onPick;
+  int hov=-1;
+  std::vector<CRect> rowR;
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,
+                    CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  bool HandAt(CPoint p) override { return Hit(p)>=0; }
+  int Hit(CPoint p) const {
+    for(size_t i=0;i<rowR.size();++i) if(rowR[i].PtInRect(p)) return (int)i;
+    return -1; }
+  void ShowAt(CPoint screen,const std::wstring& h,const std::vector<std::wstring>& it,
+              std::function<void(int)> cb){
+    header=h; items=it; onPick=std::move(cb); hov=-1;
+    int w=Px(210);
+    if(!header.empty()) w=max(w,TextW(header.c_str(),11,false)+Px(30));
+    for(const auto&s:items) w=max(w,TextW(s.c_str(),13,false)+Px(64));
+    w=min(w,Px(460));
+    const int pad=Px(8), headH=header.empty()?0:Px(34), itemH=Px(36);
+    const int hh=pad*2+headH+(int)items.size()*itemH;
+    MONITORINFO mi={sizeof(mi)};
+    GetMonitorInfoW(MonitorFromPoint(screen,MONITOR_DEFAULTTONEAREST),&mi);
+    int x=screen.x, y=screen.y;
+    if(x+w>mi.rcWork.right) x=mi.rcWork.right-w;
+    if(x<mi.rcWork.left) x=mi.rcWork.left;
+    if(y+hh>mi.rcWork.bottom) y=mi.rcWork.bottom-hh;
+    if(y<mi.rcWork.top) y=mi.rcWork.top;
+    MoveWindow(x,y,w,hh);
+    SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd);
+    ShowWindow(SW_SHOW); ::SetForegroundWindow(m_hWnd);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    LogF("context card %dx%d at %d,%d (%d items, header=%d)",w,hh,x,y,(int)items.size(),
+         header.empty()?0:1); }
+  void Dismiss(){ if(IsWindowVisible()) ShowWindow(SW_HIDE); }
+  void Pick(int i){
+    std::function<void(int)> cb=onPick; Dismiss();
+    if(cb) cb(i);
+    if(CWnd* fr=AfxGetMainWnd()) fr->SetForegroundWindow(); }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(12,12,14),BORDER,Px(10));
+    int y=Px(8);
+    if(!header.empty()){
+      TxtW(&dc,CRect(Px(14),y,rc.right-Px(14),y+Px(20)),header.c_str(),MID,11,false,
+           DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      y+=Px(26);
+      FillR(&dc,CRect(Px(12),y,rc.right-Px(12),y+1),BORDER);
+      y+=Px(8); }
+    rowR.clear();
+    for(size_t i=0;i<items.size();++i){
+      CRect r(Px(6),y,rc.right-Px(6),y+Px(36));
+      rowR.push_back(r);
+      if((int)i==hov){ RR(&dc,r,Px(7),ACTIVE_BG);
+        FillR(&dc,CRect(r.left,r.top+Px(9),r.left+Px(3),r.bottom-Px(9)),ACCENT); }
+      const wchar_t* glyph=(items[i].find(L"Restore")!=std::wstring::npos)?L"\x21BA":L"\x2715";
+      TxtG(&dc,CRect(r.left+Px(16),r.top,r.left+Px(34),r.bottom),glyph,ACCENT2,11,FW_NORMAL,0.0f,
+           DT_CENTER|DT_VCENTER,L"Segoe UI Symbol");
+      TxtW(&dc,CRect(r.left+Px(40),r.top,r.right-Px(12),r.bottom),items[i].c_str(),TEXT,13,false,
+           DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      y+=Px(36); } }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(12,12,14)); return TRUE; }
+  afx_msg void OnMouseMove(UINT,CPoint p){ int h=Hit(p); if(h!=hov){ hov=h; Invalidate(FALSE); } }
+  afx_msg void OnLButtonDown(UINT,CPoint p){ int h=Hit(p); if(h>=0) Pick(h); }
+  afx_msg void OnKeyDown(UINT k,UINT,UINT){
+    if(k==VK_ESCAPE){ Dismiss(); if(CWnd* fr=AfxGetMainWnd()) fr->SetForegroundWindow(); }
+    else if(k==VK_DOWN){ if(!items.empty()){ hov=(hov+1)%(int)items.size(); Invalidate(FALSE);} }
+    else if(k==VK_UP){ if(!items.empty()){ hov=(hov<=0)?(int)items.size()-1:hov-1; Invalidate(FALSE);} }
+    else if(k==VK_RETURN&&hov>=0) Pick(hov); }
+  afx_msg void OnKillFocus(CWnd* next){
+    if(next&&GetSafeHwnd()&&::GetAncestor(next->GetSafeHwnd(),GA_ROOT)==m_hWnd) return;
+    if(IsWindowVisible()) Dismiss(); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CCtxCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_KEYDOWN() ON_WM_ERASEBKGND() ON_WM_KILLFOCUS() END_MESSAGE_MAP()
+
 // ---- ACQUIRE OVERLAY (ui/acquire_overlay.py) ---------------------------------
 // 560 wide, card #0e0e0e r16, border 1.5px rgba(100,100,100,180), margins
 // (36,28,36,28), spacing 10; Braille spinner at 80ms; "Attempt n of 10"; on
@@ -3674,7 +3959,18 @@ static Gdiplus::Color GColor(COLORREF c,int a=255){
   return Gdiplus::Color(a,GetRValue(c),GetGValue(c),GetBValue(c)); }
 // kind: 0 playable file, 1 show, 2 season, 3 folder  (K_MOVIE/K_SHOW/K_SEASON/K_FOLDER)
 struct Tile{ int kind=0; std::wstring title,sub,art,path,ext,infoLine; long long size=0; int season=0,episode=0;
+             // Release year, kept separately from `sub`: `sub` is a DISPLAY
+             // string that changes with state (year -> "Continue at ..." ->
+             // "Watched"), and the Now Playing banner used to read the year out
+             // of it. That is why the same film showed a year when started from
+             // the grid and none when resumed from Continue (reported
+             // 2026-11-03). 0 = unknown.
+             int year=0;
              int watched=0; bool avail=true; double lastPos=0,duration=0; int pct=-1;
+             // IMDb rating for the poster chip, when the item's OMDb record is
+             // cached. scoreText is pre-formatted ("7.8") so the paint path does
+             // not parse on every frame.
+             double score=-1; std::wstring scoreText;
              bool contEp=false;   // TV Continue tile: poster resumes, chip opens the series
              bool epStatus=false; // episode grid: always show the watched timeline (even 0%)
              int seriesSeasons=0,seriesEps=0; // show cards: chip label + Watched subtitle
@@ -3684,6 +3980,7 @@ struct Tile{ int kind=0; std::wstring title,sub,art,path,ext,infoLine; long long
 // Defined further down; the scanner's OMDb lookup needs them here.
 static std::string ReadTextFile(const std::wstring& p);
 static std::wstring JStr(const std::string& j,const char* key);
+static std::vector<std::string> JsonArrayObjects(const std::string& j,const char* key);
 static HWND g_scanNotify=0;      // pane that shows "Updating library..." progress
 // Supersession tokens. A folder edit must make the RESULTING root set the truth:
 // incrementing these makes any in-flight scan/poster pass stop at its next item,
@@ -3692,6 +3989,18 @@ static HWND g_scanNotify=0;      // pane that shows "Updating library..." progre
 // and the old scan kept walking the removed roots, then deleted their rows.
 static std::atomic<unsigned> g_scanGen{0};
 static std::atomic<unsigned> g_artGen{0};
+// Lazy per-episode metadata (only the season currently open) has its own
+// generation: opening S2 while S1 is still fetching must stop the old walk.
+static std::atomic<unsigned> g_metaGen{0};
+// The season chooser is the other lazy list: one OMDb season record per season
+// (+ the opener's plot), cached in season_meta. A separate generation cancels
+// it when the user leaves the show.
+static std::atomic<unsigned> g_seasonGen{0};
+// Movie detail rows need the same OMDb record as episodes; this pass is only
+// started while the user has "Show details" enabled.
+static std::atomic<unsigned> g_movieGen{0};
+// One OMDb series record per show, used for the TV show poster's rating chip.
+static std::atomic<unsigned> g_seriesGen{0};
 
 // ---- name_parse.py port ----------------------------------------------------
 // Same rules as 1.3.0: release junk ends the title, the LAST plausible year
@@ -3852,7 +4161,13 @@ struct Lib{
       "CREATE INDEX IF NOT EXISTS items_root ON items(root)",
       "CREATE INDEX IF NOT EXISTS items_kind ON items(kind, title)",
       "CREATE TABLE IF NOT EXISTS shows_online (tkey TEXT PRIMARY KEY, imdb_id TEXT,"
-        " art TEXT, art_key TEXT, checked REAL)" };
+        " art TEXT, art_key TEXT, checked REAL)",
+      // One OMDb season record per (series imdbID, season). The record carries
+      // no synopsis, but it carries every episode's air date and IMDb rating,
+      // which is what the season row's aggregate line is built from.
+      "CREATE TABLE IF NOT EXISTS season_meta (skey TEXT PRIMARY KEY, imdb_id TEXT,"
+        " season INTEGER, json TEXT, checked REAL DEFAULT 0, tries INTEGER DEFAULT 0,"
+        " next_try REAL DEFAULT 0)" };
     int schemaBad=0;
     for(const char* sql:schema) if(!Exec(sql)) ++schemaBad;
     if(schemaBad) LogF("library: %d schema statement(s) failed",schemaBad);
@@ -3877,12 +4192,25 @@ struct Lib{
         // every single pass.
         "ALTER TABLE items ADD COLUMN art_tries INTEGER DEFAULT 0",
         "ALTER TABLE items ADD COLUMN art_next_try REAL DEFAULT 0",
-        "ALTER TABLE items ADD COLUMN genre_checked REAL DEFAULT 0"};
+        "ALTER TABLE items ADD COLUMN genre_checked REAL DEFAULT 0",
+        // Manual hide (right-click -> Hide from library). Unlike present=0 this
+        // survives every scan, because the scanner never writes this column.
+        "ALTER TABLE items ADD COLUMN hidden INTEGER DEFAULT 0",
+        // OMDb's per-episode record (title, air date, runtime, IMDb rating, plot)
+        // cached on the episode row. ep_meta_next_try is the retry/refresh clock:
+        // 30 days after a success, exponential backoff after a failure. It is a
+        // separate column from art_checked because episode metadata is fetched
+        // lazily (only for seasons the user opens), not by the poster pass.
+        "ALTER TABLE items ADD COLUMN ep_meta_json TEXT",
+        "ALTER TABLE items ADD COLUMN ep_meta_key TEXT",
+        "ALTER TABLE items ADD COLUMN ep_meta_checked REAL DEFAULT 0",
+        "ALTER TABLE items ADD COLUMN ep_meta_tries INTEGER DEFAULT 0",
+        "ALTER TABLE items ADD COLUMN ep_meta_next_try REAL DEFAULT 0"};
       for(const char* sql:cols){ SQ::ST s=0;
         if(!SQ::p_prep(db,sql,-1,&s,nullptr)){ SQ::p_step(s); SQ::p_fin(s); } } }
     ok=true; LogF("library: index open, %ld present titles",Count()); return true; }
   long Count(){ SQ::ST s=0; long n=0;
-    if(!ok||SQ::p_prep(db,"SELECT COUNT(*) FROM items WHERE present=1",-1,&s,nullptr)) return 0;
+    if(!ok||SQ::p_prep(db,"SELECT COUNT(*) FROM items WHERE present=1 AND hidden=0",-1,&s,nullptr)) return 0;
     if(SQ::p_step(s)==SQ::ROW) n=(long)SQ::p_i64(s,0); SQ::p_fin(s); return n; }
   std::vector<std::wstring> Roots(){
     std::vector<std::wstring> v; SQ::ST s=0; if(!ok) return v;
@@ -3894,7 +4222,7 @@ struct Lib{
     std::vector<LItem> v; SQ::ST s=0; if(!ok) return v;
     if(SQ::p_prep(db,"SELECT kind,title,year,season,episode,episode_title,path,folder,size,"
       "art,season_art,show_art,watched,last_pos,present FROM items "
-      "WHERE last_seen>0 ORDER BY last_seen DESC LIMIT 200",-1,&s,nullptr)) return v;
+      "WHERE last_seen>0 AND hidden=0 ORDER BY last_seen DESC LIMIT 200",-1,&s,nullptr)) return v;
     while(SQ::p_step(s)==SQ::ROW){ LItem it;
       it.kind=Col(s,0); it.title=Col(s,1); it.year=(int)SQ::p_i64(s,2);
       it.season=(int)SQ::p_i64(s,3); it.episode=(int)SQ::p_i64(s,4);
@@ -3919,13 +4247,15 @@ struct Lib{
     return rc==SQ::ROW||rc==101;   // SQLITE_ROW/DONE: UPDATE reports DONE on success
   }
   // ---- media facts (probe cache + OMDb genre) ------------------------------
-  struct MetaRow{ std::wstring genre; std::string probe; int year=0; double duration=0; };
+  struct MetaRow{ std::wstring genre,imdb; std::string probe,epMeta; int year=0; double duration=0; };
   bool MetaFor(const std::wstring& path,MetaRow& m){
-    SQ::ST s=Prep("SELECT genre,probe_json,year,duration FROM items WHERE path=?");
+    SQ::ST s=Prep("SELECT genre,probe_json,year,duration,COALESCE(ep_meta_json,''),"
+                  "COALESCE(imdb_id,'') FROM items WHERE path=?");
     if(!s) return false; bool ok=false; BText(s,1,path);
     if(SQ::p_step(s)==SQ::ROW){ ok=true; m.genre=Col(s,0);
       m.probe=Narrow(Col(s,1)); m.year=(int)SQ::p_i64(s,2);
-      m.duration=SQ::p_dbl?SQ::p_dbl(s,3):0.0; }
+      m.duration=SQ::p_dbl?SQ::p_dbl(s,3):0.0;
+      m.epMeta=Narrow(Col(s,4)); m.imdb=Col(s,5); }
     SQ::p_fin(s); return ok; }
   bool SeriesMeta(const std::wstring& show,int season,std::wstring& genre,
                   std::string& probe,int& year,int& eps){
@@ -3950,7 +4280,7 @@ struct Lib{
   std::vector<ProbeRow> ProbeRows(){
     std::vector<ProbeRow> v; SQ::ST s=Prep(
       "SELECT path,size,mtime,COALESCE(probe_key,''),COALESCE(probe_json,'') "
-      "FROM items WHERE present=1");
+      "FROM items WHERE present=1 AND hidden=0");
     if(!s) return v;
     while(SQ::p_step(s)==SQ::ROW){
       ProbeRow r; r.path=Col(s,0); r.size=SQ::p_i64(s,1);
@@ -4019,6 +4349,38 @@ struct Lib{
       "missing_since=COALESCE(missing_since,CAST(strftime('%s','now') AS REAL)) "
       "WHERE root NOT IN (SELECT pkey FROM roots)");
     LogF("library: orphan roots hidden (%s)",ok2?"ok":"failed"); }
+  // -- manual hide (right-click) ----------------------------------------------
+  // `hidden` is deliberately a separate column from `present`: present tracks
+  // what is on disk and is rewritten by every scan, so a scan would undo a
+  // `present=0` hide. The scanner never touches `hidden`, and every grid query
+  // filters it, so a duplicate stays gone until the user restores it.
+  bool HidePath(const std::wstring& path){
+    SQ::ST s=Prep("UPDATE items SET hidden=1 WHERE pkey=?"); if(!s) return false;
+    BText(s,1,NormKey(path)); int rc=SQ::p_step(s); SQ::p_fin(s);
+    LogF("library: hidden path '%s' rc=%d",Narrow(path).c_str(),rc);
+    return rc==SQ::ROW||rc==101; }
+  bool HideShow(const std::wstring& show){
+    SQ::ST s=Prep("UPDATE items SET hidden=1 WHERE kind='episode' AND title=? COLLATE NOCASE");
+    if(!s) return false; BText(s,1,show); int rc=SQ::p_step(s); SQ::p_fin(s);
+    LogF("library: hidden show '%s' rc=%d",Narrow(show).c_str(),rc);
+    return rc==SQ::ROW||rc==101; }
+  bool HideSeason(const std::wstring& show,int season){
+    SQ::ST s=Prep("UPDATE items SET hidden=1 WHERE kind='episode' AND title=? COLLATE NOCASE "
+                  "AND season=?");
+    if(!s) return false; BText(s,1,show); SQ::p_bind_i64(s,2,season);
+    int rc=SQ::p_step(s); SQ::p_fin(s);
+    LogF("library: hidden '%s' season %d rc=%d",Narrow(show).c_str(),season,rc);
+    return rc==SQ::ROW||rc==101; }
+  bool HideFolder(const std::wstring& folder){
+    std::wstring prefix=folder; if(!prefix.empty()&&prefix.back()!=L'\\') prefix+=L'\\';
+    SQ::ST s=Prep("UPDATE items SET hidden=1 WHERE folder=? OR substr(folder,1,?)=?");
+    if(!s) return false; BText(s,1,folder);
+    SQ::p_bind_i64(s,2,(long long)prefix.size()); BText(s,3,prefix);
+    int rc=SQ::p_step(s); SQ::p_fin(s);
+    LogF("library: hidden folder '%s' rc=%d",Narrow(folder).c_str(),rc);
+    return rc==SQ::ROW||rc==101; }
+  bool UnhideAll(){ bool ok2=Exec("UPDATE items SET hidden=0");
+    LogF("library: all hidden titles restored (%s)",ok2?"ok":"failed"); return ok2; }
   // -- deterministic poster recovery -----------------------------------------
   // The art files outlive the DB rows: a folder edit used to delete the rows
   // (and their art), leaving a perfectly good poster on disk that nothing
@@ -4054,7 +4416,7 @@ struct Lib{
   bool HasArtWorkDue(){
     if(!ok) return false;
     double now=(double)time(nullptr);
-    SQ::ST s=Prep("SELECT 1 FROM items WHERE present=1 AND ("
+    SQ::ST s=Prep("SELECT 1 FROM items WHERE present=1 AND hidden=0 AND ("
       "(kind='movie' AND COALESCE(art,'')='' AND COALESCE(art_next_try,0)<=?) OR "
       "(kind='episode' AND COALESCE(show_art,'')='' AND COALESCE(art_next_try,0)<=?) OR "
       "(COALESCE(genre,'')='' AND COALESCE(genre_checked,0)<?)) LIMIT 1");
@@ -4070,6 +4432,429 @@ struct Lib{
     if(!s) return false;
     BText(s,1,genre); BText(s,2,show); int rc=SQ::p_step(s); SQ::p_fin(s);
     return rc==SQ::ROW||rc==101; }
+  // ---- per-episode OMDb metadata -------------------------------------------
+  // This is deliberately LAZY: a season is fetched when the user opens it, not
+  // during the library scan. A ten-episode season costs ten OMDb requests, is
+  // cached in the DB, and is refreshed only after 30 days. ep_meta_next_try is
+  // the single due-clock; failures back off exponentially, so an outage cannot
+  // turn a season open into a burst of requests.
+  struct EpMetaDue{ std::wstring path; int season=0,episode=0,tries=0; };
+  bool HasEpisodeMetaDue(const std::wstring& show,int season){
+    if(!ok) return false;
+    SQ::ST s=Prep("SELECT 1 FROM items WHERE present=1 AND hidden=0 AND kind='episode' "
+                  "AND title=? COLLATE NOCASE AND season=? AND COALESCE(ep_meta_next_try,0)<=? LIMIT 1");
+    if(!s) return false; BText(s,1,show); SQ::p_bind_i64(s,2,season);
+    SQ::p_bind_dbl(s,3,(double)time(nullptr));
+    bool due=SQ::p_step(s)==SQ::ROW; SQ::p_fin(s); return due; }
+  std::vector<EpMetaDue> EpisodeMetaDue(const std::wstring& show,int season){
+    std::vector<EpMetaDue> v; SQ::ST s=Prep(
+      "SELECT path,season,episode,COALESCE(ep_meta_tries,0) FROM items "
+      "WHERE present=1 AND hidden=0 AND kind='episode' AND title=? COLLATE NOCASE "
+      "AND season=? AND COALESCE(ep_meta_next_try,0)<=? ORDER BY episode LIMIT 60");
+    if(!s) return v; BText(s,1,show); SQ::p_bind_i64(s,2,season);
+    SQ::p_bind_dbl(s,3,(double)time(nullptr));
+    while(SQ::p_step(s)==SQ::ROW){ EpMetaDue d; d.path=Col(s,0);
+      d.season=(int)SQ::p_i64(s,1); d.episode=(int)SQ::p_i64(s,2);
+      d.tries=(int)SQ::p_i64(s,3); v.push_back(d); }
+    SQ::p_fin(s); return v; }
+  std::wstring SeriesImdb(const std::wstring& show,int season){
+    SQ::ST s=Prep("SELECT COALESCE(MAX(imdb_id),'') FROM items WHERE kind='episode' "
+                  "AND title=? COLLATE NOCASE AND season=?");
+    if(!s) return L""; BText(s,1,show); SQ::p_bind_i64(s,2,season);
+    std::wstring id; if(SQ::p_step(s)==SQ::ROW) id=Col(s,0); SQ::p_fin(s); return id; }
+  std::wstring SeriesImdbAny(const std::wstring& show){
+    SQ::ST s=Prep("SELECT COALESCE(MAX(imdb_id),'') FROM items WHERE kind='episode' "
+                  "AND title=? COLLATE NOCASE");
+    if(!s) return L""; BText(s,1,show);
+    std::wstring id; if(SQ::p_step(s)==SQ::ROW) id=Col(s,0); SQ::p_fin(s); return id; }
+  // The season page's overview is the SERIES plot in OMDb's data model; OMDb
+  // has no per-season synopsis. This is the exact text IMDb shows above the
+  // season episode list for shows like Mindhunter, and it is cached in
+  // season_meta under season 0 so it costs one request per show.
+  std::wstring SeriesOverview(const std::wstring& show){
+    std::wstring imdb=SeriesImdbAny(show); if(imdb.empty()) return L"";
+    SQ::ST s=Prep("SELECT COALESCE(json,'') FROM season_meta WHERE imdb_id=? AND season=0");
+    if(!s) return L""; BText(s,1,imdb);
+    std::wstring plot;
+    if(SQ::p_step(s)==SQ::ROW){ std::wstring js=Col(s,0); plot=JStr(Narrow(js),"Plot"); }
+    SQ::p_fin(s); return plot; }
+  double SeriesRating(const std::wstring& show){
+    std::wstring imdb=SeriesImdbAny(show); if(imdb.empty()) return -1.0;
+    SQ::ST s=Prep("SELECT COALESCE(json,'') FROM season_meta WHERE imdb_id=? AND season=0");
+    if(!s) return -1.0; BText(s,1,imdb);
+    double r=-1.0;
+    if(SQ::p_step(s)==SQ::ROW){ std::wstring js=Col(s,0); std::wstring v=JStr(Narrow(js),"imdbRating");
+      if(!v.empty()&&v!=L"N/A") r=_wtof(v.c_str());
+      else if(!js.empty()) r=-2.0; }
+    SQ::p_fin(s); return r; }
+  double SeasonRating(const std::wstring& show,int season){
+    std::string js=SeasonMetaJson(show,season); if(js.empty()) return -1.0;
+    auto arr=JsonArrayObjects(js,"Episodes"); double sum=0; int n=0;
+    for(auto&e:arr){ std::wstring v=JStr(e,"imdbRating");
+      if(!v.empty()&&v!=L"N/A"){ sum+=_wtof(v.c_str()); ++n; } }
+    if(n) return sum/n;
+    return arr.empty()?-1.0:-2.0; }
+  bool SetSeriesImdb(const std::wstring& show,const std::wstring& imdb){
+    SQ::ST s=Prep("UPDATE items SET imdb_id=? WHERE kind='episode' AND title=? COLLATE NOCASE");
+    if(!s) return false; BText(s,1,imdb); BText(s,2,show);
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  bool SetEpisodeMeta(const std::wstring& path,const std::string& js,
+                      const std::wstring& cacheKey,double now,double next){
+    SQ::ST s=Prep("UPDATE items SET ep_meta_json=?,ep_meta_key=?,ep_meta_checked=?,"
+                  "ep_meta_tries=0,ep_meta_next_try=? WHERE path=?");
+    if(!s) return false; std::string j=js;
+    if(SQ::p_bind) SQ::p_bind(s,1,j.c_str(),(int)j.size(),(void*)-1);
+    BText(s,2,cacheKey); SQ::p_bind_dbl(s,3,now); SQ::p_bind_dbl(s,4,next); BText(s,5,path);
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  bool SetEpisodeMetaFail(const std::wstring& path,double now,int tries,double next){
+    SQ::ST s=Prep("UPDATE items SET ep_meta_checked=?,ep_meta_tries=?,"
+                  "ep_meta_next_try=? WHERE path=?");
+    if(!s) return false; SQ::p_bind_dbl(s,1,now); SQ::p_bind_i64(s,2,tries);
+    SQ::p_bind_dbl(s,3,next); BText(s,4,path);
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  // OMDb can answer a single episode with its series imdbID + Season/Episode.
+  // A "Response":"False" here means the episode is not in OMDb (or the series id
+  // is wrong); it is a miss to back off from, not a reason to retry immediately.
+  bool FetchEpisodeMeta(const std::wstring& key,const std::wstring& imdb,
+                        int season,int ep,std::string& js){
+    js.clear();
+    std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
+      L"&Season="+std::to_wstring(season)+L"&Episode="+std::to_wstring(ep)+L"&plot=short";
+    js=GetJsonUrl(u);
+    if(js.empty()) return false;
+    if(js.find("Request limit reached")!=std::string::npos||
+       js.find("Invalid API key")!=std::string::npos){
+      omdbLimited=true;
+      LogF("episode meta: OMDb refused the request - stopping this season");
+      return false; }
+    return JStr(js,"Response")==L"True"; }
+  int FetchSeasonMeta(const std::wstring& show,int season,unsigned gen){
+    if(g_metaGen.load(std::memory_order_relaxed)!=gen) return 0;
+    std::wstring key=OmdbKey();
+    if(key.empty()){ LogF("episode meta: no OMDb key"); return 0; }
+    auto due=EpisodeMetaDue(show,season);
+    if(due.empty()) return 0;
+    std::wstring imdb=SeriesImdb(show,season);
+    if(imdb.empty()){
+      std::wstring p,genre,id;
+      // A metadata-only series lookup: FetchPoster sets imdbOut before its
+      // needPoster early-return, so no poster is downloaded for this.
+      FetchPoster(key,show,0,L"series",p,&genre,false,nullptr,&id);
+      imdb=id;
+      if(!imdb.empty()) SetSeriesImdb(show,imdb);
+      LogF("episode meta: series '%s' imdb='%s'",Narrow(show).c_str(),Narrow(imdb).c_str());
+      if(omdbLimited) return 0;
+      if(imdb.empty()){
+        double now=(double)time(nullptr);
+        for(auto&d:due){ int tries=d.tries+1;
+          SetEpisodeMetaFail(d.path,now,tries,now+BackoffSeconds(tries)); }
+        LogF("episode meta: '%s' has no OMDb series id (%d rows deferred)",
+             Narrow(show).c_str(),(int)due.size());
+        return 0; } }
+    int changed=0; const double now=(double)time(nullptr);
+    for(auto&d:due){
+      if(g_metaGen.load(std::memory_order_relaxed)!=gen){ LogF("episode meta: cancelled"); break; }
+      std::string js;
+      bool got=FetchEpisodeMeta(key,imdb,d.season,d.episode,js);
+      if(got){
+        wchar_t kb[64]; swprintf(kb,64,L"%s|%d|%d",imdb.c_str(),d.season,d.episode);
+        const std::wstring rating=JStr(js,"imdbRating");
+        const bool hasRating=!rating.empty()&&rating!=L"N/A";
+        // New episodes appear in OMDb as generic titles with imdbRating N/A
+        // before IMDb has a score. Caching that for 30 days leaves episode
+        // rows chipless long after IMDb updates, so recheck daily.
+        SetEpisodeMeta(d.path,js,kb,now,hasRating?now+30*86400.0:now+86400.0);
+        ++changed;
+        LogF("episode meta: '%s' S%02dE%02d -> %s%s",Narrow(show).c_str(),
+             d.season,d.episode,hasRating?Narrow(rating).c_str():"N/A",
+             hasRating?"":" (recheck 1d)");
+      } else {
+        int tries=d.tries+1;
+        SetEpisodeMetaFail(d.path,now,tries,now+BackoffSeconds(tries));
+        LogF("episode meta: '%s' S%02dE%02d miss, retry %d in %.0fs",
+             Narrow(show).c_str(),d.season,d.episode,tries,BackoffSeconds(tries));
+      }
+      if(omdbLimited) break;
+      if(got) Sleep(150);   // one network answer per ~150 ms
+    }
+    return changed; }
+  // ---- season chooser metadata ---------------------------------------------
+  // OMDb's season record has no synopsis, but it carries every episode's air
+  // date and IMDb rating. Together with the local ffprobe rows that is enough
+  // for a real season row: episode count, air-date span, average rating, total
+  // runtime/size and the video/audio profile. The season OPENER's plot (one
+  // more OMDb request) supplies the descriptive line; a true season synopsis
+  // would need a TMDb key, which this build does not require.
+  struct SeasonEp{ std::wstring path; int episode=0; double duration=0;
+                   long long size=0; int watched=0; std::string probe,epMeta; };
+  std::vector<SeasonEp> SeasonEpisodes(const std::wstring& show,int season){
+    std::vector<SeasonEp> v; SQ::ST s=Prep(
+      "SELECT path,episode,COALESCE(duration,0),COALESCE(size,0),COALESCE(watched,0),"
+      "COALESCE(probe_json,''),COALESCE(ep_meta_json,'') FROM items "
+      "WHERE present=1 AND hidden=0 AND kind='episode' AND title=? COLLATE NOCASE "
+      "AND season=? ORDER BY episode");
+    if(!s) return v; BText(s,1,show); SQ::p_bind_i64(s,2,season);
+    while(SQ::p_step(s)==SQ::ROW){ SeasonEp e; e.path=Col(s,0);
+      e.episode=(int)SQ::p_i64(s,1);
+      e.duration=SQ::p_dbl?SQ::p_dbl(s,2):(double)SQ::p_i64(s,2);
+      e.size=SQ::p_i64(s,3); e.watched=(int)SQ::p_i64(s,4);
+      e.probe=Narrow(Col(s,5)); e.epMeta=Narrow(Col(s,6)); v.push_back(e); }
+    SQ::p_fin(s); return v; }
+  bool SeasonDue(const std::wstring& imdb,int season){
+    if(imdb.empty()) return true;
+    SQ::ST s=Prep("SELECT COALESCE(next_try,0) FROM season_meta WHERE imdb_id=? AND season=?");
+    if(!s) return false; BText(s,1,imdb); SQ::p_bind_i64(s,2,season);
+    bool due=true;
+    if(SQ::p_step(s)==SQ::ROW) due=(SQ::p_dbl?SQ::p_dbl(s,0):(double)SQ::p_i64(s,0))<=(double)time(nullptr);
+    SQ::p_fin(s); return due; }
+  int SeasonTries(const std::wstring& imdb,int season){
+    SQ::ST s=Prep("SELECT COALESCE(tries,0) FROM season_meta WHERE imdb_id=? AND season=?");
+    if(!s) return 0; BText(s,1,imdb); SQ::p_bind_i64(s,2,season);
+    int n=0; if(SQ::p_step(s)==SQ::ROW) n=(int)SQ::p_i64(s,0); SQ::p_fin(s); return n; }
+  std::string SeasonMetaJson(const std::wstring& show,int season){
+    std::wstring imdb=SeriesImdb(show,season); if(imdb.empty()) return std::string();
+    SQ::ST s=Prep("SELECT COALESCE(json,'') FROM season_meta WHERE imdb_id=? AND season=?");
+    if(!s) return std::string(); BText(s,1,imdb); SQ::p_bind_i64(s,2,season);
+    std::string js; if(SQ::p_step(s)==SQ::ROW) js=Narrow(Col(s,0)); SQ::p_fin(s); return js; }
+  bool HasShowSeasonMetaDue(const std::wstring& show){
+    std::vector<int> ss; SQ::ST q=Prep(
+      "SELECT DISTINCT season FROM items WHERE present=1 AND hidden=0 AND kind='episode' "
+      "AND title=? COLLATE NOCASE ORDER BY season");
+    if(!q) return false; BText(q,1,show);
+    while(SQ::p_step(q)==SQ::ROW) ss.push_back((int)SQ::p_i64(q,0)); SQ::p_fin(q);
+    if(ss.empty()) return false;
+    std::wstring imdb=SeriesImdb(show,ss[0]); if(imdb.empty()) return true;
+    if(SeasonDue(imdb,0)) return true;   // the series overview, stored as season 0
+    for(int s:ss) if(SeasonDue(imdb,s)) return true;
+    return false; }
+  bool SetSeasonMeta(const std::wstring& imdb,int season,const std::string& js,
+                     double now,double next){
+    wchar_t kb[64]; swprintf(kb,64,L"%s|%d",imdb.c_str(),season);
+    SQ::ST s=Prep("INSERT OR REPLACE INTO season_meta(skey,imdb_id,season,json,checked,"
+                  "tries,next_try) VALUES(?,?,?,?,?,0,?)");
+    if(!s) return false; BText(s,1,kb); BText(s,2,imdb);
+    SQ::p_bind_i64(s,3,season); std::string j=js;
+    if(SQ::p_bind) SQ::p_bind(s,4,j.c_str(),(int)j.size(),(void*)-1);
+    SQ::p_bind_dbl(s,5,now); SQ::p_bind_dbl(s,6,next);
+    int rc=SQ::p_step(s); SQ::p_fin(s); return rc==SQ::ROW||rc==101; }
+  bool SetSeasonMetaFail(const std::wstring& imdb,int season,double now,int tries,double next){
+    wchar_t kb[64]; swprintf(kb,64,L"%s|%d",imdb.c_str(),season);
+    { SQ::ST i=Prep("INSERT OR IGNORE INTO season_meta(skey,imdb_id,season,json,checked,"
+                    "tries,next_try) VALUES(?,?,?,'',0,0,0)");
+      if(i){ BText(i,1,kb); BText(i,2,imdb); SQ::p_bind_i64(i,3,season);
+        SQ::p_step(i); SQ::p_fin(i); } }
+    SQ::ST u=Prep("UPDATE season_meta SET checked=?,tries=?,next_try=? "
+                  "WHERE imdb_id=? AND season=?");
+    if(!u) return false; SQ::p_bind_dbl(u,1,now); SQ::p_bind_i64(u,2,tries);
+    SQ::p_bind_dbl(u,3,next); BText(u,4,imdb); SQ::p_bind_i64(u,5,season);
+    int rc=SQ::p_step(u); SQ::p_fin(u); return rc==SQ::ROW||rc==101; }
+  bool FetchSeriesPlot(const std::wstring& key,const std::wstring& imdb,std::string& js){
+    js.clear();
+    std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
+      L"&plot=short";
+    js=GetJsonUrl(u);
+    if(js.empty()) return false;
+    if(js.find("Request limit reached")!=std::string::npos||
+       js.find("Invalid API key")!=std::string::npos){
+      omdbLimited=true;
+      LogF("season meta: OMDb refused the series plot - stopping this show");
+      return false; }
+    return JStr(js,"Response")==L"True"; }
+  bool FetchSeasonJson(const std::wstring& key,const std::wstring& imdb,
+                       int season,std::string& js){
+    js.clear();
+    std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
+      L"&Season="+std::to_wstring(season);
+    js=GetJsonUrl(u);
+    if(js.empty()) return false;
+    if(js.find("Request limit reached")!=std::string::npos||
+       js.find("Invalid API key")!=std::string::npos){
+      omdbLimited=true;
+      LogF("season meta: OMDb refused the request - stopping this show");
+      return false; }
+    return JStr(js,"Response")==L"True"; }
+  int FetchShowSeasons(const std::wstring& show,unsigned gen){
+    if(g_seasonGen.load(std::memory_order_relaxed)!=gen) return 0;
+    std::wstring key=OmdbKey();
+    if(key.empty()){ LogF("season meta: no OMDb key"); return 0; }
+    std::vector<int> ss; SQ::ST q=Prep(
+      "SELECT DISTINCT season FROM items WHERE present=1 AND hidden=0 AND kind='episode' "
+      "AND title=? COLLATE NOCASE ORDER BY season");
+    if(!q) return 0; BText(q,1,show);
+    while(SQ::p_step(q)==SQ::ROW) ss.push_back((int)SQ::p_i64(q,0)); SQ::p_fin(q);
+    if(ss.empty()) return 0;
+    std::wstring imdb=SeriesImdb(show,ss[0]);
+    if(imdb.empty()){
+      std::wstring p,genre,id;
+      FetchPoster(key,show,0,L"series",p,&genre,false,nullptr,&id);
+      imdb=id;
+      if(!imdb.empty()) SetSeriesImdb(show,imdb);
+      if(omdbLimited) return 0; }
+    const double now=(double)time(nullptr);
+    if(imdb.empty()){
+      for(int season:ss){ int tries=SeasonTries(imdb,season)+1;
+        SetSeasonMetaFail(imdb,season,now,tries,now+BackoffSeconds(tries)); }
+      LogF("season meta: '%s' has no OMDb series id",Narrow(show).c_str());
+      return 0; }
+    int changed=0;
+    // One series-overview request per show; this is the text IMDb shows above
+    // the season's episode list. Stored as season 0 in season_meta.
+    if(SeasonDue(imdb,0)){
+      std::string js;
+      if(FetchSeriesPlot(key,imdb,js)){
+        SetSeasonMeta(imdb,0,js,now,now+30*86400.0); ++changed;
+        LogF("season meta: '%s' series overview cached",Narrow(show).c_str()); }
+      else {
+        int tries=SeasonTries(imdb,0)+1;
+        SetSeasonMetaFail(imdb,0,now,tries,now+BackoffSeconds(tries));
+        LogF("season meta: '%s' series overview miss",Narrow(show).c_str()); }
+      if(omdbLimited) return changed;
+      Sleep(150); }
+    for(int season:ss){
+      if(g_seasonGen.load(std::memory_order_relaxed)!=gen){ LogF("season meta: cancelled"); break; }
+      if(SeasonDue(imdb,season)){
+        std::string js;
+        if(FetchSeasonJson(key,imdb,season,js)){
+          auto ea=JsonArrayObjects(js,"Episodes");
+          bool anyNA=false;
+          for(auto&e:ea){ std::wstring r=JStr(e,"imdbRating");
+            if(r.empty()||r==L"N/A") anyNA=true; }
+          SetSeasonMeta(imdb,season,js,now,anyNA?now+86400.0:now+30*86400.0);
+          ++changed;
+          LogF("season meta: '%s' S%d -> %d episodes%s",Narrow(show).c_str(),season,
+               (int)ea.size(),anyNA?" (unrated episodes; recheck 1d)":""); }
+        else {
+          int tries=SeasonTries(imdb,season)+1;
+          SetSeasonMetaFail(imdb,season,now,tries,now+BackoffSeconds(tries));
+          LogF("season meta: '%s' S%d miss, retry %d in %.0fs",Narrow(show).c_str(),
+               season,tries,BackoffSeconds(tries)); }
+        if(omdbLimited) break;
+        Sleep(150); }
+      // The opener's plot is the row's descriptive line. It uses the same
+      // per-episode cache as the episode view, so opening S1 later is free.
+      auto dueEps=EpisodeMetaDue(show,season);
+      const EpMetaDue* e1=nullptr;
+      for(auto&d:dueEps) if(d.episode==1){ e1=&d; break; }
+      if(e1){
+        std::string ej;
+        if(FetchEpisodeMeta(key,imdb,season,1,ej)){
+          wchar_t kb[64]; swprintf(kb,64,L"%s|%d|1",imdb.c_str(),season);
+          SetEpisodeMeta(e1->path,ej,kb,now,now+30*86400.0); ++changed;
+          LogF("season meta: '%s' S%d opener '%s'",Narrow(show).c_str(),season,
+               Narrow(JStr(ej,"Title")).c_str()); }
+        else { int tries=e1->tries+1;
+          SetEpisodeMetaFail(e1->path,now,tries,now+BackoffSeconds(tries)); }
+        if(omdbLimited) break;
+        Sleep(150); } }
+    return changed; }
+  // ---- series overview pass (TV show poster ratings) -----------------------
+  bool HasSeriesOverviewDue(){
+    if(!ok) return false;
+    SQ::ST s=Prep("SELECT title,COALESCE(MAX(imdb_id),'') FROM items WHERE present=1 "
+                  "AND hidden=0 AND kind='episode' GROUP BY title COLLATE NOCASE");
+    if(!s) return false;
+    bool due=false;
+    while(SQ::p_step(s)==SQ::ROW){
+      std::wstring imdb=Col(s,1);
+      if(imdb.empty()||SeasonDue(imdb,0)){ due=true; break; } }
+    SQ::p_fin(s); return due; }
+  int FetchSeriesOverviews(unsigned gen){
+    if(g_seriesGen.load(std::memory_order_relaxed)!=gen) return 0;
+    std::wstring key=OmdbKey(); if(key.empty()) return 0;
+    struct S{ std::wstring title,imdb; };
+    std::vector<S> rows;
+    { SQ::ST s=Prep("SELECT title,COALESCE(MAX(imdb_id),'') FROM items WHERE present=1 "
+                    "AND hidden=0 AND kind='episode' GROUP BY title COLLATE NOCASE");
+      if(s){ while(SQ::p_step(s)==SQ::ROW){ S r; r.title=Col(s,0); r.imdb=Col(s,1);
+        rows.push_back(r); } SQ::p_fin(s); } }
+    int changed=0; const double now=(double)time(nullptr);
+    for(auto&r:rows){
+      if(g_seriesGen.load(std::memory_order_relaxed)!=gen){ LogF("series meta: cancelled"); break; }
+      std::wstring imdb=r.imdb;
+      if(imdb.empty()){
+        std::wstring p,genre,id;
+        FetchPoster(key,r.title,0,L"series",p,&genre,false,nullptr,&id);
+        if(!id.empty()){ imdb=id; SetSeriesImdb(r.title,imdb); }
+        if(omdbLimited) break; }
+      if(imdb.empty()||!SeasonDue(imdb,0)) continue;
+      std::string js;
+      if(FetchSeriesPlot(key,imdb,js)){
+        std::wstring rating=JStr(js,"imdbRating");
+        const bool hasRating=!rating.empty()&&rating!=L"N/A";
+        SetSeasonMeta(imdb,0,js,now,hasRating?now+30*86400.0:now+86400.0);
+        ++changed;
+        LogF("series meta: '%s' -> %s%s",Narrow(r.title).c_str(),
+             hasRating?Narrow(rating).c_str():"N/A",
+             hasRating?"":" (recheck 1d)"); }
+      else {
+        int tries=SeasonTries(imdb,0)+1;
+        SetSeasonMetaFail(imdb,0,now,tries,now+BackoffSeconds(tries));
+        LogF("series meta: '%s' miss",Narrow(r.title).c_str()); }
+      if(omdbLimited) break;
+      Sleep(150); }
+    return changed; }
+  // ---- movie detail metadata -----------------------------------------------
+  // The same OMDb record the episode pass stores in ep_meta_json is enough for
+  // a movie row: Plot / imdbRating / imdbVotes / Released / Runtime / Genre.
+  // It runs only while the Movies tab is in detail mode and is cached for 30 d.
+  bool HasMovieMetaDue(){
+    if(!ok) return false;
+    SQ::ST s=Prep("SELECT 1 FROM items WHERE present=1 AND hidden=0 AND kind='movie' "
+                  "AND COALESCE(ep_meta_next_try,0)<=? LIMIT 1");
+    if(!s) return false; SQ::p_bind_dbl(s,1,(double)time(nullptr));
+    bool due=SQ::p_step(s)==SQ::ROW; SQ::p_fin(s); return due; }
+  int FetchMovieMeta(unsigned gen){
+    if(g_movieGen.load(std::memory_order_relaxed)!=gen) return 0;
+    std::wstring key=OmdbKey();
+    if(key.empty()){ LogF("movie meta: no OMDb key"); return 0; }
+    struct M{ std::wstring path,title,imdb; int year=0,tries=0; };
+    std::vector<M> rows;
+    { SQ::ST s=Prep("SELECT path,title,COALESCE(year,0),COALESCE(imdb_id,''),"
+                    "COALESCE(ep_meta_tries,0) FROM items WHERE present=1 AND hidden=0 "
+                    "AND kind='movie' AND COALESCE(ep_meta_next_try,0)<=? LIMIT 60");
+      if(s){ SQ::p_bind_dbl(s,1,(double)time(nullptr));
+        while(SQ::p_step(s)==SQ::ROW){ M m; m.path=Col(s,0); m.title=Col(s,1);
+          m.year=(int)SQ::p_i64(s,2); m.imdb=Col(s,3); m.tries=(int)SQ::p_i64(s,4);
+          rows.push_back(m); } SQ::p_fin(s); } }
+    int changed=0; const double now=(double)time(nullptr);
+    for(auto&m:rows){
+      if(g_movieGen.load(std::memory_order_relaxed)!=gen){ LogF("movie meta: cancelled"); break; }
+      std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key);
+      if(!m.imdb.empty()) u+=L"&i="+UrlEnc(m.imdb);
+      else { u+=L"&t="+UrlEnc(m.title);
+        if(m.year>0) u+=L"&y="+std::to_wstring(m.year);
+        u+=L"&type=movie"; }
+      u+=L"&plot=short";
+      std::string js=GetJsonUrl(u);
+      if(js.empty()){
+        int tries=m.tries+1;
+        SetEpisodeMetaFail(m.path,now,tries,now+BackoffSeconds(tries));
+        LogF("movie meta: '%s' request failed, retry %d",Narrow(m.title).c_str(),tries);
+      } else if(js.find("Request limit reached")!=std::string::npos||
+                js.find("Invalid API key")!=std::string::npos){
+        omdbLimited=true;
+        LogF("movie meta: OMDb refused the request - stopping this pass");
+        break;
+      } else if(JStr(js,"Response")==L"True"){
+        wchar_t kb[96]; swprintf(kb,96,L"%s|%d",m.imdb.empty()?m.title.c_str():m.imdb.c_str(),m.year);
+        // A new release can exist in OMDb with imdbRating "N/A". Caching that
+        // for 30 days would leave the poster chipless long after IMDb has a
+        // score, so unrated titles re-check daily.
+        const std::wstring rating=JStr(js,"imdbRating");
+        const bool hasRating=!rating.empty()&&rating!=L"N/A";
+        const double next=hasRating?now+30*86400.0:now+86400.0;
+        SetEpisodeMeta(m.path,js,kb,now,next); ++changed;
+        LogF("movie meta: '%s' -> %s%s",Narrow(m.title).c_str(),
+             hasRating?Narrow(rating).c_str():"N/A",
+             hasRating?"":" (recheck 1d)");
+      } else {
+        int tries=m.tries+1;
+        SetEpisodeMetaFail(m.path,now,tries,now+BackoffSeconds(tries));
+        LogF("movie meta: '%s' not found on OMDb, retry %d",Narrow(m.title).c_str(),tries);
+      }
+      Sleep(150);
+    }
+    return changed; }
   // ---- folders (FoldersDialog + set_roots) and the indexer ------------------
   // The native shell had no way to add a library folder: the header's Folders...
   // button only logged. This is the 1.3.0 dialog's write path, plus the same scan
@@ -4570,7 +5355,7 @@ struct Lib{
     { char sql[1600]; snprintf(sql,sizeof(sql),
         "SELECT pkey,path,title,year,COALESCE(art,''),COALESCE(genre,''),COALESCE(art_checked,0),"
         "COALESCE(year_checked,0),COALESCE(art_tries,0),COALESCE(art_next_try,0),COALESCE(imdb_id,'') "
-        "FROM items WHERE present=1 AND kind='movie' AND ("
+        "FROM items WHERE present=1 AND hidden=0 AND kind='movie' AND ("
         "(COALESCE(art_next_try,0)<=%.0f AND (COALESCE(art,'')='' OR "
         " (instr(COALESCE(art,''),'omdb_')=0 AND instr(COALESCE(art,''),'wiki_')=0 "
         "  AND COALESCE(art_checked,0)<%.0f))) OR "
@@ -4596,7 +5381,7 @@ struct Lib{
     { char sql[1200]; snprintf(sql,sizeof(sql),
         "SELECT title, MAX(COALESCE(show_art,'')), MAX(COALESCE(genre,'')), "
         "MAX(COALESCE(art_checked,0)), MAX(COALESCE(art_tries,0)), MAX(COALESCE(art_next_try,0)), "
-        "MAX(COALESCE(imdb_id,'')) FROM items WHERE present=1 AND kind='episode' "
+        "MAX(COALESCE(imdb_id,'')) FROM items WHERE present=1 AND hidden=0 AND kind='episode' "
         "GROUP BY title COLLATE NOCASE HAVING "
         "(MAX(COALESCE(art_next_try,0))<=%.0f AND MAX(COALESCE(show_art,''))='') OR "
         "(MAX(COALESCE(genre,''))='' AND MAX(COALESCE(genre_checked,0))<%.0f) OR "
@@ -4737,25 +5522,25 @@ struct Lib{
   std::vector<LItem> Movies(){ std::vector<LItem> v;
     Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
           "season_art,show_art,watched,last_pos,last_seen,duration,present "
-          "FROM items WHERE kind='movie' "
+          "FROM items WHERE kind='movie' AND hidden=0 "
           "ORDER BY title COLLATE NOCASE, year",L"",L"",v); return v; }
   // library.py:314-317
   std::vector<LItem> Episodes(const std::wstring& show,int season){ std::vector<LItem> v;
     wchar_t ns[16]; swprintf(ns,16,L"%d",season);
     Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
           "season_art,show_art,watched,last_pos,last_seen,duration,present "
-          "FROM items WHERE kind='episode' "
+          "FROM items WHERE kind='episode' AND hidden=0 "
           "AND title=? COLLATE NOCASE AND season=? ORDER BY episode",show,ns,v); return v; }
   std::vector<LItem> AllEpisodes(){ std::vector<LItem> v;
     Items("SELECT kind,title,year,season,episode,episode_title,path,folder,size,art,"
           "season_art,show_art,watched,last_pos,last_seen,duration,present "
-          "FROM items WHERE kind='episode' ORDER BY title COLLATE NOCASE, season, episode",
+          "FROM items WHERE kind='episode' AND hidden=0 ORDER BY title COLLATE NOCASE, season, episode",
           L"",L"",v); return v; }
   // library.py:293-302
   struct ShowRow{ std::wstring title,art,path; int seasons=0,eps=0; };
   std::vector<ShowRow> Shows(){ std::vector<ShowRow> v; SQ::ST s=0; if(!ok) return v;
     if(SQ::p_prep(db,"SELECT title, MAX(show_art), COUNT(DISTINCT season), COUNT(*), MAX(season_art), MAX(path)"
-                    " FROM items WHERE present=1 AND kind='episode' GROUP BY title COLLATE NOCASE"
+                    " FROM items WHERE present=1 AND kind='episode' AND hidden=0 GROUP BY title COLLATE NOCASE"
                     " ORDER BY title COLLATE NOCASE",-1,&s,nullptr)) return v;
     while(SQ::p_step(s)==SQ::ROW){ ShowRow r; r.title=Col(s,0); r.art=Col(s,1);
       r.seasons=(int)SQ::p_i64(s,2); r.eps=(int)SQ::p_i64(s,3);
@@ -4765,7 +5550,7 @@ struct Lib{
   std::vector<SeasonRow> Seasons(const std::wstring& show){ std::vector<SeasonRow> v; SQ::ST s=0;
     if(!ok) return v;
     if(SQ::p_prep(db,"SELECT season, MAX(season_art), MAX(show_art), COUNT(*), MAX(path) FROM items "
-                    "WHERE present=1 AND kind='episode' AND title=? COLLATE NOCASE "
+                    "WHERE present=1 AND kind='episode' AND hidden=0 AND title=? COLLATE NOCASE "
                     "GROUP BY season ORDER BY season",-1,&s,nullptr)) return v;
     std::string a8=Narrow(show); if(SQ::p_bind) SQ::p_bind(s,1,a8.c_str(),(int)a8.size(),(void*)-1);
     while(SQ::p_step(s)==SQ::ROW){ SeasonRow r; r.season=(int)SQ::p_i64(s,0); r.art=Col(s,1);
@@ -4776,9 +5561,9 @@ struct Lib{
   void FolderView(const std::wstring& folder,std::vector<SubRow>& subs,std::vector<LItem>& files){
     std::vector<LItem> all; Items("SELECT kind,title,year,season,episode,episode_title,path,"
       "folder,size,art,season_art,show_art,watched,last_pos,last_seen,duration,present "
-      "FROM items WHERE present=1 ORDER BY path",L"",L"",all);
+      "FROM items WHERE present=1 AND hidden=0 ORDER BY path",L"",L"",all);
     if(folder.empty()){ for(auto&r:Roots()){ SubRow s; s.path=r; s.n=0;
-        SQ::ST st=0; if(!SQ::p_prep(db,"SELECT COUNT(*), MAX(art) FROM items WHERE present=1 AND root=?",-1,&st,nullptr)){
+        SQ::ST st=0; if(!SQ::p_prep(db,"SELECT COUNT(*), MAX(art) FROM items WHERE present=1 AND hidden=0 AND root=?",-1,&st,nullptr)){
           std::string k=Narrow(r); if(SQ::p_bind) SQ::p_bind(st,1,k.c_str(),(int)k.size(),(void*)-1);
           if(SQ::p_step(st)==SQ::ROW){ s.n=(int)SQ::p_i64(st,0); s.art=Col(st,1); } } SQ::p_fin(st);
         subs.push_back(s); } return; }
@@ -5314,6 +6099,7 @@ static std::wstring InfoFor(const LItem& it){
 class CPosterPane : public CUiWnd {
 public:
   Lib lib;
+  CCtxCard m_ctx;                                   // themed right-click menu
   int tab=0;                                        // 0 Movies 1 TV 2 Folders
   std::vector<Tile> tiles;                          // flat grids (Folders / drill-downs)
   // Top-level Movies/TV are sectioned: 0 = To Continue, 1 = Unwatched grid,
@@ -5333,17 +6119,56 @@ public:
   bool hovEpChip=false;                 // cursor is over the Continue Episodes chip
   // Season strip shown above the episode grid when the show has more than one
   // season, so a Continue jump into S2 can still reach S1/S3 without backing out.
-  int flatTop=54,seasonStripH=0,seasonOff=0,seasonScrollMax=0,hovSeason=-1;
+  int flatTop=54,flatBottom=0,seasonStripH=0,seasonOff=0,seasonScrollMax=0,hovSeason=-1;
   CRect seasonStripR,seasonLeftR,seasonRightR;
   std::vector<CRect> seasonBtnR; std::vector<int> seasonNums;
+  // Episode view details: a label/value list under the grid, fed by the local
+  // ffprobe facts first and by OMDb episode metadata when it arrives. It is
+  // deliberately a SELECTION panel, not a hover card: the facts stay readable
+  // while the pointer moves to Play.
+  struct DetailRow{ std::wstring label,value; COLORREF color; };
+  int detailH=0;
+  CRect detailR;
+  std::wstring detailTag,detailTitle,detailRating,detailPath;
+  std::wstring detailScoreText,detailVotesText; double detailScore=-1;
+  bool detailUnavail=false;
+  std::vector<DetailRow> detailRows;
+  // Episode view is a vertical LIST, not a poster grid: every row carries its
+  // own poster thumb + info panel (title, air date, rating, video/audio facts,
+  // progress) and the wheel/keyboard scroll through the rows.
+  bool epList=false,seasonList=false,movieList=false;
+  int rowH=0;
+  struct EpRowInfo{ std::wstring tag,title,rating,path,status,scoreText,votesText;
+                    double score=-1; bool unavail=false;
+                    int pct=-1; bool watched=false;
+                    std::vector<DetailRow> rows; };
+  std::vector<EpRowInfo> epInfo;
+  // Movies are poster/badge based by default. The header toggle swaps the
+  // sectioned poster sheet for the same row list the TV views use.
+  bool movieDetails=false;
+  CRect movieR;
   int shTitleH=26,shRowH=0,shPosterH=0,shTileW=0;
   CRect secHead[3], shView[3], midR, midViewR;
   // Focused section header (overview) and the full-page view for a section that
   // does not fit its band. fullSec=-1 means the three-band overview is shown.
   int hdrSec=-1, fullSec=-1, fullScroll=0;
+  // Where a drill into a show/season came FROM when it started on the full-section
+  // page. fullSec itself cannot survive ActivateSec -> Reload (Reload clears it),
+  // so Back used to unwind past the "85 titles" page straight to the overview.
+  int retFull=-1, retFullSel=-1, retFullScroll=0;
+  // Same idea for a drill started on the three-section overview: which section
+  // and tile the show/season came from. Reload() resets secSel[] to -1 and seeds
+  // tile 0, so without this the library always selected the first title on the
+  // way back (reported 2026-11-02).
+  int retSec=-1, retSecSel=-1, retSecScroll=0, retSecOff=0;
   bool watchedOpen=false;              // Watched rail collapsed by default
   CRect fullHead, fullViewR, fullBackR, watchedPlusR;
   std::wstring crumb,statusTxt,info=L"Select a title to play",lastPlayed,emptyMsg;
+  // Breadcrumb segments and their hit rects. The last segment is the current
+  // page; earlier segments navigate one level up (the trail is clickable).
+  std::vector<std::wstring> crumbParts;
+  std::vector<CRect> crumbSegR;
+  int crumbHov=-1;
   bool canBack=false,playEnabled=false,empty=false,crumbShow=false;
   // Selection policy: a tab/app landing starts on Continue (then New, then
   // Watched). Only a play/stop in THIS run re-selects lastPlayed; the persisted
@@ -5353,12 +6178,22 @@ public:
   std::map<std::wstring,Gdiplus::Bitmap*> blur;   // backdrop per art path + cell size
   std::map<std::wstring,Gdiplus::Bitmap*> composed; // final cell-sized art (fit/backdrop)
   CMediaTip m_facts; bool probing=false,artFetching=false,probeAgain=false,artAgain=false;
+  // Lazy OMDb episode metadata for the season on screen. Kept out of the art
+  // pass: a poster is needed for every title, episode facts only for the season
+  // a user actually opens.
+  bool metaFetching=false,metaPending=false;
+  std::wstring metaShow; int metaSeason=-1;
+  bool seasonFetching=false,seasonPending=false;
+  std::wstring seasonShow;
+  bool movieFetching=false,moviePending=false;
+  bool seriesFetching=false,seriesPending=false;
   CDC m_mem; CBitmap m_bmp; int m_mw=0,m_mh=0;   // persistent back buffer
   int lastHoverSec=-1,lastHoverIdx=-1,lastHoverFlat=-99;
   static const int HDR=54, FOOT=56, TEXTH=56;
   CRect tabR[3], folderR, rescanR, playR, beginR, vpR, infoR, crumbR, statR;
 
   BOOL CreateLib(CWnd* p){
+    movieDetails=IniBool(IniGet("ui.movieDetails"));
     static bool gdi=false; if(!gdi){ Gdiplus::GdiplusStartupInput si; ULONG_PTR tok;
       Gdiplus::GdiplusStartup(&tok,&si,nullptr); gdi=true; }
     BOOL ok=CreateUi(p,907);
@@ -5406,6 +6241,18 @@ public:
     fullViewR=CRect(Px(8),top+shTitleH,rc.right-Px(8),bottom);
     int bw=TextW(L"\x2039  Back (Esc)",12,false)+Px(28);
     fullBackR=CRect(rc.right-Px(14)-bw,top,rc.right-Px(14),top+shTitleH);
+    // Episodes are a vertical list of self-contained rows. The list owns the
+    // whole area under the season strip; each row is its own info panel, so no
+    // separate bottom detail band is reserved. GridH()/FlatTileAt() read the
+    // same flatTop/flatBottom as the other flat views.
+    detailH=0; detailR=CRect(0,0,0,0); flatBottom=bottom;
+    epList=(tab==1&&!tvShow.empty()&&!tvSeason.empty()&&!tiles.empty());
+    seasonList=(tab==1&&!tvShow.empty()&&tvSeason.empty()&&!tiles.empty());
+    movieList=(tab==0&&movieDetails&&!tiles.empty());
+    rowH=Px(156);
+    if(epList||seasonList||movieList){
+      if(rowH>ch*35/100) rowH=ch*35/100;
+      if(rowH<Px(132)) rowH=Px(132); }
     // Flat grids start below the optional season strip. TileR/GridH/FlatTileAt
     // all read flatTop, so the strip never overlaps the first poster row.
     flatTop=Px(HDR)+seasonStripH;
@@ -5414,6 +6261,11 @@ public:
   int SecStep(){ return shTileW+Px(10); }
   CRect TileR(int i){ int row=i/cols, col=i%cols;
     return CRect(Px(8)+col*tileW, flatTop+row*tileH-scroll, Px(8)+(col+1)*tileW, flatTop+(row+1)*tileH-scroll); }
+  CRect EpRowR(int i){ const int h=IMAX(Px(132),rowH);
+    return CRect(Px(8),flatTop+i*h-scroll,Client().right-Px(8),flatTop+(i+1)*h-scroll); }
+  CRect EpThumbR(CRect row){
+    const int h=row.Height()-Px(18); int w=h*2/3; if(w<Px(66)) w=Px(66);
+    return CRect(row.left+Px(10),row.top+Px(9),row.left+Px(10)+w,row.bottom-Px(9)); }
   CRect PosterIn(CRect r){ r.DeflateRect(Px(8),Px(8),Px(8),Px(6));
     return CRect(r.left,r.top,r.right,r.bottom-Px(TEXTH)); }
   CRect PosterR(int i){ return PosterIn(TileR(i)); }
@@ -5436,6 +6288,9 @@ public:
   void EnterFull(int s){
     if(s<0||s>2||!Overflow(s)) return;
     HideFacts();
+    // A newly entered full page is a fresh context: any older drill origin is stale.
+    retFull=-1; retFullSel=-1; retFullScroll=0;
+    retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0;
     fullSec=s; curSec=s; hdrSec=-1;
     if(secSel[s]<0||secSel[s]>=(int)sec[s].size()) secSel[s]=0;
     // Bring the selected title into view (with a row of context). Previously the
@@ -5457,7 +6312,54 @@ public:
     ClampScroll(); SyncCurrent(); Invalidate(FALSE);
     LogF("library: watched rail %s",open?"expanded":"collapsed"); }
   void ExitFull(){ if(fullSec<0) return; HideFacts();
-    fullSec=-1; fullScroll=0; hdrSec=-1; Invalidate(FALSE); }
+    fullSec=-1; fullScroll=0; hdrSec=-1;
+    retFull=-1; retFullSel=-1; retFullScroll=0;
+    retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0;
+    Invalidate(FALSE); }
+  // Save the full page a drill started from (ActivateSec / the Continue chip).
+  void SaveFullReturn(){
+    if(fullSec>=0){ retFull=fullSec; retFullSel=secSel[fullSec]; retFullScroll=fullScroll;
+      retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0; }
+    else { retFull=-1; retFullSel=-1; retFullScroll=0; } }
+  void SaveSectionReturn(int s,int i){
+    if(sectioned&&s>=0&&s<3){
+      retSec=s; retSecSel=i; retSecScroll=scroll; retSecOff=secOff[s];
+      retFull=-1; retFullSel=-1; retFullScroll=0; }
+    else { retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0; } }
+  // Reload() rebuilt sec[] and reset every selection; put the originating tile
+  // back and scroll it into view. The selected tile is what the Info panel and
+  // the selection ring read, so this is the "where I was" the user expects.
+  void ApplySectionReturn(){
+    if(retSec<0||retSec>2) return;
+    const int s=retSec; int i=retSecSel;
+    retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0;
+    if(sec[s].empty()) return;
+    if(i<0||i>=(int)sec[s].size()) i=0;
+    curSec=s; secSel[s]=i;
+    if(s==1){
+      scroll=retSecScroll;
+      const int row=i/cols;
+      if(row*tileH<scroll) scroll=row*tileH;
+      else if((row+1)*tileH>scroll+GridH()) scroll=(row+1)*tileH-GridH();
+      ClampScroll();
+    } else {
+      const int step=SecStep(), total=(int)sec[s].size()*step, vw=shView[s].Width();
+      secOff[s]=retSecOff;
+      const int x=i*step;
+      if(x<secOff[s]) secOff[s]=x;
+      else if(x+shTileW>secOff[s]+vw) secOff[s]=x+shTileW-vw;
+      const int mx=total-vw; secOff[s]=std::clamp(secOff[s],0,mx<0?0:mx);
+    }
+    SyncCurrent(); Invalidate(FALSE);
+    LogF("library: restored section %d selection %d",s,i);
+  }
+  // Reload() rebuilds sec[] and clears fullSec; put the page back afterwards.
+  void ApplyFullRestore(int f,int sel,int scroll){
+    if(f<0||f>2||!Overflow(f)) return;
+    fullSec=f; curSec=f; hdrSec=-1;
+    secSel[f]=(sel>=0&&sel<(int)sec[f].size())?sel:0;
+    fullScroll=scroll; ClampFull(); SyncCurrent(); Invalidate(FALSE);
+    LogF("library: restored full section %d (%d items) sel=%d",f,(int)sec[f].size(),secSel[f]); }
   CRect FullGridR(int i){ int row=i/cols,col=i%cols;
     return CRect(Px(8)+col*tileW, fullViewR.top+row*tileH-fullScroll,
                  Px(8)+(col+1)*tileW, fullViewR.top+(row+1)*tileH-fullScroll); }
@@ -5469,7 +6371,12 @@ public:
     int i=row*cols+col; if(i>=(int)sec[fullSec].size()) return -1;
     if(!FullGridR(i).PtInRect(p)) return -1;
     idx=i; return fullSec; }
-  int FlatTileAt(CPoint p){ if(p.y<flatTop||p.y>=Client().bottom-Px(FOOT)) return -1;
+  int FlatTileAt(CPoint p){ if(p.y<flatTop||p.y>=flatBottom) return -1;
+    if(epList||seasonList||movieList){
+      const int h=IMAX(Px(132),rowH);
+      int i=(p.y-flatTop+scroll)/h;
+      if(i>=0&&i<(int)tiles.size()&&EpRowR(i).PtInRect(p)) return i;
+      return -1; }
     for(size_t i=0;i<tiles.size();++i){ if(PosterR((int)i).PtInRect(p)) return (int)i; } return -1; }
   int TileAt(CPoint p){ return sectioned?-1:FlatTileAt(p); }
   int SectionAt(CPoint p,int& idx){ idx=-1; if(!sectioned) return -1;
@@ -5484,15 +6391,16 @@ public:
     return -1; }
   CRect Client(){ CRect rc; GetClientRect(rc); return rc; }
   int GridH(){ if(sectioned) return midViewR.Height();
-    return Client().bottom-Px(FOOT)-flatTop; }
+    return IMAX(Px(40),flatBottom-flatTop); }
   void ClampScroll(){ if(sectioned){
       int rows=((int)sec[1].size()+cols-1)/cols; int need=rows*tileH;
       scroll=need>GridH()?IMIN(scroll,need-GridH()):0; if(scroll<0)scroll=0;
       for(int s=0;s<3;s+=2){ int total=(int)sec[s].size()*SecStep(), vw=shView[s].Width();
         int mx=total-vw; if(mx<0)mx=0; if(secOff[s]>mx)secOff[s]=mx; if(secOff[s]<0)secOff[s]=0; }
       return; }
-    int rows=((int)tiles.size()+cols-1)/cols;
-    int need=rows*tileH; scroll=need>GridH()?IMIN(scroll,need-GridH()):0; if(scroll<0)scroll=0; }
+    int need=(epList||seasonList||movieList)?(int)tiles.size()*IMAX(Px(132),rowH)
+      :(((int)tiles.size()+cols-1)/cols)*tileH;
+    scroll=need>GridH()?IMIN(scroll,need-GridH()):0; if(scroll<0)scroll=0; }
   static int PctOf(double pos,double dur,int watched){
     if(watched) return 100; if(dur<=0.0) return -1;
     int p=(int)(pos*100.0/dur+0.5); return p<0?0:(p>100?100:p); }
@@ -5542,7 +6450,8 @@ public:
     t.pct=PctOf(e.lastPos,e.duration,e.watched); t.season=e.season;
     std::wstring tl=tail.empty()?ProgressTxt(t):tail; if(tl.empty()) tl=L"Continue";
     wchar_t b[192]; swprintf(b,192,L"S%02dE%02d  \x00B7  %s",e.season,e.episode,tl.c_str());
-    t.sub=b; if(!e.present) t.sub+=L"  \x00B7  Unavailable"; }
+    t.sub=b; if(!e.present) t.sub+=L"  \x00B7  Unavailable";
+    ApplyTileScore(t); }
   static std::wstring DurTxt(double sec){ int t=(int)(sec+0.5); if(t<0)t=0; wchar_t b[32];
     if(t>=3600) swprintf(b,32,L"%d:%02d:%02d",t/3600,(t/60)%60,t%60);
     else swprintf(b,32,L"%d:%02d",t/60,t%60); return b; }
@@ -5555,15 +6464,34 @@ public:
       swprintf(b,96,L"%d%% watched  \x00B7  %s left",t.pct,d.c_str()); }
     else swprintf(b,96,L"%d%% watched",t.pct);
     return b; }
+  void ApplyTileScore(Tile& t){
+    if(t.path.empty()) return;
+    Lib::MetaRow mm; if(!lib.MetaFor(t.path,mm)) return;
+    if(mm.epMeta.empty()) return;   // never fetched: no chip yet
+    std::wstring r=JStr(mm.epMeta,"imdbRating");
+    if(r.empty()||r==L"N/A"){ t.score=-1; t.scoreText=L"N/A"; return; }
+    t.score=_wtof(r.c_str());
+    wchar_t b[16]; swprintf(b,16,L"%.1f",t.score); t.scoreText=b; }
+  // -1 = no OMDb record at all (no chip), -2 = record exists but rating N/A.
+  static void SetScore(Tile& t,double r){
+    if(r==-1.0) return;
+    t.score=(r==-2.0)?-1.0:r;
+    if(r==-2.0){ t.scoreText=L"N/A"; return; }
+    wchar_t b[16]; swprintf(b,16,L"%.1f",r); t.scoreText=b; }
+  void ApplySeriesScore(Tile& t,const std::wstring& show){ SetScore(t,lib.SeriesRating(show)); }
+  void ApplySeasonScore(Tile& t,const std::wstring& show,int season){
+    SetScore(t,lib.SeasonRating(show,season)); }
   void AddMovieSections(){
     for(auto&m:lib.Movies()){
       bool have=m.lastSeen>0||m.lastPos>0||m.watched;
       if(!m.present&&!have) continue;
       Tile t; t.kind=0; t.title=NormTitle(m.title);
+      t.year=m.year;
       t.sub=m.year?std::to_wstring(m.year):L""; t.art=m.art; t.path=m.path;
       t.size=m.size; t.infoLine=InfoFor(m); t.watched=m.watched?1:0;
       t.avail=m.present!=0; t.lastPos=m.lastPos; t.duration=m.duration;
       t.lastSeen=m.lastSeen; t.pct=PctOf(m.lastPos,m.duration,m.watched);
+      ApplyTileScore(t);
       if(t.watched||t.pct>=95){ t.watched=1; t.pct=100;
         t.sub=t.avail?L"Watched":L"Watched  \x00B7  Unavailable";
         sec[2].push_back(t); }
@@ -5611,7 +6539,7 @@ public:
         t.art=g[0].showArt.empty()?g[0].seasonArt:g[0].showArt;
         // Show tiles need a path or availability cannot be judged at all — this
         // is why the TV shelves never showed the badge.
-        t.path=g[0].path;
+        t.path=g[0].path; ApplySeriesScore(t,name);
         for(auto&e:g) if(e.lastSeen>t.lastSeen) t.lastSeen=e.lastSeen;
         sec[2].push_back(t); secOf[k]=2; }
       else if(watchN>0&&upnext>=0){ Tile t; EpiTile(name,g[upnext],L"Up next",t);
@@ -5625,7 +6553,8 @@ public:
       Tile t; t.kind=1; t.title=NormTitle(s.title);
       t.sub=Plural(s.seasons,L"season")+L"  \xb7  "+Plural(s.eps,L"episode");
       t.seriesSeasons=s.seasons; t.seriesEps=s.eps;
-      t.art=s.art; t.path=s.path; sec[1].push_back(t); }
+      t.art=s.art; t.path=s.path; ApplySeriesScore(t,s.title);
+      sec[1].push_back(t); }
   }
   void Reload(){
     HideFacts();
@@ -5644,12 +6573,13 @@ public:
     // 1.3.0: the caption is the bare TITLE with the year as the sub-line, and the
     // breadcrumb is only shown once you have drilled into something
     // (_crumb.setText(crumb if self._path else "")).
-    crumbShow=false;
+    crumbShow=false; crumbParts.clear(); crumbHov=-1;
     // Top-level Movies and TV Shows use the three-section sheet (To Continue /
     // Unwatched grid / Watched). Drilling into a show or folder keeps the flat grid.
-    sectioned = (tab==0) || (tab==1&&tvShow.empty()&&tvSeason.empty());
+    sectioned = (tab==0&&!movieDetails) || (tab==1&&tvShow.empty()&&tvSeason.empty());
     if(sectioned){
       crumb = (tab==0)?L"Movies":L"TV Shows";
+      crumbParts.push_back(crumb);
       AddSections();
       for(int s=0;s<3;++s) secSel[s]=-1;
       bool matched=false;
@@ -5679,21 +6609,40 @@ public:
       // at all until the 5 s timer).
       RefreshAvailability(true);
       ClampScroll(); SyncCurrent(); Invalidate(FALSE);
+      if(tab==0) MaybeStartMovieMetaFetch();   // poster rating chips
+      if(tab==1) MaybeStartSeriesOverviewFetch();
       LogF("library: %s sections continue=%d unwatched=%d watched=%d cols=%d",
            tab==0?"movies":"tv",(int)sec[0].size(),(int)sec[1].size(),
            (int)sec[2].size(),cols);
       return; }
-    if(tab==1){
-      if(tvShow.empty()){ crumb=L"TV Shows";
+    if(tab==0){
+      // "Show details" replaces the badge sheet with one scrollable row per
+      // film. The rows carry the same poster, IMDb badge, plot and file facts
+      // as the episode/season lists; the poster layout remains the default.
+      crumb=L"Movies";
+      for(auto&m:lib.Movies()){ Tile t; t.kind=0; t.title=NormTitle(m.title);
+        t.year=m.year;
+        t.sub=m.year?std::to_wstring(m.year):L"";
+        t.art=m.art; t.path=m.path; t.size=m.size; t.infoLine=InfoFor(m);
+        t.watched=m.watched?1:0; t.avail=m.present!=0;
+        t.lastPos=m.lastPos; t.duration=m.duration; t.lastSeen=m.lastSeen;
+        t.pct=PctOf(m.lastPos,m.duration,m.watched);
+        tiles.push_back(t); } }
+    else if(tab==1){
+      if(tvShow.empty()){ crumb=L"TV Shows"; crumbParts.push_back(L"TV Shows");
         for(auto&s:lib.Shows()){ Tile t; t.kind=1; t.title=NormTitle(s.title);
           t.sub=Plural(s.seasons,L"season")+L"  ·  "+Plural(s.eps,L"episode");
           t.seriesSeasons=s.seasons; t.seriesEps=s.eps; t.art=s.art; t.path=s.path; tiles.push_back(t); } }
       else if(tvSeason.empty()){ crumb=L"TV Shows  \x203A  "+tvShow.back(); crumbShow=true;
+        crumbParts.push_back(L"TV Shows"); crumbParts.push_back(tvShow.back());
         for(auto&s:lib.Seasons(tvShow.back())){ Tile t; t.kind=2; wchar_t b[48];
           swprintf(b,48,L"Season %d",s.season); t.title=b; t.sub=Plural(s.eps,L"episode");
-          t.art=s.art; t.season=s.season; t.path=s.path; tiles.push_back(t); } }
+          t.art=s.art; t.season=s.season; t.path=s.path;
+          ApplySeasonScore(t,tvShow.back(),s.season); tiles.push_back(t); } }
       else { wchar_t b[96]; swprintf(b,96,L"Season %d",tvSeason.back());
         crumb=L"TV Shows  \x203A  "+tvShow.back()+L"  \x203A  "+b; crumbShow=true;
+        crumbParts.push_back(L"TV Shows"); crumbParts.push_back(tvShow.back());
+        crumbParts.push_back(b);
         for(auto&e:lib.Episodes(tvShow.back(),tvSeason.back())){ Tile t; t.kind=0;
           t.title=NormTitle(e.label()); t.size=e.size; t.infoLine=InfoFor(e);
           t.art=e.art.empty()?(e.seasonArt.empty()?e.showArt:e.seasonArt):e.art;
@@ -5707,14 +6656,15 @@ public:
             : (t.pct>0&&t.pct<100 ? ProgressTxt(t)
             : (t.pct>=100 ? L"100% watched" : L"Not started"));
           if(!e.present) st+=L"  \xb7  Unavailable";
-          t.sub=st; tiles.push_back(t); } } }
+          t.sub=st; ApplyTileScore(t); tiles.push_back(t); } } }
     else if(tab==2){
       std::wstring folder=fPath.empty()?L"":fPath.back();
       std::vector<Lib::SubRow> subs; std::vector<LItem> files;
       lib.FolderView(folder,subs,files);            // empty folder = the roots themselves
-      crumb=L"Folders";
+      crumb=L"Folders"; crumbParts.push_back(L"Folders");
       for(auto&p:fPath){ size_t k=p.find_last_of(L"\\/");
-        crumb+=L"  \x203A  "; crumb+=(k==std::wstring::npos)?p:p.substr(k+1); }
+        crumb+=L"  \x203A  "; crumb+=(k==std::wstring::npos)?p:p.substr(k+1);
+        crumbParts.push_back((k==std::wstring::npos)?p:p.substr(k+1)); }
       for(auto&s:subs){ Tile t; t.kind=3; size_t k=s.path.find_last_of(L"\\/");
         t.title=(k==std::wstring::npos||k+1>=s.path.size())?s.path:s.path.substr(k+1);
         t.sub=Plural(s.n,L"title"); t.art=s.art; t.path=s.path; tiles.push_back(t); }
@@ -5724,9 +6674,16 @@ public:
                   ? (swprintf(b,96,L"%s S%02dE%02d",f.title.c_str(),f.season,f.episode),std::wstring(b))
                   : f.label();
         t.sub=ExtUpper(f.path); t.size=f.size; t.infoLine=InfoFor(f);
+        t.year = (f.kind==L"episode") ? 0 : f.year;
         t.art=f.art.empty()?(f.seasonArt.empty()?f.showArt:f.seasonArt):f.art;
         t.title=NormTitle(t.title);
         t.path=f.path; tiles.push_back(t); } }
+    // The details band needs the finished tile list (it is hidden for an empty
+    // season). Metrics() is cheap; the first pass above had no tiles yet.
+    if((tab==0&&movieDetails)||(tab==1&&!tvShow.empty())){
+      // Flat movie detail / TV season / episode pages need the second layout
+      // pass now that tiles exist; all of them are rows.
+      Metrics(rc.Width()); BuildEpisodeListInfo(); }
     canBack = (tab==1&&(!tvShow.empty()||!tvSeason.empty())) || (tab==2&&!fPath.empty());
     if(tiles.empty()){ empty=true;
       emptyMsg = lib.ok ? L"No films found in your library folders."
@@ -5741,8 +6698,281 @@ public:
         if(tiles[i].path==lastPlayed){ sel=(int)i; break; }
       if(sel<0) sel=0; }
     statusTxt=StatusLine();
-    SetCurrent(sel>=0&&!tiles.empty()?&tiles[sel]:nullptr); ClampScroll(); Invalidate(FALSE); }
+    SetCurrent(sel>=0&&!tiles.empty()?&tiles[sel]:nullptr);
+    if(epList&&sel>=0) Ensure(); else ClampScroll();
+    Invalidate(FALSE);
+    // Demand-driven: only the season the user is looking at. MaybeStartMetaFetch
+    // defers while posters/probes run, so OMDb is never asked twice at once.
+    if(tab==0) MaybeStartMovieMetaFetch();
+    else if(tab==1&&!tvShow.empty()&&!tvSeason.empty()) MaybeStartMetaFetch();
+    else if(tab==1&&!tvShow.empty()) MaybeStartSeasonMetaFetch();
+    if(tab==1) MaybeStartSeriesOverviewFetch(); }
+  // ---- episode details ------------------------------------------------------
+  // IMDb badge colour: a continuous worst-to-best ramp. The stops are chosen so
+// a 7.x is already green (good), 5.x orange and below 4 red. White badge text
+// keeps contrast on every stop.
+  static COLORREF RatingColor(double r){
+    struct Stop{ double v; int r,g,b; };
+    static const Stop s[]={{0.0,0x8E,0x1F,0x1F},{4.0,0xB0,0x30,0x20},
+      {6.0,0xC8,0x6A,0x20},{7.0,0xC8,0xA0,0x20},{8.0,0x3F,0x9E,0x4F},
+      {9.0,0x2F,0xBF,0x5F},{10.0,0x1F,0xAF,0x8F}};
+    const int n=(int)(sizeof(s)/sizeof(s[0]));
+    if(r<0.0) return RGB(0x44,0x44,0x44);
+    if(r>10.0) r=10.0;
+    for(int i=1;i<n;++i){
+      if(r<=s[i].v){
+        const double t=(r-s[i-1].v)/(s[i].v-s[i-1].v);
+        const int rr=(int)(s[i-1].r+(s[i].r-s[i-1].r)*t+0.5);
+        const int gg=(int)(s[i-1].g+(s[i].g-s[i-1].g)*t+0.5);
+        const int bb=(int)(s[i-1].b+(s[i].b-s[i-1].b)*t+0.5);
+        return RGB(rr,gg,bb); } }
+    return RGB(s[n-1].r,s[n-1].g,s[n-1].b); }
+  // "57 min" / "1h 02m" is friendlier than a clock in a table of facts.
+  static std::wstring DurShort(double sec){ int m=(int)(sec/60.0+0.5);
+    if(m<=0) return L"\x2014"; wchar_t b[32];
+    if(m>=60) swprintf(b,32,L"%dh %02dm",m/60,m%60); else swprintf(b,32,L"%d min",m);
+    return b; }
+  // OMDb sends imdbVotes as "1,234,567"; a compact count keeps the rating row
+  // from crowding the title.
+  static std::wstring VotesTxt(const std::wstring& v){
+    std::wstring d; for(wchar_t c:v) if(iswdigit((wint_t)c)) d+=c;
+    if(d.empty()) return L""; long long n=_wtoi64(d.c_str()); wchar_t b[32];
+    if(n>=1000000) swprintf(b,32,L"%.1fM",n/1000000.0);
+    else if(n>=1000) swprintf(b,32,L"%.1fk",n/1000.0);
+    else swprintf(b,32,L"%lld",n);
+    return b; }
+  static std::wstring RatingTxt(const std::wstring& r,const std::wstring& votes){
+    if(r.empty()||r==L"N/A") return L""; std::wstring out=r;
+    std::wstring v=VotesTxt(votes);
+    if(!v.empty()) out+=L"  \x00B7  "+v+L" votes";
+    return out; }
+  // probe stores "3840x2160"; the panel is allowed to use the typographic sign.
+  static std::wstring ResTxt(std::wstring res){
+    size_t x=res.find(L'x'); if(x!=std::wstring::npos) res[x]=(wchar_t)0x00D7; return res; }
+  static std::wstring DateTxt(const std::wstring& iso){
+    int y=0,m=0,d=0;
+    if(swscanf_s(iso.c_str(),L"%d-%d-%d",&y,&m,&d)!=3) return iso;
+    static const wchar_t* mo[12]={L"Jan",L"Feb",L"Mar",L"Apr",L"May",L"Jun",
+      L"Jul",L"Aug",L"Sep",L"Oct",L"Nov",L"Dec"};
+    if(m<1||m>12) return iso;
+    wchar_t b[48]; swprintf(b,48,L"%d %s %d",d,mo[m-1],y); return b; }
+  void BuildSeasonInfo(const Tile& t,EpRowInfo& d){
+    const std::wstring show=tvShow.empty()?t.title:tvShow.back();
+    wchar_t b[96]; swprintf(b,96,L"SEASON %d",t.season); d.tag=b;
+    swprintf(b,96,L"Season %d",t.season); d.title=b;
+    auto eps=lib.SeasonEpisodes(show,t.season);
+    std::string sj=lib.SeasonMetaJson(show,t.season);
+    auto arr=JsonArrayObjects(sj,"Episodes");
+    int rated=0; double sum=0; std::wstring first,last;
+    for(auto&e:arr){
+      std::wstring r=JStr(e,"imdbRating");
+      if(!r.empty()&&r!=L"N/A"){ sum+=_wtof(r.c_str()); ++rated; }
+      std::wstring rel=JStr(e,"Released");
+      if(!rel.empty()&&rel!=L"N/A"){ if(first.empty()) first=rel; last=rel; } }
+    const int n=(int)eps.size();
+    int watchedN=0; double dur=0; long long size=0;
+    std::wstring res,hdr,gamut,audio,ar,plot; bool hd=false;
+    for(auto&e:eps){
+      watchedN+=e.watched?1:0; dur+=e.duration; size+=e.size;
+      if(!e.probe.empty()){
+        std::wstring r=JStr(e.probe,"res"),h=JStr(e.probe,"hdr"),
+          g=JStr(e.probe,"gamut"),a=JStr(e.probe,"audio"),aa=JStr(e.probe,"ar");
+        double hdd=0; JNum(e.probe.c_str(),"hd",hdd);
+        if(res.empty()||r.find(L"2160")!=std::wstring::npos) res=r;
+        if(hdr.empty()||hdr==L"SDR") hdr=h;
+        if(gamut.empty()) gamut=g;
+        if(ar.empty()) ar=aa;
+        if(audio.empty()||(!hd&&hdd)){ audio=a; hd=(hdd!=0); } }
+      if(plot.empty()&&!e.epMeta.empty()){
+        std::wstring pl=JStr(e.epMeta,"Plot");
+        if(!pl.empty()&&pl!=L"N/A") plot=pl; } }
+    const COLORREF cGray=RGB(0xC8,0xC8,0xC8),cDim=RGB(0x88,0x88,0x88),
+      cGreen=RGB(0x3F,0xC9,0x5B),cGold=RGB(0xE0,0xB8,0x50);
+    COLORREF cVideo=RGB(0xA8,0xA8,0xA8);
+    if(hdr.rfind(L"Dolby Vision",0)==0) cVideo=RGB(0xB0,0x8C,0xFF);
+    else if(hdr==L"HDR10") cVideo=RGB(0xE0,0xB8,0x50);
+    else if(hdr==L"HLG") cVideo=RGB(0x4C,0xC9,0xB0);
+    auto add=[&](const wchar_t* label,const std::wstring& value,COLORREF c){
+      DetailRow r; r.label=label; r.value=value; r.color=c; d.rows.push_back(r); };
+    std::wstring aired;
+    if(!first.empty()){ aired=DateTxt(first);
+      if(last!=first) aired+=L"  \x2013  "+DateTxt(last); }
+    std::wstring avg;
+    if(rated>0){ swprintf(b,96,L"%.1f avg",sum/rated); avg=b; }
+    else if(!arr.empty()) avg=L"N/A";
+    std::wstring rtxt=dur>0?DurShort(dur):L"\x2014";
+    const int total=(int)arr.size();
+    std::wstring epTxt;
+    if(n>0&&total>n){ swprintf(b,96,L"%d of %d episodes",n,total); epTxt=b; }
+    else if(n>0) epTxt=Plural(n,L"episode");
+    else if(total>0) epTxt=Plural(total,L"episode");
+    else epTxt=L"\x2014";
+    add(L"EPISODES",epTxt,cGray);
+    add(L"AIRED",aired.empty()?L"\x2014":aired,cDim);
+    add(L"RUNTIME",rtxt,cGray);
+    add(L"IMDb",avg.empty()?L"\x2014":avg,avg.empty()?cDim:cGold);
+    std::wstring v;
+    if(res.empty()&&hdr.empty()) v=L"probing...";
+    else { v=ResTxt(res);
+      if(!hdr.empty()){ if(!v.empty()) v+=L"  \x00B7  "; v+=hdr; }
+      if(!gamut.empty()&&gamut!=L"BT.709"){ if(!v.empty()) v+=L"  \x00B7  "; v+=gamut; }
+      if(!ar.empty()&&ar!=L"0:1"){ if(!v.empty()) v+=L"  \x00B7  "; v+=ar; } }
+    add(L"VIDEO",v.empty()?L"\x2014":v,cVideo);
+    add(L"AUDIO",audio.empty()?L"\x2014":audio+(hd?L"  (HD)":L""),hd?cGreen:cGray);
+    add(L"SIZE",size?SizeTxt(size):L"\x2014",cGray);
+    std::wstring overview=lib.SeriesOverview(show);
+    if(overview==L"N/A") overview.clear();
+    add(L"OVERVIEW",!overview.empty()?overview:(plot.empty()?L"\x2014":plot),cGray);
+    d.rating=avg;
+    if(rated>0){ d.score=sum/rated; d.scoreText=avg; }
+    else if(!arr.empty()){ d.score=-1; d.scoreText=L"N/A"; }
+    d.pct=n?watchedN*100/n:0;
+    d.watched=(n>0&&watchedN==n);
+    if(d.watched) d.status=L"Watched";
+    else if(watchedN>0){ swprintf(b,96,L"%d of %d watched",watchedN,n); d.status=b; }
+    else d.status=L"Not started"; }
+  void BuildMovieInfo(const Tile& t,EpRowInfo& d){
+    d.tag=L"MOVIE";
+    Lib::MetaRow mm; lib.MetaFor(t.path,mm);
+    std::string probe=mm.probe;
+    double dur=0; int hd=0; std::wstring hdr,gamut,audio,ar,res;
+    if(!probe.empty()){
+      JNum(probe.c_str(),"dur",dur);
+      hdr=JStr(probe,"hdr"); gamut=JStr(probe,"gamut");
+      audio=JStr(probe,"audio"); ar=JStr(probe,"ar"); res=JStr(probe,"res");
+      double hdd=0; JNum(probe.c_str(),"hd",hdd); hd=(int)hdd; }
+    if(dur<=0.0) dur=t.duration>0.0?t.duration:mm.duration;
+    const std::string& ep=mm.epMeta;
+    std::wstring title=JStr(ep,"Title"), released=JStr(ep,"Released"),
+      runtime=JStr(ep,"Runtime"), genre=JStr(ep,"Genre"),
+      rating=JStr(ep,"imdbRating"), votes=JStr(ep,"imdbVotes"),
+      plot=JStr(ep,"Plot"), oyear=JStr(ep,"Year");
+    for(auto* s:{&title,&released,&runtime,&genre,&rating,&votes,&plot,&oyear})
+      if(*s==L"N/A") s->clear();
+    d.title=title.empty()?t.title:title;
+    if(!rating.empty()){ d.score=_wtof(rating.c_str());
+      wchar_t b[32]; swprintf(b,32,L"%.1f",d.score); d.scoreText=b;
+      d.votesText=VotesTxt(votes); if(!d.votesText.empty()) d.votesText+=L" votes"; }
+    else if(!ep.empty()){ d.score=-1; d.scoreText=L"N/A"; }
+    d.rating=RatingTxt(rating,votes);
+    if(genre.empty()) genre=mm.genre;
+    const COLORREF cGray=RGB(0xC8,0xC8,0xC8),cDim=RGB(0x88,0x88,0x88),
+      cGreen=RGB(0x3F,0xC9,0x5B),cGold=RGB(0xE0,0xB8,0x50);
+    COLORREF cVideo=RGB(0xA8,0xA8,0xA8);
+    if(hdr.rfind(L"Dolby Vision",0)==0) cVideo=RGB(0xB0,0x8C,0xFF);
+    else if(hdr==L"HDR10") cVideo=RGB(0xE0,0xB8,0x50);
+    else if(hdr==L"HLG") cVideo=RGB(0x4C,0xC9,0xB0);
+    auto add=[&](const wchar_t* label,const std::wstring& value,COLORREF c){
+      DetailRow r; r.label=label; r.value=value; r.color=c; d.rows.push_back(r); };
+    std::wstring aired=released.empty()?oyear:DateTxt(released);
+    if(aired.empty()) aired=t.sub;
+    add(L"AIRED",aired.empty()?L"\x2014":aired,cDim);
+    add(L"RUNTIME",runtime.empty()?DurShort(dur):runtime,cGray);
+    add(L"GENRE",genre.empty()?L"\x2014":genre,cGray);
+    std::wstring v;
+    if(res.empty()&&hdr.empty()) v=L"probing...";
+    else { v=ResTxt(res);
+      if(!hdr.empty()){ if(!v.empty()) v+=L"  \x00B7  "; v+=hdr; }
+      if(!gamut.empty()&&gamut!=L"BT.709"){ if(!v.empty()) v+=L"  \x00B7  "; v+=gamut; }
+      if(!ar.empty()&&ar!=L"0:1"){ if(!v.empty()) v+=L"  \x00B7  "; v+=ar; } }
+    add(L"VIDEO",v.empty()?L"\x2014":v,cVideo);
+    add(L"AUDIO",audio.empty()?L"\x2014":audio+(hd?L"  (HD)":L""),hd?cGreen:cGray);
+    add(L"SIZE",SizeTxt(t.size),cGray);
+    add(L"PLOT",plot.empty()?L"\x2014":plot,cGray);
+    d.path=t.path; d.unavail=!t.avail;
+    d.pct=t.pct; d.watched=t.watched!=0;
+    d.status=t.watched?L"Watched":
+      (t.pct>0?ProgressTxt(t):L"Not started"); }
+  void BuildEpisodeListInfo(){
+    epInfo.clear();
+    if(!epList&&!seasonList&&!movieList){ return; }
+    epInfo.resize(tiles.size());
+    for(size_t i=0;i<tiles.size();++i){
+      EpRowInfo& d=epInfo[i];
+      if(movieList){ BuildMovieInfo(tiles[i],d); continue; }
+      if(seasonList&&tiles[i].kind==2){ BuildSeasonInfo(tiles[i],d); continue; }
+      BuildEpisodeDetail(tiles[i]);
+      d.tag=detailTag; d.title=detailTitle; d.rating=detailRating;
+      d.scoreText=detailScoreText; d.votesText=detailVotesText; d.score=detailScore;
+      d.path=detailPath; d.unavail=detailUnavail; d.rows=detailRows;
+      d.pct=tiles[i].pct; d.watched=tiles[i].watched!=0;
+      d.status=tiles[i].watched?L"Watched":
+        (tiles[i].pct>0?ProgressTxt(tiles[i]):L"Not started"); } }
+  void RefreshDetail(){
+    if(epList||seasonList||movieList){ BuildEpisodeListInfo(); Invalidate(FALSE); return; }
+    if(sel>=0&&sel<(int)tiles.size()) BuildEpisodeDetail(tiles[sel]);
+    else { detailRows.clear(); detailTag.clear(); detailTitle.clear(); detailRating.clear(); } }
+  void BuildEpisodeDetail(const Tile& t){
+    detailRows.clear(); detailTag.clear(); detailTitle.clear(); detailRating.clear();
+    detailScoreText.clear(); detailVotesText.clear(); detailScore=-1;
+    detailPath.clear(); detailUnavail=false;
+    if(tab!=1||tvShow.empty()||tvSeason.empty()||t.kind!=0) return;
+    detailPath=t.path; detailUnavail=!t.avail;
+    wchar_t tag[32]; swprintf(tag,32,L"S%02dE%02d",t.season,t.episode); detailTag=tag;
+    Lib::MetaRow mm; lib.MetaFor(t.path,mm);
+    std::string probe=mm.probe;
+    double dur=0; int hd=0; std::wstring hdr,gamut,audio,ar,res;
+    if(!probe.empty()){
+      JNum(probe.c_str(),"dur",dur);
+      hdr=JStr(probe,"hdr"); gamut=JStr(probe,"gamut");
+      audio=JStr(probe,"audio"); ar=JStr(probe,"ar"); res=JStr(probe,"res");
+      double d=0; JNum(probe.c_str(),"hd",d); hd=(int)d; }
+    if(dur<=0.0) dur=t.duration>0.0?t.duration:mm.duration;
+    const std::string& ep=mm.epMeta;
+    std::wstring title=JStr(ep,"Title"), aired=JStr(ep,"Released"), runtime=JStr(ep,"Runtime"),
+      genre=JStr(ep,"Genre"), rating=JStr(ep,"imdbRating"), votes=JStr(ep,"imdbVotes"),
+      plot=JStr(ep,"Plot");
+    for(auto* s:{&title,&aired,&runtime,&genre,&rating,&votes,&plot}) if(*s==L"N/A") s->clear();
+    if(title.empty()){
+      title=t.title;
+      // e.label() prefixes the file-derived title with "03. " when it has one;
+      // the SxxEyy tag already says the number, so don't print it twice.
+      if(title.size()>4&&iswdigit((wint_t)title[0])&&iswdigit((wint_t)title[1])&&
+         title[2]==L'.'&&title[3]==L' ') title=title.substr(4); }
+    detailTitle=title.empty()?L"Episode":title;
+    detailRating=RatingTxt(rating,votes);
+    if(!rating.empty()){ detailScore=_wtof(rating.c_str()); detailScoreText=rating;
+      detailVotesText=VotesTxt(votes);
+      if(!detailVotesText.empty()) detailVotesText+=L" votes"; }
+    else if(!mm.epMeta.empty()){ detailScore=-1; detailScoreText=L"N/A"; }
+    if(genre.empty()) genre=mm.genre;
+    const COLORREF cGray=RGB(0xC8,0xC8,0xC8),cDim=RGB(0x88,0x88,0x88),
+      cGreen=RGB(0x3F,0xC9,0x5B),cGold=RGB(0xE0,0xB8,0x50);
+    COLORREF cVideo=RGB(0xA8,0xA8,0xA8);
+    if(hdr.rfind(L"Dolby Vision",0)==0) cVideo=RGB(0xB0,0x8C,0xFF);
+    else if(hdr==L"HDR10") cVideo=RGB(0xE0,0xB8,0x50);
+    else if(hdr==L"HLG") cVideo=RGB(0x4C,0xC9,0xB0);
+    auto add=[&](const wchar_t* label,const std::wstring& value,COLORREF c){
+      DetailRow r; r.label=label; r.value=value; r.color=c; detailRows.push_back(r); };
+    add(L"AIRED",aired.empty()?L"\x2014":aired,cDim);
+    std::wstring rt=runtime.empty()?DurShort(dur):runtime;
+    std::wstring prog=t.watched?L"Watched":(t.pct>0?ProgressTxt(t):L"Not started");
+    rt+=L"  \x00B7  "+prog;
+    add(L"RUNTIME",rt,(t.watched||t.pct>0)?cGreen:cGray);
+    add(L"IMDb",detailRating.empty()?L"\x2014":detailRating,
+        detailRating.empty()?cDim:cGold);
+    add(L"GENRE",genre.empty()?L"\x2014":genre,cGray);
+    std::wstring v;
+    if(probe.empty()) v=L"probing...";
+    else {
+      v=ResTxt(res);
+      if(!hdr.empty()){ if(!v.empty()) v+=L"  \x00B7  "; v+=hdr; }
+      if(!gamut.empty()&&gamut!=L"BT.709"){ if(!v.empty()) v+=L"  \x00B7  "; v+=gamut; }
+      if(!ar.empty()&&ar!=L"0:1"){ if(!v.empty()) v+=L"  \x00B7  "; v+=ar; }
+      if(v.empty()) v=L"\x2014"; }
+    add(L"VIDEO",v,probe.empty()?cDim:cVideo);
+    add(L"AUDIO",audio.empty()?L"\x2014":audio+(hd?L"  (HD)":L""),hd?cGreen:cGray);
+    add(L"SIZE",SizeTxt(t.size),cGray);
+    // The synopsis is the one field a row can give that the poster cannot. It
+    // replaces the file path here; the path is already the footer's info line.
+    add(L"PLOT",plot.empty()?L"\x2014":plot,cGray); }
+
+  // Build the rows even before the panel has a height: SetCurrent is also called
+  // from the first Metrics() pass, and the second pass only changes geometry.
   void SetCurrent(Tile* t){
+    if(tab==1&&!tvShow.empty()&&!tvSeason.empty()&&t) BuildEpisodeDetail(*t);
+    else { detailRows.clear(); detailTag.clear(); detailTitle.clear();
+           detailRating.clear(); detailPath.clear(); }
     if(!t){ playEnabled=false; info=L"Select a title to play"; return; }
     // Unavailable is the FIRST thing said: play is disabled and the reason is on
     // screen, so a click cannot look like the app ignored it.
@@ -5776,6 +7006,9 @@ public:
     Reload(); }
   void ActivateSec(int s,int i,bool fromClick=false){ if(s<0||s>2||i<0||i>=(int)sec[s].size())return; Tile&t=sec[s][i];
     if(t.kind==0){ Play(t); return; }
+    // Remember the page/tile this drill came from: the full-section page or the
+    // sectioned overview. Back restores one of them.
+    if(fullSec>=0) SaveFullReturn(); else SaveSectionReturn(s,i);
     if(t.kind==1){ tvShow.push_back(t.title); tvSeason.clear();
       if(fromClick){ auto q=lib.Seasons(t.title); if(q.size()==1) tvSeason.push_back(q[0].season); } }
     else if(t.kind==2){ tvSeason.push_back(t.season); }
@@ -5786,6 +7019,7 @@ public:
   // list from Continue (and it must not be a click on the whole tile).
   void OpenSeasonFor(const Tile& t){
     if(t.title.empty()||t.season<=0) return;
+    if(fullSec>=0) SaveFullReturn(); else if(sectioned) SaveSectionReturn(curSec,secSel[curSec]);
     std::wstring show=t.title; int season=t.season;
     tvShow.clear(); tvSeason.clear(); tvShow.push_back(show); tvSeason.push_back(season);
     sel=-1; lastClick=-99; Reload();
@@ -5794,6 +7028,7 @@ public:
   // chooser (so the SEASONS (N) chip is truthful); single-season shows go straight
   // to their only episode list.
   void OpenSeriesFor(const Tile& t){
+    if(fullSec>=0) SaveFullReturn(); else if(sectioned) SaveSectionReturn(curSec,secSel[curSec]);
     if(t.seriesSeasons>1){
       std::wstring show=t.title; int n=t.seriesSeasons;   // Reload clears sec[], so don't touch t after it
       tvShow.clear(); tvSeason.clear(); tvShow.push_back(show);
@@ -5806,7 +7041,12 @@ public:
     return L"EPISODES \x203A"; }
   CRect SeriesChipR(CRect tr,const Tile& t){ CRect pr=PosterIn(tr);
     int w=t.seriesSeasons>1?Px(106):Px(80);
-    return CRect(pr.left+Px(6),pr.top+Px(6),pr.left+Px(6)+w,pr.top+Px(6)+Px(20)); }
+    // The IMDb chip owns the top-left of every poster (movies and TV alike),
+    // so the series action chip lives at the bottom-left. On an unavailable
+    // poster it sits above the full-width UNAVAILABLE band.
+    int y=pr.bottom-Px(6)-Px(20);
+    if(!t.avail) y-=Px(22);
+    return CRect(pr.left+Px(6),y,pr.left+Px(6)+w,y+Px(20)); }
   // Season buttons for the multi-season episode grid. Logical positions are laid
   // out from 0 so the selected season can be scrolled into view; the strip has
   // left/right chevrons only when the full row does not fit.
@@ -5849,9 +7089,35 @@ public:
       x+=widths[i]+Px(6); }
   }
   void Back(){
-    if(tab==1){ if(!tvSeason.empty()) tvSeason.pop_back();
-      else if(!tvShow.empty()){ tvShow.pop_back(); auto s=tvShow; Reload(); return; } }
-    else if(tab==2&&!fPath.empty()) fPath.pop_back();
+    if(fullSec>=0){ ExitFull(); return; }   // the full page's own back
+    if(tab==1){
+      if(!tvSeason.empty()){
+        // Back from the episode grid: return to the season list and select the
+        // season that was open, not tile 0.
+        const int season=tvSeason.back(); tvSeason.pop_back();
+        sel=-1; Reload();
+        for(int i=0;i<(int)tiles.size();++i)
+          if(tiles[i].kind==2&&tiles[i].season==season){ sel=i; Ensure(); SyncCurrent(); break; }
+        return; }
+      if(!tvShow.empty()){
+        tvShow.pop_back();
+        const bool top=(tvShow.empty()&&tvSeason.empty());
+        const int f=retFull, fs=retFullSel, fc=retFullScroll;
+        retFull=-1; retFullSel=-1; retFullScroll=0;
+        sel=-1; Reload();
+        // The page the drill STARTED from was the full-section list; restore it
+        // instead of dropping the user on the overview (reported 2026-11-01).
+        if(top&&f>=0) ApplyFullRestore(f,fs,fc);
+        // ... or it was the three-section overview: put the originating tile
+        // back so the selection is where the user was, not the first title.
+        else if(top) ApplySectionReturn();
+        return; } }
+    else if(tab==2&&!fPath.empty()){
+      const std::wstring child=fPath.back(); fPath.pop_back();
+      sel=-1; Reload();
+      for(int i=0;i<(int)tiles.size();++i)
+        if(tiles[i].kind==3&&tiles[i].path==child){ sel=i; Ensure(); SyncCurrent(); break; }
+      return; }
     sel=-1; Reload(); }
   static bool PosIsWatched(double pos,double dur){
     // A 20 s clip stopped at 5 s is not "finished": scale the end window with the
@@ -5883,7 +7149,9 @@ public:
     // A cancelled scan may have written a row for a root that was removed while
     // it walked; hide those (soft) before the grid reads the DB.
     lib.HideOrphanRoots();
-    Reload(); StartArtFetch();   // grid first; posters, then ffprobe facts
+    // Mark the poster pass busy BEFORE Reload so the reload's on-demand episode
+    // metadata waits for posters/probes instead of racing them on OMDb.
+    StartArtFetch(); Reload();
     LogF("library scan: UI reloaded (%d tiles)",(int)sec[1].size()+(int)tiles.size()); return 0; }
   afx_msg LRESULT OnScanProgress(WPARAM done,LPARAM total){
     if(scanning||artFetching){ wchar_t b[96];
@@ -5891,6 +7159,14 @@ public:
       syncMsg=b; statusTxt=StatusLine(); Invalidate(FALSE); }
     return 0; }
   // ---- background media probe (ffprobe) + hover facts -----------------------
+  void RefreshPosterRatings(){
+    auto up=[&](Tile& t){
+      if(t.kind==0) ApplyTileScore(t);
+      else if(t.kind==1) ApplySeriesScore(t,t.title);
+      else if(t.kind==2) ApplySeasonScore(t,tvShow.empty()?t.title:tvShow.back(),t.season); };
+    for(int s=0;s<3;++s) for(auto&t:sec[s]) up(t);
+    for(auto&t:tiles) up(t);
+    Invalidate(FALSE); }
   void RefreshArtTiles(){
     std::map<std::wstring,std::wstring> m,sh;
     lib.ArtMap(m); lib.ShowArtMap(sh);
@@ -5904,6 +7180,7 @@ public:
       if(it!=m.end()&&!it->second.empty()) t.art=it->second; };
     for(int s=0;s<3;++s) for(auto&t:sec[s]) up(t);
     for(auto&t:tiles) up(t);
+    RefreshDetail();   // genre/probe may have arrived for the selected episode
     Invalidate(FALSE);
     if(m_facts.IsWindowVisible()) ShowFactsForHover(); }
   void StartArtFetch(){
@@ -5935,6 +7212,135 @@ public:
     statusTxt=StatusLine(); Invalidate(FALSE);
     if(artAgain){ artAgain=false; StartArtFetch(); return 0; }
     StartProbes();   // posters first, then the heavier ffprobe pass
+    MaybeStartMetaFetch();        // and only then the on-demand OMDb episode facts
+    MaybeStartSeasonMetaFetch();  // ... or the season chooser's season records
+    MaybeStartMovieMetaFetch();   // ... or the movie-detail records
+    MaybeStartSeriesOverviewFetch(); // ... or the TV show poster ratings
+    return 0; }
+  // The season is the unit of work: opening S2 fetches S2's episodes and leaves
+  // every other season alone. A new season while one is in flight cancels the
+  // old walk through g_metaGen; its completion message is ignored.
+  void MaybeStartMetaFetch(){
+    if(tab!=1||tvShow.empty()||tvSeason.empty()) return;
+    const std::wstring show=tvShow.back(); const int season=tvSeason.back();
+    if(metaFetching){
+      if(show==metaShow&&season==metaSeason) return;
+      ++g_metaGen; metaFetching=false;   // superseded: the old done message is stale
+      metaShow.clear(); metaSeason=-1; }
+    if(scanning||artFetching||probing||seasonFetching||movieFetching||seriesFetching){ metaPending=true; return; }
+    if(!lib.HasEpisodeMetaDue(show,season)){ metaPending=false; return; }
+    const unsigned gen=++g_metaGen;
+    metaFetching=true; metaPending=false; metaShow=show; metaSeason=season;
+    HWND me=m_hWnd;
+    LogF("episode meta: start '%s' season %d (gen %u)",Narrow(show).c_str(),season,gen);
+    std::thread([me,gen,show,season]{
+      Lib m; if(!m.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+37,(WPARAM)gen,0); return; }
+      int changed=m.FetchSeasonMeta(show,season,gen);
+      LogF("episode meta: %d rows updated (gen %u%s)",changed,gen,
+           g_metaGen.load()!=gen?" cancelled":"");
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+37,(WPARAM)gen,0);
+    }).detach(); }
+  afx_msg LRESULT OnMetaDone(WPARAM wp,LPARAM){
+    const unsigned gen=(unsigned)wp;
+    if(gen!=g_metaGen.load()){ LogF("episode meta: stale done gen %u ignored",gen); return 0; }
+    const bool moved=(tab==1&&!tvShow.empty()&&!tvSeason.empty()&&
+      (metaShow!=tvShow.back()||metaSeason!=tvSeason.back()));
+    metaFetching=false; metaShow.clear(); metaSeason=-1;
+    RefreshPosterRatings(); RefreshDetail(); Invalidate(FALSE);
+    if(metaPending||moved) MaybeStartMetaFetch();
+    MaybeStartSeasonMetaFetch();
+    MaybeStartMovieMetaFetch();
+    MaybeStartSeriesOverviewFetch();
+    return 0; }
+  // The season chooser shows every season of one show, so its unit of work is
+  // the whole show: one OMDb season record per season, plus the opener plot.
+  void MaybeStartSeasonMetaFetch(){
+    if(tab!=1||tvShow.empty()||!tvSeason.empty()) return;
+    const std::wstring show=tvShow.back();
+    if(seasonFetching){
+      if(show==seasonShow) return;
+      ++g_seasonGen; seasonFetching=false; seasonShow.clear(); }
+    if(scanning||artFetching||probing||metaFetching||movieFetching||seriesFetching){ seasonPending=true; return; }
+    if(!lib.HasShowSeasonMetaDue(show)){ seasonPending=false; return; }
+    const unsigned gen=++g_seasonGen;
+    seasonFetching=true; seasonPending=false; seasonShow=show;
+    HWND me=m_hWnd;
+    LogF("season meta: start '%s' (gen %u)",Narrow(show).c_str(),gen);
+    std::thread([me,gen,show]{
+      Lib m; if(!m.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+38,(WPARAM)gen,0); return; }
+      int changed=m.FetchShowSeasons(show,gen);
+      LogF("season meta: %d rows updated (gen %u%s)",changed,gen,
+           g_seasonGen.load()!=gen?" cancelled":"");
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+38,(WPARAM)gen,0);
+    }).detach(); }
+  afx_msg LRESULT OnSeasonMetaDone(WPARAM wp,LPARAM){
+    const unsigned gen=(unsigned)wp;
+    if(gen!=g_seasonGen.load()){ LogF("season meta: stale done gen %u ignored",gen); return 0; }
+    const bool moved=(tab==1&&!tvShow.empty()&&tvSeason.empty()&&seasonShow!=tvShow.back());
+    seasonFetching=false; seasonShow.clear();
+    RefreshDetail(); Invalidate(FALSE);
+    if(seasonPending||moved) MaybeStartSeasonMetaFetch();
+    MaybeStartMetaFetch();   // the user may have moved on to an episode list
+    MaybeStartMovieMetaFetch();
+    MaybeStartSeriesOverviewFetch();
+    return 0; }
+  // Movie detail mode gets its own lazy pass: the OMDb record is cached in the
+  // same ep_meta_json slot (the columns are generic OMDb payload fields).
+  void MaybeStartMovieMetaFetch(){
+    if(tab!=0) return;   // poster chips need ratings in BOTH poster and detail modes
+    if(movieFetching){ moviePending=true; return; }
+    if(scanning||artFetching||probing||metaFetching||seasonFetching||seriesFetching){
+      moviePending=true; return; }
+    if(!lib.HasMovieMetaDue()){ moviePending=false; return; }
+    const unsigned gen=++g_movieGen;
+    movieFetching=true; moviePending=false;
+    HWND me=m_hWnd;
+    LogF("movie meta: start (gen %u)",gen);
+    std::thread([me,gen]{
+      Lib m; if(!m.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+39,(WPARAM)gen,0); return; }
+      int changed=m.FetchMovieMeta(gen);
+      LogF("movie meta: %d rows updated (gen %u%s)",changed,gen,
+           g_movieGen.load()!=gen?" cancelled":"");
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+39,(WPARAM)gen,0);
+    }).detach(); }
+  afx_msg LRESULT OnMovieMetaDone(WPARAM wp,LPARAM){
+    const unsigned gen=(unsigned)wp;
+    if(gen!=g_movieGen.load()){ LogF("movie meta: stale done gen %u ignored",gen); return 0; }
+    movieFetching=false;
+    RefreshPosterRatings(); RefreshDetail(); Invalidate(FALSE);
+    if(moviePending) MaybeStartMovieMetaFetch();
+    MaybeStartMetaFetch();
+    MaybeStartSeasonMetaFetch();
+    MaybeStartSeriesOverviewFetch();
+    return 0; }
+  // The TV show poster needs the series imdbRating. One OMDb record per show
+  // (shared with the season overview) is enough; 30-day cache.
+  void MaybeStartSeriesOverviewFetch(){
+    if(tab!=1) return;
+    if(seriesFetching){ seriesPending=true; return; }
+    if(scanning||artFetching||probing||metaFetching||seasonFetching||movieFetching){
+      seriesPending=true; return; }
+    if(!lib.HasSeriesOverviewDue()){ seriesPending=false; return; }
+    const unsigned gen=++g_seriesGen;
+    seriesFetching=true; seriesPending=false;
+    HWND me=m_hWnd;
+    LogF("series meta: start (gen %u)",gen);
+    std::thread([me,gen]{
+      Lib m; if(!m.Open()){ if(::IsWindow(me)) ::PostMessageW(me,WM_APP+40,(WPARAM)gen,0); return; }
+      int changed=m.FetchSeriesOverviews(gen);
+      LogF("series meta: %d rows updated (gen %u%s)",changed,gen,
+           g_seriesGen.load()!=gen?" cancelled":"");
+      if(::IsWindow(me)) ::PostMessageW(me,WM_APP+40,(WPARAM)gen,0);
+    }).detach(); }
+  afx_msg LRESULT OnSeriesMetaDone(WPARAM wp,LPARAM){
+    const unsigned gen=(unsigned)wp;
+    if(gen!=g_seriesGen.load()){ LogF("series meta: stale done gen %u ignored",gen); return 0; }
+    seriesFetching=false;
+    RefreshPosterRatings(); RefreshDetail(); Invalidate(FALSE);
+    if(seriesPending) MaybeStartSeriesOverviewFetch();
+    MaybeStartMetaFetch();
+    MaybeStartSeasonMetaFetch();
+    MaybeStartMovieMetaFetch();
     return 0; }
   void StartProbes(){
     if(probing){ probeAgain=true; return; }
@@ -5963,13 +7369,19 @@ public:
       if(total>0) swprintf(b,96,L"Reading media details... %d/%d",(int)done,(int)total);
       else wcscpy_s(b,L"Reading media details...");
       syncMsg=b; statusTxt=StatusLine(); Invalidate(FALSE); }
-    static DWORD lastCard=0;
+    static DWORD lastCard=0,lastDetail=0;
     if(m_facts.IsWindowVisible()&&GetTickCount()-lastCard>350){
       lastCard=GetTickCount(); ShowFactsForHover(); }
+    if(GetTickCount()-lastDetail>400){ lastDetail=GetTickCount(); RefreshDetail(); }
     return 0; }
   afx_msg LRESULT OnProbeDone(WPARAM,LPARAM){
-    probing=false; syncMsg.clear(); statusTxt=StatusLine(); Invalidate(FALSE);
+    probing=false; syncMsg.clear(); statusTxt=StatusLine();
+    RefreshDetail(); Invalidate(FALSE);
     if(probeAgain){ probeAgain=false; StartProbes(); }
+    MaybeStartMetaFetch();
+    MaybeStartSeasonMetaFetch();
+    MaybeStartMovieMetaFetch();
+    MaybeStartSeriesOverviewFetch();
     return 0; }
   bool CurHoverTile(Tile*& out){
     out=nullptr;
@@ -5984,6 +7396,9 @@ public:
   void HideFacts(){ KillTimer(11); m_facts.Hide(); }
   void ShowFactsForHover(){
     if(!IsWindowVisible()) return;
+    // The episode/season rows ARE the facts panel. A hover card on top of them
+    // duplicated every line and covered the row beneath the pointer.
+    if(epList||seasonList||movieList) return;
     Tile* tp=nullptr; if(!CurHoverTile(tp)||!tp||tp->kind==3) return;
     Lib::MetaRow mm; std::wstring genre; std::string probe;
     int year=0,eps=0;
@@ -6113,6 +7528,7 @@ public:
       path=t.path; resume=(t.lastPos>5.0&&!t.watched)?t.lastPos:0.0; label=t.title;
       ctx.idx=i; ctx.path=path; ctx.season=t.season; ctx.episode=t.episode;
       g_openTitleMain=label; g_openTitleMeta.clear();
+      if(t.year>0) g_openTitleMeta=std::to_wstring(t.year);
       LogF("auto-next: next item '%s' at %d/%d",Narrow(label).c_str(),i,(int)ctx.list.size());
       return true; }
     LogF("auto-next: end of section (%d items, idx=%d)",(int)ctx.list.size(),ctx.idx);
@@ -6147,6 +7563,7 @@ public:
       path=t.path; resume=(t.lastPos>5.0&&!t.watched)?t.lastPos:0.0; label=t.title;
       ctx.idx=i; ctx.path=path; ctx.season=t.season; ctx.episode=t.episode;
       g_openTitleMain=label; g_openTitleMeta.clear();
+      if(t.year>0) g_openTitleMeta=std::to_wstring(t.year);
       LogF("previous item '%s' at %d/%d",Narrow(label).c_str(),i,(int)ctx.list.size());
       return true; }
     LogF("previous: start of section (idx=%d)",ctx.idx);
@@ -6255,8 +7672,11 @@ public:
       if(!tvShow.empty()&&t.title!=show) g_openTitleMeta+=L"  \xb7  "+t.title;
     } else {
       g_openTitleMain=t.title;
-      if(tab==0&&t.sub.size()==4&&t.sub.find_first_not_of(L"0123456789")==std::wstring::npos)
-        g_openTitleMeta=t.sub;
+      // The year comes from the item, not from the tile's DISPLAY subtitle:
+      // `sub` is the year only while a film is unstarted, then it becomes
+      // "Continue at ..." or "Watched". Reading it here is why the banner
+      // sometimes had a year and sometimes not (reported 2026-11-03).
+      if(t.year>0) g_openTitleMeta=std::to_wstring(t.year);
     }
     std::string u8=Narrow(t.path); std::string esc; for(char c:u8){ if(c=='\\')esc+="\\\\"; else esc+=c; }
     char cmd[2048]; snprintf(cmd,sizeof(cmd),"{\"a\":\"open\",\"url\":\"%s\"}",esc.c_str());
@@ -6322,7 +7742,12 @@ public:
         fw=TextW(L"\x25A6  Folders\x2026",13,false)+Px(36);
     rescanR=CRect(rc.right-Px(14)-bw,Px(6),rc.right-Px(14),Px(6)+Px(31));
     folderR=CRect(rescanR.left-Px(4)-fw,Px(6),rescanR.left-Px(4),Px(6)+Px(31));
-    statR=CRect(crumbR.right,Px(6),folderR.left-Px(8),Px(6)+Px(31));
+    if(tab==0){
+      const int mw=TextW(L"Show details",13,false)+Px(36);
+      movieR=CRect(folderR.left-Px(6)-mw,Px(6),folderR.left-Px(6),Px(6)+Px(31));
+      statR=CRect(crumbR.right,Px(6),movieR.left-Px(8),Px(6)+Px(31)); }
+    else { movieR=CRect(0,0,0,0);
+      statR=CRect(crumbR.right,Px(6),folderR.left-Px(8),Px(6)+Px(31)); }
     int fy=rc.bottom-Px(FOOT);
     const int vpw=TextW(L"\U0001F4E1  Video Processor",13,false)+Px(36);
     const int playw=IMAX(TextW(L"\x25B6  Play",13,false),
@@ -6484,6 +7909,26 @@ public:
       sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
       std::wstring chip=SeriesChipText(t);
       g.DrawString(chip.c_str(),-1,&f,rr,&sf,&wt); }
+    // IMDb rating chip. Movies/episodes/seasons use the top-left; shows and
+    // Continue episode tiles already have the series chip there, so their
+    // rating sits at the bottom-left instead.
+    if(g_showImdbRating&&!t.scoreText.empty()){
+      const std::wstring label=L"IMDb "+t.scoreText;
+      const int bh=Px(18), bw=TextW(label.c_str(),9,true)+Px(10);
+      // One position everywhere: top-left of the poster.
+      const int bx=pr.left+Px(6);
+      const int by=pr.top+Px(6);
+      Gdiplus::RectF rr2((Gdiplus::REAL)bx,(Gdiplus::REAL)by,
+                         (Gdiplus::REAL)bw,(Gdiplus::REAL)bh);
+      Gdiplus::GraphicsPath q; AddRound(q,rr2,4);
+      Gdiplus::SolidBrush bg(GColor(RatingColor(t.score)));
+      g.FillPath(&bg,&q);
+      Gdiplus::FontFamily ff(L"Segoe UI");
+      Gdiplus::Font f(&ff,(Gdiplus::REAL)Px(9),Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+      Gdiplus::SolidBrush wt(Gdiplus::Color(255,255,255,255));
+      Gdiplus::StringFormat sf; sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+      sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+      g.DrawString(label.c_str(),-1,&f,rr2,&sf,&wt); }
     g.ResetClip(); }
   void PaintSections(Gdiplus::Graphics& g,CRect rc){
     for(int s=0;s<3;s+=2){
@@ -6505,13 +7950,65 @@ public:
       if((row+1)*tileH-fullScroll<Px(0)||row*tileH-fullScroll>fullViewR.Height()) continue;
       PaintPoster(g,FullGridR(i),sec[fullSec][i],secSel[fullSec]==i,
                   hovSec==fullSec&&hovIdx==i,&fullViewR); } }
+  void PaintEpisodeRowsBg(Gdiplus::Graphics& g,CRect rc){
+    const int h=IMAX(Px(132),rowH);
+    const int first=scroll/h, last=(scroll+GridH())/h;
+    const int st=g.Save();
+    g.SetClip(Gdiplus::Rect(0,flatTop,rc.right,IMAX(0,flatBottom-flatTop)),
+              Gdiplus::CombineModeReplace);
+    for(int i=first;i<=last&&i<(int)tiles.size();++i){
+      CRect r=EpRowR(i); if(r.bottom<flatTop||r.top>=flatBottom) continue;
+      const bool on=(i==sel), hv=(i==hov);
+      Gdiplus::RectF rr((Gdiplus::REAL)r.left+1,(Gdiplus::REAL)r.top+1,
+                        (Gdiplus::REAL)r.Width()-2,(Gdiplus::REAL)r.Height()-Px(3));
+      Gdiplus::GraphicsPath rp; AddRound(rp,rr,8);
+      Gdiplus::SolidBrush bg(on?Gdiplus::Color(255,30,26,24):
+                             hv?Gdiplus::Color(255,23,23,26):
+                                Gdiplus::Color(255,15,15,16));
+      g.FillPath(&bg,&rp);
+      if(on){ Gdiplus::Pen pen(Gdiplus::Color(255,0xE8,0x55,0x1F),2.0f);
+        g.DrawPath(&pen,&rp); }
+      else if(hv){ Gdiplus::Pen pen(Gdiplus::Color(55,255,255,255),1.0f);
+        g.DrawPath(&pen,&rp); }
+      if(on){ Gdiplus::SolidBrush ac(Gdiplus::Color(255,0xE8,0x55,0x1F));
+        g.FillRectangle(&ac,(Gdiplus::REAL)r.left+Px(1),(Gdiplus::REAL)r.top+Px(14),
+                        3.0f,(Gdiplus::REAL)(r.Height()-Px(28))); }
+      CRect tr=EpThumbR(r);
+      Gdiplus::RectF tf((Gdiplus::REAL)tr.left,(Gdiplus::REAL)tr.top,
+                        (Gdiplus::REAL)tr.Width(),(Gdiplus::REAL)tr.Height());
+      Gdiplus::GraphicsPath tp; AddRound(tp,tf,6);
+      g.SetClip(&tp,Gdiplus::CombineModeIntersect);
+      Gdiplus::Bitmap* src=Art(tiles[i].art);
+      if(src){ UINT sw=src->GetWidth(),sh=src->GetHeight(); if(!sw)sw=1; if(!sh)sh=1;
+        const double sr=(double)sw/sh, dr=(double)tr.Width()/tr.Height();
+        if(sr>dr){ const int cw=(int)(sh*dr+0.5);
+          g.DrawImage(src,tf,(Gdiplus::REAL)((sw-cw)/2),0,(Gdiplus::REAL)cw,
+                      (Gdiplus::REAL)sh,Gdiplus::UnitPixel); }
+        else { const int ch=(int)(sw/dr+0.5);
+          g.DrawImage(src,tf,0,(Gdiplus::REAL)((sh-ch)/2),(Gdiplus::REAL)sw,
+                      (Gdiplus::REAL)ch,Gdiplus::UnitPixel); } }
+      else PaintPlaceholder(g,tr,tiles[i].title);
+      if(!tiles[i].avail||tiles[i].watched){
+        Gdiplus::SolidBrush dim(Gdiplus::Color(110,0,0,0)); g.FillRectangle(&dim,tf); }
+      g.ResetClip();
+      Gdiplus::Pen bp(Gdiplus::Color(on?220:70,255,255,255),1.0f); g.DrawPath(&bp,&tp);
+      Gdiplus::Pen sep(Gdiplus::Color(26,255,255,255),1.0f);
+      g.DrawLine(&sep,(Gdiplus::REAL)r.left+Px(12),(Gdiplus::REAL)(r.bottom-1),
+                 (Gdiplus::REAL)r.right-Px(12),(Gdiplus::REAL)(r.bottom-1)); }
+    g.Restore(st); }
   void PaintTiles(Gdiplus::Graphics& g,CRect rc){
     if(fullSec>=0){ PaintFull(g,rc); return; }
     if(sectioned){ PaintSections(g,rc); return; }
+    if(epList||seasonList||movieList){ PaintEpisodeRowsBg(g,rc); return; }
     if(empty) return;
-    int first=scroll/tileH, last=(scroll+GridH())/tileH+1;
+    // first/last are ROW numbers; the loop index is an ITEM index. Using them
+    // directly painted only the first `visibleRows + 1` tiles (four on a 4-column
+    // episode grid) while hit-testing still found every tile in the black area -
+    // the reported "only 4 episode thumbnails, but hover/play works" (2026-11-01).
+    const int firstRow=scroll/tileH, lastRow=(scroll+GridH())/tileH;
+    const int first=firstRow*cols, last=lastRow*cols+cols-1;
     for(int i=first;i<(int)tiles.size()&&i<=last;++i){
-      CRect pr=PosterR(i); if(pr.bottom<flatTop||pr.top>rc.bottom) continue;
+      CRect pr=PosterR(i); if(pr.bottom<flatTop||pr.top>=flatBottom) continue;
       PaintPoster(g,TileR(i),tiles[i],i==sel,i==hov); } }
   static void AddRound(Gdiplus::GraphicsPath& p,Gdiplus::RectF r,Gdiplus::REAL rad){
     Gdiplus::REAL d=rad*2;
@@ -6601,6 +8098,140 @@ public:
         : (!t.watched&&t.pct>0&&t.pct<100))
         ?RGB(0x3F,0xC9,0x5B):RGB(0x88,0x88,0x88);
       TxtW(dc,sr,t.sub.c_str(),sc,11,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS); } }
+  // Every row is its own info panel: thumbnail, tag + title + IMDb rating,
+// air date/runtime/genre (or episode count for a season), video facts,
+// audio/size, the IMDb plot/season-opener line and a progress bar.
+  void PaintEpisodeRowsText(CDC* dc,CRect rc){
+    if(!epList&&!seasonList&&!movieList) return;
+    const int h=IMAX(Px(132),rowH);
+    const int first=scroll/h, last=(scroll+GridH())/h;
+    const int saved=dc->SaveDC();
+    dc->IntersectClipRect(CRect(0,flatTop,rc.right,flatBottom));
+    for(int i=first;i<=last&&i<(int)tiles.size();++i){
+      CRect r=EpRowR(i); if(r.bottom<flatTop||r.top>=flatBottom) continue;
+      if(i>=(int)epInfo.size()) continue;
+      const EpRowInfo& d=epInfo[i];
+      CRect th=EpThumbR(r);
+      const int x=th.right+Px(16), right=r.right-Px(16), y=r.top+Px(9);
+      auto rowv=[&](const wchar_t* label,COLORREF& c)->std::wstring{
+        for(auto&q:d.rows) if(q.label==label){ c=q.color; return q.value; }
+        c=RGB(0x88,0x88,0x88); return L"\x2014"; };
+      // Tag + title + rating.
+      const int tagw=TextW(d.tag.c_str(),10,true)+Px(14);
+      CRect tr(x,y,x+tagw,y+Px(20));
+      RR(dc,tr,Px(4),RGB(0xE8,0x55,0x1F));
+      TxtW(dc,tr,d.tag.c_str(),RGB(255,255,255),10,true,
+           DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+      int titleRight=right;
+      if(g_showImdbRating&&!d.scoreText.empty()){
+        const std::wstring badge=L"IMDb "+d.scoreText;
+        const int bw=TextW(badge.c_str(),11,true)+Px(16);
+        CRect br(titleRight-bw,y,titleRight,y+Px(20));
+        RR(dc,br,Px(4),RatingColor(d.score));
+        TxtW(dc,br,badge.c_str(),RGB(255,255,255),11,true,
+             DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        titleRight=br.left-Px(10);
+        if(!d.votesText.empty()){
+          const int vw=TextW(d.votesText.c_str(),11,false);
+          CRect vr(titleRight-vw,y,titleRight,y+Px(20));
+          TxtW(dc,vr,d.votesText.c_str(),RGB(0x9A,0x9A,0x9A),11,false,
+               DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+          titleRight=vr.left-Px(10); } }
+      std::wstring ttl=d.title;
+      if(d.unavail) ttl+=L"   \x00B7   UNAVAILABLE";
+      CRect titr(x+tagw+Px(10),y,titleRight,y+Px(22));
+      TxtW(dc,titr,ttl.c_str(),d.unavail?RGB(0xE0,0x70,0x70):RGB(0xF2,0xF2,0xF2),
+           15,true,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      // Air date · runtime/status · genre.
+      COLORREF cEps,cAired,cRun,cGenre,cVideo,cAudio,cSize,cPlot;
+      std::wstring episodes=rowv(L"EPISODES",cEps),
+        aired=rowv(L"AIRED",cAired), runt=rowv(L"RUNTIME",cRun),
+        genre=rowv(L"GENRE",cGenre), video=rowv(L"VIDEO",cVideo),
+        audio=rowv(L"AUDIO",cAudio), size=rowv(L"SIZE",cSize),
+        plot=rowv(L"OVERVIEW",cPlot);
+      if(plot==L"\x2014") plot=rowv(L"PLOT",cPlot);
+      std::wstring l2;
+      auto app=[&](const std::wstring& v){ if(v.empty()||v==L"\x2014") return;
+        if(!l2.empty()) l2+=L"  \x00B7  "; l2+=v; };
+      app(episodes); app(aired); app(runt); app(genre);
+      TxtW(dc,CRect(x,y+Px(27),right,y+Px(45)),l2.c_str(),RGB(0xB8,0xB8,0xB8),11,
+           false,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      TxtW(dc,CRect(x,y+Px(47),right,y+Px(65)),video.c_str(),cVideo,12,false,
+           DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      std::wstring l4;
+      if(audio!=L"\x2014"){ l4=audio; }
+      if(size!=L"\x2014"){ if(!l4.empty()) l4+=L"  \x00B7  "; l4+=size; }
+      TxtW(dc,CRect(x,y+Px(67),right,y+Px(85)),l4.c_str(),
+           (cAudio==RGB(0x3F,0xC9,0x5B))?cAudio:RGB(0xB0,0xB0,0xB0),12,false,
+           DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      if(r.Height()>=Px(136)){
+        const bool havePlot=!plot.empty()&&plot!=L"\x2014";
+        TxtW(dc,CRect(x,y+Px(88),right,y+Px(106)),
+             havePlot?plot.c_str():d.path.c_str(),
+             havePlot?RGB(0xB0,0xB0,0xB0):RGB(0x6E,0x6E,0x72),11,false,
+             DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS); }
+      // Progress bar; its width is capped so it never fights the text.
+      const int barY=r.bottom-Px(19);
+      const int barW=IMIN(Px(230),IMAX(Px(80),right-x));
+      CRect br(x,barY,x+barW,barY+Px(5));
+      dc->FillSolidRect(br,RGB(0x2b,0x2b,0x2b));
+      const int pct=d.watched?100:(d.pct<0?0:d.pct);
+      if(pct>0){ CRect bf=br; bf.right=bf.left+(int)(br.Width()*(double)pct/100.0+0.5);
+        dc->FillSolidRect(bf,RGB(0x3F,0xC9,0x5B)); }
+      const std::wstring ptxt=d.status.empty()?L"Not started":d.status;
+      TxtW(dc,CRect(br.right+Px(10),barY-Px(7),right,barY+Px(12)),ptxt.c_str(),
+           (d.watched||pct>0)?RGB(0x3F,0xC9,0x5B):RGB(0x88,0x88,0x88),11,false,
+           DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS); }
+    dc->RestoreDC(saved); }
+  // The episode view's details band: one accent tag, the title, and a fixed list
+  // of facts. It is painted with the GDI text path (not GDI+) so the labels and
+  // values share the exact same ClearType as the rest of the chrome.
+  void PaintEpisodeDetails(CDC* dc){
+    if(detailH<=0||detailR.IsRectEmpty()) return;
+    dc->FillSolidRect(detailR,RGB(17,17,19));
+    dc->FillSolidRect(CRect(detailR.left,detailR.top,detailR.right,detailR.top+1),
+                      RGB(0x30,0x30,0x33));
+    const int x=detailR.left+Px(16), y=detailR.top+Px(12);
+    if(detailTag.empty()){
+      CRect er(x,y,detailR.right-Px(16),detailR.bottom-Px(8));
+      TxtW(dc,er,L"Select an episode to see its details",RGB(0x77,0x77,0x77),12,
+           false,DT_LEFT|DT_TOP|DT_SINGLELINE);
+      return; }
+    const int tagw=TextW(detailTag.c_str(),11,true)+Px(16);
+    CRect tr(x,y,x+tagw,y+Px(22));
+    RR(dc,tr,Px(4),RGB(0xE8,0x55,0x1F));
+    TxtW(dc,tr,detailTag.c_str(),RGB(255,255,255),11,true,
+         DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    int right=detailR.right-Px(16);
+    if(detailUnavail){
+      const int uw=TextW(L"UNAVAILABLE",10,true)+Px(12);
+      CRect ur(right-uw,y+2,right,y+Px(20));
+      RR(dc,ur,Px(3),RGB(0x8E,0x1F,0x1F));
+      TxtW(dc,ur,L"UNAVAILABLE",RGB(255,255,255),10,true,
+           DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+      right=ur.left-Px(12); }
+    int titleRight=right;
+    if(!detailRating.empty()){
+      const std::wstring rs=L"IMDb  "+detailRating;
+      const int rw=TextW(rs.c_str(),12,false);
+      CRect rr(titleRight-rw,y,titleRight,y+Px(22));
+      TxtW(dc,rr,rs.c_str(),RGB(0xE0,0xB8,0x50),12,false,
+           DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      titleRight=rr.left-Px(12); }
+    CRect titr(x+tagw+Px(10),y,titleRight,y+Px(24));
+    TxtW(dc,titr,detailTitle.c_str(),RGB(0xF2,0xF2,0xF2),15,true,
+         DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    int rowY=y+Px(32);
+    const int labelW=Px(78);
+    for(auto&r:detailRows){
+      if(rowY+Px(18)>detailR.bottom-Px(3)) break;
+      CRect lr(detailR.left+Px(16),rowY,detailR.left+Px(16)+labelW,rowY+Px(18));
+      TxtW(dc,lr,r.label.c_str(),RGB(0x6E,0x6E,0x72),9,false,
+           DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+      CRect vr(lr.right+Px(10),rowY,detailR.right-Px(16),rowY+Px(18));
+      TxtW(dc,vr,r.value.c_str(),r.color,12,false,
+           DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      rowY+=Px(21); } }
   void PaintSectionHeads(CDC* dc,CRect rc){
     // One uniform header style: 14px bold name + a 4px vertical colour ribbon
     // (Continue orange / New blue / Watched green) + 11px right-aligned count.
@@ -6660,6 +8291,62 @@ public:
       if((row+1)*tileH-fullScroll<0||row*tileH-fullScroll>fullViewR.Height()) continue;
       PaintCaption(dc,FullGridR(i),sec[s][i],secSel[s]==i); }
     dc->RestoreDC(saved); }
+  void LayoutCrumb(){
+    crumbSegR.clear();
+    if(!crumbShow||crumbParts.empty()||crumbR.Width()<=0) return;
+    const int sepW=TextW(L"\x203A",13,false)+Px(12);
+    std::vector<int> w; int total=0;
+    for(auto&s:crumbParts){ const int t=TextW(s.c_str(),13,false); w.push_back(t); total+=t; }
+    if(crumbParts.size()>1) total+=sepW*((int)crumbParts.size()-1);
+    int excess=total-crumbR.Width();
+    for(int guard=0;guard<32&&excess>0;++guard){
+      int idx=-1,best=0;
+      for(int i=1;i<(int)w.size();++i) if(w[i]>best&&w[i]>Px(40)){ best=w[i]; idx=i; }
+      if(idx<0) break;
+      const int cut=IMIN(excess,best-Px(40)); if(cut<=0) break;
+      w[idx]-=cut; excess-=cut; }
+    int x=crumbR.left;
+    for(size_t i=0;i<crumbParts.size();++i){
+      if(i) x+=sepW;
+      const int right=IMIN(x+w[i],crumbR.right);
+      crumbSegR.push_back(CRect(x,crumbR.top,right,crumbR.bottom));
+      x=right; } }
+  void PaintCrumb(CDC* dc){
+    if(!crumbShow||crumbParts.empty()) return;
+    LayoutCrumb();
+    for(size_t i=0;i<crumbParts.size()&&i<crumbSegR.size();++i){
+      const bool last=(i+1==crumbParts.size());
+      const COLORREF c=last?RGB(255,255,255)
+        :(i==(size_t)crumbHov?RGB(255,255,255):RGB(0x88,0x88,0x88));
+      TxtW(dc,crumbSegR[i],crumbParts[i].c_str(),c,13,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+      if(last){
+        // Same accent underline as the active Movies/TV Shows tab: the trail also
+        // has to say WHERE the user is, not only how to get back.
+        CRect u(crumbSegR[i].left,crumbSegR[i].bottom-Px(2),crumbSegR[i].right,crumbSegR[i].bottom);
+        dc->FillSolidRect(u,RGB(0xE8,0x55,0x1F)); }
+      if(i){ CRect sr(crumbSegR[i-1].right,crumbR.top,crumbSegR[i].left,crumbR.bottom);
+        TxtW(dc,sr,L"\x203A",RGB(0x55,0x55,0x55),13,false,DT_CENTER|DT_VCENTER); } } }
+  void CrumbClick(int seg){
+    if(!crumbShow||seg<0) return;
+    // Jumping to the trail's root is an explicit exit from the drill; do not
+    // leave a stale "return to the full section" context behind. A drill inside
+    // the trail (the show segment) keeps it, so Back can still reach the list.
+    if(seg==0){ retFull=-1; retFullSel=-1; retFullScroll=0;
+      retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0; }
+    if(tab==1){
+      if(seg==0){ tvShow.clear(); tvSeason.clear(); }
+      else if(seg==1&&!tvShow.empty()){ tvShow.resize(1); tvSeason.clear(); }
+      else return;   // the season segment is the current page
+    } else if(tab==2){
+      if(seg==0) fPath.clear();
+      else if(seg>0&&seg<=(int)fPath.size()) fPath.resize(seg);
+      else return;
+    } else return;
+    sel=-1; lastClick=-99; lastClickSec=-99; lastClickIdx=-99;
+    freshSelection=false;
+    Reload();
+    LogF("library: breadcrumb -> tab=%d show=%d season=%d fpath=%d",
+         tab,(int)tvShow.size(),(int)tvSeason.size(),(int)fPath.size()); }
   void PaintLabels(CDC* dc,CRect rc){
     const wchar_t* names[3]={L"Movies",L"TV Shows",L"Folders"};
     for(int i=0;i<3;++i){ if(hov==200+i) RR(dc,tabR[i],Px(5),RGB(31,31,33));
@@ -6669,13 +8356,17 @@ public:
         dc->FillSolidRect(u,RGB(0xE8,0x55,0x1F)); } }
     // 1.3.0 hides the breadcrumb at the top level; showing it always read as a
     // duplicated "Movies" tab.
-    TxtW(dc,crumbR,(crumbShow&&!crumb.empty())?crumb.c_str():L"",RGB(0xbb,0xbb,0xbb),13,false,
-         DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
+    PaintCrumb(dc);
     TxtW(dc,statR,statusTxt.empty()?L"":statusTxt.c_str(),RGB(0x77,0x77,0x77),11,false,DT_RIGHT|DT_VCENTER|DT_END_ELLIPSIS);
     TxtW(dc,folderR,L"\x25A6  Folders\x2026",hov==100?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,DT_CENTER|DT_VCENTER);
     TxtW(dc,rescanR,scanning?L"Scanning...":L"Rescan",
          scanning?RGB(0x66,0x66,0x66):(hov==101?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)),13,false,
          DT_CENTER|DT_VCENTER);
+    if(tab==0&&!movieR.IsRectEmpty()){
+      if(hov==107) RR(dc,movieR,Px(5),RGB(31,31,33));
+      TxtW(dc,movieR,movieDetails?L"Show posters":L"Show details",
+           hov==107?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,
+           DT_CENTER|DT_VCENTER); }
     TxtW(dc,beginR,L"\x23EE  Play From Beginning",BeginEnabled()?(hov==104?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)):RGB(0x55,0x55,0x55),13,false,DT_CENTER|DT_VCENTER);
     TxtW(dc,playR,CanResume()?L"\x25B6  Resume":L"\x25B6  Play",playEnabled?(hov==102?RGB(255,255,255):RGB(0xcc,0xcc,0xcc)):RGB(0x55,0x55,0x55),13,false,DT_CENTER|DT_VCENTER);
     TxtW(dc,vpR,L"\U0001F4E1  Video Processor",hov==103?RGB(255,255,255):RGB(0xcc,0xcc,0xcc),13,false,DT_CENTER|DT_VCENTER);
@@ -6701,9 +8392,20 @@ public:
         TxtW(dc,er,emptyMsg.c_str(),RGB(0x88,0x88,0x88),15,false,DT_CENTER|DT_TOP|DT_WORDBREAK); }
       return; }
     PaintSeasonStrip(dc,rc);
-    int first=scroll/tileH, last=(scroll+GridH())/tileH+1;
-    for(int i=first;i<(int)tiles.size()&&i<=last;++i)
-      PaintCaption(dc,TileR(i),tiles[i],i==sel);
+    if(epList||seasonList||movieList){ PaintEpisodeRowsText(dc,rc);
+      if(empty){ CRect er(0,Px(HDR),rc.right,rc.bottom-Px(FOOT));
+        TxtW(dc,er,emptyMsg.c_str(),RGB(0x88,0x88,0x88),15,false,
+             DT_CENTER|DT_VCENTER|DT_WORDBREAK); }
+      return; }
+    // Same row-vs-item index bug as PaintTiles: the captions for everything
+    // past the first few tiles were never drawn (episode 6+ had a poster but no
+    // title, reported 2026-11-02).
+    const int firstRow=scroll/tileH, lastRow=(scroll+GridH())/tileH;
+    const int first=firstRow*cols, last=lastRow*cols+cols-1;
+    { int saved=dc->SaveDC(); dc->IntersectClipRect(CRect(0,flatTop,rc.right,flatBottom));
+      for(int i=first;i<(int)tiles.size()&&i<=last;++i)
+        PaintCaption(dc,TileR(i),tiles[i],i==sel);
+      dc->RestoreDC(saved); }
     if(empty){ CRect er(0,Px(HDR),rc.right,rc.bottom-Px(FOOT));
       TxtW(dc,er,emptyMsg.c_str(),RGB(0x88,0x88,0x88),15,false,DT_CENTER|DT_VCENTER|DT_WORDBREAK); } }
 
@@ -6712,13 +8414,21 @@ public:
     if(hov>=0||hovSec>=0||hovSeason>=0||hovEpChip) return true;
     CRect rc; GetClientRect(rc);
     for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)) return true;
+    LayoutCrumb(); for(auto&r:crumbSegR) if(r.PtInRect(p)) return true;
     return folderR.PtInRect(p)||rescanR.PtInRect(p)||beginR.PtInRect(p)||
-           playR.PtInRect(p)||vpR.PtInRect(p)||watchedPlusR.PtInRect(p); }
+           playR.PtInRect(p)||vpR.PtInRect(p)||watchedPlusR.PtInRect(p)||
+           (tab==0&&movieR.PtInRect(p)); }
   void OnMouseMove(UINT f,CPoint p){ int h=-1,hs=-1,hi=-1,nseas=-1;
+    { // Breadcrumb hover: every segment except the current page is clickable.
+      LayoutCrumb(); int ch=-1;
+      if(crumbShow) for(int i=0;i<(int)crumbSegR.size()-1;++i)
+        if(crumbSegR[i].PtInRect(p)){ ch=i; break; }
+      if(ch!=crumbHov){ crumbHov=ch; Invalidate(FALSE); } }
     if(fullSec>=0){ if(fullBackR.PtInRect(p)) h=105; else hs=FullAt(p,hi); }
     else if(sectioned) hs=SectionAt(p,hi); else h=TileAt(p);
     for(int i=0;i<5;++i){ CRect* r=i==0?&folderR:i==1?&rescanR:i==2?&beginR:i==3?&playR:&vpR;
       if(r->PtInRect(p)){ h=(i==2)?104:(i==3?102:(i==4?103:100+i)); hs=-1; break; } }
+    if(h<0&&tab==0&&movieR.PtInRect(p)){ h=107; hs=-1; }
     if(h<0) for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)){ h=200+i; hs=-1; break; }
     if(h<0&&sectioned&&fullSec<0&&watchedPlusR.PtInRect(p)){ h=106; hs=-1; }
     // The season strip owns its band: hovering it must not highlight a tile
@@ -6761,6 +8471,7 @@ public:
     else if(h==104) tip=L"Play from beginning";
     else if(h==105) tip=L"Back to section";
     else if(h==106) tip=watchedOpen?L"Collapse watched rail":L"Expand watched rail";
+    else if(h==107) tip=movieDetails?L"Show poster badges":L"Show film details";
     else if(h>=200&&h<203){ static const wchar_t* tn[3]={L"Movies",L"TV Shows",L"Folders"};
       tip=tn[h-200]; }
     else if(nseas==-2) tip=L"Scroll seasons left";
@@ -6781,7 +8492,20 @@ public:
     for(int i=0;i<3;++i) if(tabR[i].PtInRect(p)){ if(tab!=i){ tab=i; tvShow.clear(); tvSeason.clear();
         fPath.clear(); sel=-1; scroll=0; curSec=1; secSel[0]=secSel[1]=secSel[2]=-1;
         secOff[0]=secOff[1]=secOff[2]=0; fullSec=-1; fullScroll=0; hdrSec=-1;
+        retFull=-1; retFullSel=-1; retFullScroll=0;
+        retSec=-1; retSecSel=-1; retSecScroll=0; retSecOff=0;
         freshSelection=true; Reload(); } return; }
+    if(tab==0&&movieR.PtInRect(p)){
+      movieDetails=!movieDetails;
+      g_ini["ui.movieDetails"]=movieDetails?"True":"False";
+      g_iniDirty=true; SaveIni("library view");
+      sel=-1; lastClick=-99; scroll=0; fullSec=-1; fullScroll=0; hdrSec=-1;
+      LogF("library: movie details %s",movieDetails?"on":"off");
+      Reload(); return; }
+    if(crumbShow){
+      LayoutCrumb();
+      for(size_t ci=0;ci<crumbSegR.size();++ci)
+        if(crumbSegR[ci].PtInRect(p)){ CrumbClick((int)ci); return; } }
     if(folderR.PtInRect(p)){ LogF("library: Folders... pressed -> folder dialog");
       CWnd* fr=GetParentFrame(); if(fr) fr->PostMessageW(WM_APP+26,0,0); return; }
     if(rescanR.PtInRect(p)){ if(scanning){ LogF("library: Rescan ignored - scan running"); return; }
@@ -6877,13 +8601,59 @@ public:
     // genuine double-click does, because its first button-down arrives first.
     if(i>=0&&i==lastClick){ Activate(i); }
     else if(i>=0){ sel=i; lastClick=i; SetCurrent(&tiles[i]); Invalidate(FALSE); } }
+  // Manual override for a bad scan / a 1-minute duplicate: hide the tile's rows
+  // from every library query. `hidden` survives rescans (present=0 would not).
+  afx_msg void OnRButtonDown(UINT,CPoint p){
+    HideFacts();
+    Tile* t=nullptr; std::wstring seasonShow;
+    if(fullSec>=0){ int idx; int s=FullAt(p,idx); if(s>=0) t=&sec[s][idx]; }
+    else if(sectioned){ int idx; int s=SectionAt(p,idx); if(s>=0) t=&sec[s][idx]; }
+    else { int i=FlatTileAt(p); if(i>=0){ t=&tiles[i];
+      if(t->kind==2) seasonShow=tvShow.empty()?t->title:tvShow.back(); } }
+    // Themed card, not CMenu (see CCtxCard): same tokens as every other card.
+    // Capture what the action needs BY VALUE - the tiles vector is rebuilt by
+    // Reload() before the callback runs.
+    const int kind=t?t->kind:-1;
+    const std::wstring path=t?t->path:L"";
+    const std::wstring title=t?t->title:L"";
+    const int season=t?t->season:0;
+    const std::wstring show=seasonShow.empty()?title:seasonShow;
+    std::wstring header=t?t->title:L"";
+    if(t&&t->year>0) header+=L"  \x00B7  "+std::to_wstring(t->year);
+    std::vector<std::wstring> items;
+    if(t) items.push_back(L"Hide from library");
+    items.push_back(L"Restore all hidden titles");
+    const int restoreIdx=(kind>=0)?1:0;
+    const bool inFull=fullSec>=0; const int f=fullSec;
+    const int fs=f>=0?secSel[f]:-1; const int fc=fullScroll;
+    CPoint sp=p; ClientToScreen(&sp);
+    if(!m_ctx.GetSafeHwnd()) m_ctx.CreateCard(AfxGetMainWnd());
+    m_ctx.ShowAt(sp,header,items,
+      [this,kind,path,title,season,show,restoreIdx,inFull,f,fs,fc](int pick){
+        bool changed=false;
+        if(pick==0&&kind>=0){
+          bool ok=false;
+          switch(kind){
+          case 0: ok=lib.HidePath(path); break;
+          case 1: ok=lib.HideShow(title); break;
+          case 2: ok=lib.HideSeason(show,season); break;
+          case 3: ok=lib.HideFolder(path); break; }
+          LogF("library: hide from library kind=%d ok=%d",kind,ok?1:0);
+          changed=ok;
+        } else if(pick==restoreIdx){
+          lib.UnhideAll(); changed=true;
+          LogF("library: restore all hidden titles");
+        }
+        if(changed){ Reload(); if(inFull) ApplyFullRestore(f,fs,fc); }
+      });
+  }
   BOOL OnMouseWheel(UINT f,short d,CPoint p){ CPoint c=p; ScreenToClient(&c);
     HideFacts();
     // Wheel DOWN (negative delta) scrolls the list forward.
     int notches=-(int)(d/WHEEL_DELTA); if(!notches) notches=(d<0)?1:-1;
     // A notch moves a third of a row: 72 px felt glacial on 4K tiles and made the
     // redraw look sluggish even when paint itself was cheap.
-    int vstep=IMAX(Px(100),tileH/3);
+    int vstep=(epList||seasonList||movieList)?IMAX(Px(80),rowH/2):IMAX(Px(100),tileH/3);
     if(fullSec<0&&!sectioned&&seasonStripH>0&&seasonStripR.PtInRect(c)){
       int o=seasonOff; seasonOff=IMAX(0,IMIN(seasonScrollMax,seasonOff+notches*Px(180)));
       if(seasonOff!=o){ LayoutSeasonStrip(); Invalidate(FALSE); }
@@ -6974,6 +8744,15 @@ public:
     if(fullSec>=0) return FullKey(vk);
     if(hdrSec>=0) return HeaderKey(vk);
     if(sectioned) return SectionKey(vk);
+    if(epList||seasonList||movieList){ int n=(int)tiles.size();
+      switch(vk){
+        case VK_UP:   if(sel>0){ --sel; Ensure(); } return true;
+        case VK_DOWN: if(sel<n-1){ ++sel; Ensure(); } return true;
+        case VK_PRIOR: if(sel>0){ sel=IMAX(0,sel-3); Ensure(); } return true;
+        case VK_NEXT: if(sel<n-1){ sel=IMIN(n-1,sel+3); Ensure(); } return true;
+        case VK_RETURN: case VK_SPACE: Activate(sel<0?0:sel); return true;
+        case VK_BACK: case VK_ESCAPE: if(canBack){ Back(); return true; } return false; }
+      return true; }
     int n=(int)tiles.size();
     switch(vk){
       case VK_LEFT:  if(sel>0){ sel--; Ensure(); } return true;
@@ -6983,11 +8762,16 @@ public:
       case VK_RETURN: case VK_SPACE: Activate(sel<0?0:sel); return true;
       case VK_BACK: case VK_ESCAPE: if(canBack){ Back(); return true; } return false; }
     return false; }
-  void Ensure(){ int row=sel/cols;
+  void Ensure(){
+    if(epList||seasonList||movieList){ const int h=IMAX(Px(132),rowH);
+      if(sel*h<scroll) scroll=sel*h;
+      else if((sel+1)*h>scroll+GridH()) scroll=(sel+1)*h-GridH();
+      ClampScroll(); Invalidate(FALSE); return; }
+    int row=sel/cols;
     if(row*tileH<scroll) scroll=row*tileH;
     else if((row+1)*tileH>scroll+GridH()) scroll=(row+1)*tileH-GridH();
     ClampScroll(); Invalidate(FALSE); }
-  void ShowLib(bool on){ if(on){ Reload(); StartArtFetch(); ShowWindow(SW_SHOWNOACTIVATE);
+  void ShowLib(bool on){ if(on){ StartArtFetch(); Reload(); ShowWindow(SW_SHOWNOACTIVATE);
       SetWindowPos(&CWnd::wndTop,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
       LogF("library shown: %d flat tiles, %d+%d+%d sections, %d cols",
            (int)tiles.size(),(int)sec[0].size(),(int)sec[1].size(),(int)sec[2].size(),cols); }
@@ -6995,13 +8779,17 @@ public:
   DECLARE_MESSAGE_MAP()
 };
 BEGIN_MESSAGE_MAP(CPosterPane,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
-  ON_WM_LBUTTONDBLCLK() ON_WM_MOUSEWHEEL()
+  ON_WM_LBUTTONDBLCLK() ON_WM_RBUTTONDOWN() ON_WM_MOUSEWHEEL()
   ON_MESSAGE(WM_APP+27,&CPosterPane::OnScanDone)
   ON_MESSAGE(WM_APP+28,&CPosterPane::OnScanProgress)
   ON_MESSAGE(WM_APP+33,&CPosterPane::OnProbeReady)
   ON_MESSAGE(WM_APP+34,&CPosterPane::OnProbeDone)
   ON_MESSAGE(WM_APP+35,&CPosterPane::OnArtReady)
   ON_MESSAGE(WM_APP+36,&CPosterPane::OnArtDone)
+  ON_MESSAGE(WM_APP+37,&CPosterPane::OnMetaDone)
+  ON_MESSAGE(WM_APP+38,&CPosterPane::OnSeasonMetaDone)
+  ON_MESSAGE(WM_APP+39,&CPosterPane::OnMovieMetaDone)
+  ON_MESSAGE(WM_APP+40,&CPosterPane::OnSeriesMetaDone)
   ON_WM_TIMER() ON_WM_MOUSELEAVE() END_MESSAGE_MAP()
 
 // ---- NO MORE CHROME OVERLAY --------------------------------------------------
@@ -7824,6 +9612,10 @@ public:
   afx_msg LRESULT OnPresetState(WPARAM,LPARAM){
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
     m_top.Invalidate(FALSE);
+    // A main preset also carries NLS rows (and may resolve an nls_preset link).
+    // Repaint the rail or the rows keep showing the previous preset's values
+    // even though the engine already has the new ones.
+    m_settings.Invalidate(FALSE);
     if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
     return 0; }
   afx_msg LRESULT OnPresetAutoSave(WPARAM,LPARAM){ SetTimer(12,300,nullptr); return 0; }

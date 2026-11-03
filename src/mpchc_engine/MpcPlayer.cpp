@@ -1,4 +1,4 @@
-﻿#include "MpcPlayer.h"
+#include "MpcPlayer.h"
 
 // MPC-HC's internal subtitle path, hosted here. These are the player's own classes,
 // compiled into the engine unmodified except for the ISubtitleHost indirection — so
@@ -449,6 +449,11 @@ void MpcPlayer::Log(const char* fmt, ...) const
     logSink_(buf);
 }
 
+// Band-watch cadence. One sample per video frame at 24 fps: the band decides a
+// crop, so it has to move within a frame of an aspect cut (scope<->IMAX). Used
+// by the live loop and by the tick-to-time conversions in WatchBand.
+static constexpr int kBandWatchMs = 40;
+
 MpcPlayer::MpcPlayer()
 {
     // Live-telemetry refresh worker: snapshots renderer/filter stats off the
@@ -465,6 +470,7 @@ MpcPlayer::MpcPlayer()
         // Manager can close it"), both measured 2026-10-25. Pump at ~5 ms so
         // the wndproc is responsive; keep telemetry at its ~1 s cadence.
         auto next = std::chrono::steady_clock::now();
+        auto nextBand = std::chrono::steady_clock::now();
         while (!m_liveStop) {
             MSG wm;
             while (PeekMessageW(&wm, nullptr, 0, 0, PM_REMOVE)) {
@@ -472,6 +478,15 @@ MpcPlayer::MpcPlayer()
                 DispatchMessageW(&wm);
             }
             const auto now = std::chrono::steady_clock::now();
+            // The band is watched FASTER than the telemetry: at 1 Hz the first
+            // ~24 frames after a scope<->IMAX cut were still drawn with the old
+            // band (cropped). One sample per frame (40 ms at 24 fps) puts the
+            // new band in place as soon as the renderer reports it. GetMLStats
+            // is the only call made here.
+            if (now >= nextBand) {
+                nextBand = now + std::chrono::milliseconds(kBandWatchMs);
+                WatchBand();
+            }
             if (now >= next) {
                 next = now + std::chrono::milliseconds(1000);
                 PumpEvents();
@@ -1077,7 +1092,11 @@ static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
                                       : 1.0;   // horizontal (and the old 0="auto")
     sx = std::pow(ratioAR, shareX);
     sy = std::pow(ratioAR, shareX - 1.0);
-    if (applyCap && cap > 1.0) {
+    // cap == 1.0 is a REAL budget (Max distortion 100 = Crop baseline). The old
+    // `cap > 1.0` guard treated it as "no cap" and warped the full correction,
+    // which is why Auto at Max 100 showed 26 % warp / 0 % crop instead of the
+    // Crop baseline.
+    if (applyCap) {
         sx = std::clamp(sx, 1.0 / cap, cap);
         sy = std::clamp(sy, 1.0 / cap, cap);
     }
@@ -1098,6 +1117,12 @@ static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
     const double t = std::clamp(barFill, 0.0, 1.0);
     return hA + t * (1.0 - hA);
 }
+static double NlsBarWidth(double wA, double barFill)
+{
+    if (!(wA > 0.5 && wA < 0.9995)) return 1.0;
+    const double t = std::clamp(barFill, 0.0, 1.0);
+    return wA + t * (1.0 - wA);
+}
 
 // The UN-CROPPED geometry for a given bar fill, plus the correction it needs.
 //
@@ -1111,6 +1136,7 @@ static void NlsSplitFactors(double ratioAR, int axis, double split, double cap,
 // so it is derived from the rect actually drawn rather than assumed: in a window
 // whose aspect differs from the frame this is what keeps t = 0 an honest fit.
 struct NlsGeom {
+    double Wt = 1.0;         // fraction of the window width the active picture occupies
     double Ht = 1.0;         // fraction of the window height the picture occupies
     double destW0 = 0.0;     // un-cropped destination, frame pixels
     double destH0 = 0.0;
@@ -1118,19 +1144,23 @@ struct NlsGeom {
 };
 
 static NlsGeom NlsPartialFill(double clientW, double clientH, double frameAR,
-                              double hA, double barFill)
+                              double wA, double hA, double barFill)
 {
     NlsGeom g;
     const double t = std::clamp(barFill, 0.0, 1.0);
+    g.Wt = NlsBarWidth(wA, t);
     g.Ht = NlsBarHeight(hA, t);
     const double clientAR = clientW / std::max(clientH, 1.0);
     // The frame's fit rect (uniform scale inside the window).
     double fitW = clientW, fitH = clientH;
     if (clientAR > frameAR)      fitW = clientH * frameAR;
     else if (clientAR < frameAR) fitH = clientW / std::max(frameAR, 0.01);
-    // Grow from the fit rect toward the fully-filled one.
-    const double fitActiveH = hA * fitH;             // picture height at fit
-    g.destW0 = fitW + t * (clientW - fitW);
+    // Grow from the fit rect toward the fully-filled one. Both axes are handled:
+    // a pillarboxed source has wA < 1, a letterboxed source hA < 1, and a file
+    // with both loses both.
+    const double fitActiveW = wA * fitW;
+    const double fitActiveH = hA * fitH;
+    g.destW0 = (fitActiveW + t * (clientW - fitActiveW)) / (wA > 0.01 ? wA : 1.0);
     g.destH0 = (fitActiveH + t * (clientH - fitActiveH)) / (hA > 0.01 ? hA : 1.0);
     g.aniso = (g.destW0 / std::max(g.destH0, 1.0)) / std::max(frameAR, 0.01);
     if (!(g.aniso > 0.0)) g.aniso = 1.0;
@@ -1243,32 +1273,45 @@ HRESULT MpcPlayer::ResizeVideo()
         if (nl.enabled && m_nlsBandKnown.load()) {
             const int mode = std::clamp(nl.fillMode, 0, 3);
             const double frameAR = (double)vw / (double)vh;
-            const double hA = m_nlsBandValid.load()
+            const bool bandValid = m_nlsBandValid.load();
+            const double hA = bandValid
                 ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
+            const double wA = bandValid
+                ? 1.0 - (double)m_nlsBandLeft.load() - (double)m_nlsBandRight.load() : 1.0;
             // "No bars detected" is NOT the same statement as "this is a full-frame
             // picture". At start-up, on a black frame, a player menu or a fade, the
             // detector reports 0/0 exactly as confidently as it reports a real band.
-            const bool bandValid = m_nlsBandValid.load();
             const double fillLimit = std::clamp((double)nl.fillLimit, 1.0, 2.0);
-            // How much of the letterbox this title may keep, and the correction
-            // that geometry needs (see NlsPartialFill).
-            ng = NlsPartialFill((double)clientW, (double)clientH, frameAR, hA,
-                                (double)nl.barFill);
+            // Bars removed is the user's "how much of the bar do I keep" dial
+            // in EVERY fill mode. Auto used to force it to 1.0 while the shader
+            // kept reading the slider, so moving the slider changed the warp
+            // without moving the geometry: the picture stayed fully filled and
+            // got progressively squeezed horizontally as the value fell
+            // (reported 2026-11-03 on a scope title in a 16:9 window).
+            const double useBarFill = (double)nl.barFill;
+            ng = NlsPartialFill((double)clientW, (double)clientH, frameAR, wA, hA,
+                                useBarFill);
             const double ratioAR = ng.aniso;
-            // The correction is split across both axes - see NlsSplitFactors.
             const double cap = std::clamp((double)nl.maxStretch, 1.0, 2.0);
+            // Max distortion is a real budget in the modes that may crop
+            // (Auto). Stretch never crops, so it never caps either. BOTH halves
+            // must use this same rule: capping the shader while the geometry
+            // filled was the 2026-11-03 uniform-stretch bug, and capping neither
+            // (the fix for it) left Max distortion with no consumer at all.
+            const bool applyCap = (mode != 1);
             NlsSplitFactors(ratioAR, std::clamp(nl.axis, 0, 3), (double)nl.split, cap,
-                            mode != 1,        // Auto caps; Stretch never crops
+                            applyCap,
                             warpX, warpY, &cropX, &cropY);
-            // The decision lives in NlsFillAction (see its comment); the AUTO rule it
-            // implements waits for a confirmed band: acting on "no bars detected"
-            // warped a scope film by 34.6 % (measured 30 Oct 15:48:52: bars=0/0 of
-            // 1436, activeAR=1.778 -> ratio=1.346, while the true correction was
-            // 0.991), and which way it went depended only on whether the detector
-            // latched a real band before or after the opening black frames - the
-            // "NLS is hit and miss at start-up" report.
-            nlsAction = NlsFillAction(ratioAR, bandValid, mode, fillLimit,
-                                      std::clamp(nl.axis, 0, 3), (double)nl.split, cap);
+            if (mode == 0) {
+                // Auto: remove the bars the user chose to remove and warp the
+                // remaining active picture. The amount retained comes from
+                // Bars removed (see useBarFill above); at 0 the geometry is the
+                // plain fit rect, so there is nothing to warp.
+                nlsAction = (fabs(ratioAR - 1.0) > 0.001) ? 1 : 0;
+            } else {
+                nlsAction = NlsFillAction(ratioAR, bandValid, mode, fillLimit,
+                                          std::clamp(nl.axis, 0, 3), (double)nl.split, cap);
+            }
             if (nlsAction != 1 && nlsAction != 2) {
                 const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
                 static double s_loggedAR = 0.0;
@@ -1280,19 +1323,24 @@ HRESULT MpcPlayer::ResizeVideo()
                         ratioAR < 1.0 ? "squeeze" : "stretch", (fillLimit - 1.0) * 100.0);
                 }
             }
-            if (nlsAction == 1 && hA > 0.5 && hA < 0.9995) {
+            if (nlsAction == 1 && ((hA > 0.5 && hA < 0.9995) ||
+                                  (wA > 0.5 && wA < 0.9995))) {
                 // Crop the encoded bars through the GEOMETRY: growing the
                 // destination by 1/hA puts the active band exactly on the window,
                 // so fill + crop is ONE resize with the renderer's own scaler.
                 geomCrop = true;
             }
             if (nlsAction == 2) {
-                // Cover rect: the ACTIVE picture (frame width, hA of its height)
-                // scaled uniformly until it covers the window. Whichever axis
-                // overflows is what gets cut — sides for wide pictures, top/bottom
-                // for tall ones.
+                // Cover rect: the KEPT frame scaled uniformly until it covers
+                // the window. `barFill` is how much of the encoded letterbox is
+                // removed: 0 keeps the full frame, 1 removes all bars. Feeding
+                // raw hA here made Crop ignore the slider and always remove
+                // 100% of the bars (reported 2026-11-03).
+                const double t = std::clamp((double)nl.barFill, 0.0, 1.0);
+                const double kept = 1.0 - t * (1.0 - hA);
                 const double scale = std::max((double)clientW,
-                                              (double)clientH * frameAR / (hA > 0.01 ? hA : 1.0));
+                                              (double)clientH * frameAR /
+                                              (kept > 0.01 ? kept : 1.0));
                 fillScaleW = scale;
                 fillScaleH = scale / frameAR;
                 Log("[NLS] crop to fill: picture AR %.3f on %.3f window -> %dx%d (no warp)",
@@ -3473,6 +3521,7 @@ void MpcPlayer::ApplyPostFx()
     // post-scale shader samples the window-sized image, rows and columns 0..1.
     std::string nlsSrc;
     m_nlsNeedPct.store(0);      // no NLS, no fill bill to report
+    m_nlsCostMaxPct.store(0);
     if (pendingNls_.enabled && pendingNls_.strength > 0.001f && renderTarget_ &&
         m_nlsBandKnown.load()) {
         RECT cr = {};
@@ -3490,20 +3539,24 @@ void MpcPlayer::ApplyPostFx()
             bool haveBand = m_nlsBandValid.load();
             float fracT = haveBand ? m_nlsBandTop.load() : 0.0f;
             float fracB = haveBand ? m_nlsBandBot.load() : 0.0f;
+            float fracL = haveBand ? m_nlsBandLeft.load() : 0.0f;
+            float fracR = haveBand ? m_nlsBandRight.load() : 0.0f;
             int top = std::clamp((int)lroundf(fracT * (float)H), 0, H - 1);
             int bot = std::clamp((int)lroundf(fracB * (float)H), 0, H - 1 - top);
-            const double hA = (double)(H - top - bot) / (double)H;   // active height fraction
-            const double fullAR = (double)vw / (double)vh;           // AR-corrected frame AR
-            double activeAR = fullAR / hA;                           // AR of the picture after crop
-            // Last sanity gate, in the space that matters: a band implying a
-            // picture wider than 2.9:1 is a detector artefact (the widest real
-            // format is ~2.76), so it is discarded rather than zooming the image.
-            if (haveBand && activeAR > 2.9) {
-                Log("[NLS] band rejected: implied active AR %.2f (top=%d bot=%d of %d)",
-                    activeAR, top, bot, H);
-                haveBand = false; top = bot = 0; activeAR = fullAR;
+            int left = std::clamp((int)lroundf(fracL * (float)W), 0, W - 1);
+            int right = std::clamp((int)lroundf(fracR * (float)W), 0, W - 1 - left);
+            const double hA = (double)(H - top - bot) / (double)H;
+            const double wA = (double)(W - left - right) / (double)W;
+            const double fullAR = (double)vw / (double)vh;
+            double activeAR = fullAR * wA / std::max(hA, 0.01);
+            // Last sanity gate: reject detector artefacts, in the space that matters.
+            if (haveBand && (activeAR > 2.9 || activeAR < 0.5)) {
+                Log("[NLS] band rejected: implied active AR %.2f (top=%d bot=%d left=%d right=%d)",
+                    activeAR, top, bot, left, right);
+                haveBand = false; top = bot = left = right = 0; activeAR = fullAR;
             }
-            const bool haveBars = haveBand && (top >= 2 || bot >= 2);
+            const bool haveBars = haveBand &&
+                (top >= 2 || bot >= 2 || left >= 2 || right >= 2);
             const double winAR = (double)W / (double)H;
             // The band itself is removed by the destination rect (ResizeVideo),
             // so the shader never crops: its active rectangle is the whole
@@ -3517,8 +3570,10 @@ void MpcPlayer::ApplyPostFx()
             // geometry needs. Same helper the renderer's resize uses, so the two
             // halves agree even while the geometry is deferred.
             const NlsGeom ng = NlsPartialFill((double)W, (double)H, fullAR,
+                                              haveBand ? wA : 1.0,
                                               haveBand ? hA : 1.0,
                                               (double)pendingNls_.barFill);
+            const double Wt = ng.Wt;
             const double Ht = ng.Ht;
             const double ratioAR = ng.aniso;
             // Derived from the SETTINGS, not from what the geometry last published:
@@ -3529,21 +3584,38 @@ void MpcPlayer::ApplyPostFx()
             const double maxStretch = std::clamp((double)pendingNls_.maxStretch, 1.0, 2.0);
             const int axis = std::clamp(pendingNls_.axis, 0, 3);
             double rx = 1.0, ry = 1.0;
+            // Auto honours the Max distortion budget on both axes;
+            // Stretch never crops, so it never caps. The geometry applies the
+            // SAME rule and takes the refused residue as a destination zoom
+            // (cropX/cropY in ResizeVideo), so "warp to the cap, crop the rest"
+            // stays one decision. The two callers must never disagree on
+            // applyCap (2026-11-03: shader capped, geometry uncapped, uniform
+            // vertical stretch with no NLS pass).
+            const bool applyCap = (pendingNls_.fillMode != 1);
             NlsSplitFactors(ratioAR, axis,
                             (double)pendingNls_.split, maxStretch,
-                            pendingNls_.fillMode != 1,   // Stretch never crops, so never caps
+                            applyCap,
                             rx, ry);                     // the geometry owns the crop
-            // Same for the fill decision: NlsFillAction is the one definition, so a
-            // Crop leg cannot get the warp injected on top of its crop just because
-            // the geometry had not run yet when this push arrived.
-            const int fillAction = NlsFillAction(ratioAR, haveBand,
-                                                 pendingNls_.fillMode, pendingNls_.fillLimit,
-                                                 axis, (double)pendingNls_.split, maxStretch);
+            // Same for the fill decision: Auto fills (to the degree the
+            // Bars removed dial asks for, through NlsPartialFill above);
+            // manual Crop/Off keep their explicit meaning.
+            int fillAction;
+            if (pendingNls_.fillMode == 0) fillAction = 1;
+            else fillAction = NlsFillAction(ratioAR, haveBand,
+                                            pendingNls_.fillMode, pendingNls_.fillLimit,
+                                            axis, (double)pendingNls_.split, maxStretch);
             // What filling WOULD cost on this title, in per cent. Published for the
             // INFO panel so "Fill limit" can be set knowingly (a 2.39 film on a
             // 16:9 screen needs ~36 % squeeze, a 16:9 title on a scope screen ~34 %
             // stretch).
             m_nlsNeedPct.store((int)lround(fabs(ratioAR - 1.0) * 100.0));
+            // The cost ceiling for THIS title: the correction if every bar were
+            // removed. Constant per title, so the panel can show the dial's range
+            // ("0 % of 19 %") rather than a number with no reference.
+            const NlsGeom ngFull = NlsPartialFill((double)W, (double)H, fullAR,
+                                                  haveBand ? wA : 1.0,
+                                                  haveBand ? hA : 1.0, 1.0);
+            m_nlsCostMaxPct.store((int)lround(fabs(ngFull.aniso - 1.0) * 100.0));
             // 2 % is below the threshold where a uniform stretch is visible, so
             // the common scope-film-on-scope-screen case (measured 1.009) gets the
             // crop from the resize and NO shader pass at all. Each axis is tested
@@ -3558,11 +3630,12 @@ void MpcPlayer::ApplyPostFx()
                 // The map is evaluated inside the PICTURE rect, not the whole
                 // window: with a partial bar fill the picture does not reach the
                 // top/bottom edges, and the bars must stay black and unwarped.
-                const double barFrac = (1.0 - Ht) * 0.5;
-                np.activeL = 0.0f;
-                np.activeR = 1.0f;
-                np.activeT = (float)barFrac;
-                np.activeB = (float)(1.0 - barFrac);
+                const double barFracX = (1.0 - Wt) * 0.5;
+                const double barFracY = (1.0 - Ht) * 0.5;
+                np.activeL = (float)barFracX;
+                np.activeR = (float)(1.0 - barFracX);
+                np.activeT = (float)barFracY;
+                np.activeB = (float)(1.0 - barFracY);
                 np.ratioX = (float)rx;
                 np.ratioY = (float)ry;
                 np.strength = pendingNls_.strength;
@@ -3917,6 +3990,209 @@ bool MpcPlayer::GetDecklinkSignalInfo(int& locked, int& colorspace, int& dynamic
     return true;
 }
 
+// Detected-band watch (T5b). Samples the PER-FRAME band the renderer reports
+// (barsNow, fractions of the frame) rather than the 90-frame union: the union
+// is a running min/max, so a dark scene whose top rows dip under the
+// detector's threshold grows the band until the window rolls over (measured
+// live: 688/598 of 1436 on a night scene = a 17:1 "active picture").
+//
+// The band is LATCHED, not followed. Bars are a property of the title, not of
+// the shot, and luminance alone cannot tell a letterbox from artwork on black:
+// a black title card ("THE SHIELD" logo) reads as an enormous symmetric band
+// and cropping to it cut into the artwork (reported from a live run). So:
+//
+//   * a frame whose activeFrac is low - mostly black - is NOT evidence at all;
+//     it can neither create nor move a band (a title card leaves the latch
+//     untouched);
+//   * the first confidence needs two seconds of consecutive picture-bearing
+//     readings;
+//   * after that, replacing the band needs the new reading to stay away from
+//     the latched one for kRelatchTicks (an IMAX scene change is real; a fade
+//     is not). A LARGE move (>= 2.5 % of an edge: scope<->IMAX, bars->clean)
+//     is a format change and re-latches on the FIRST reading - it is a cut,
+//     not a fade, and any delay either crops the new frame or drops NLS;
+//   * the latch resets when the graph generation changes (new title).
+//
+// Runs on the LIVE LOOP's per-frame band cadence (kBandWatchMs = 40 ms), not
+// the 1 s telemetry tick: a scope<->IMAX cut has to move the band before the
+// new frame is drawn, and at 1 Hz the first ~24 IMAX frames were still cropped
+// by the scope band (reported 2026-11-03). The only read here is GetMLStats;
+// everything else in RefreshLive keeps its 1 s cadence.
+void MpcPlayer::WatchBand()
+{
+    std::wstring ml;
+    GetMlStats(ml);
+    {
+        float ft = 0.0f, fb = 0.0f, fl = 0.0f, fr = 0.0f, frac = 0.0f;
+        bool have = false;
+        const wchar_t* bp = wcsstr(ml.c_str(), L"barsNow: top=");
+        if (bp) {
+            have = (swscanf_s(bp, L"barsNow: top=%f bot=%f left=%f right=%f",
+                              &ft, &fb, &fl, &fr) == 4);
+            if (!have) have = (swscanf_s(bp, L"barsNow: top=%f bot=%f", &ft, &fb) == 2);
+        }
+        if (!have) return;   // no renderer / pre-graph / an .ax without barsNow: no evidence
+        float act = 1.0f;              // assume picture if activeFrac is absent
+        const wchar_t* ap = wcsstr(ml.c_str(), L"activeFrac: ");
+        if (ap) { if (swscanf_s(ap, L"activeFrac: %f", &frac) == 1) act = frac; }
+        // Below this the frame is mostly black: text on black, a fade, the gap
+        // between scenes. Not a letterbox, whatever shape the detector reports.
+        constexpr float kPictureFloor = 0.45f;
+        const bool picture = (act >= kPictureFloor);
+
+        static unsigned long long s_latchGen = ~0ull;
+        static bool s_latched = false, s_latchValid = false;
+        static int  s_latchT = 0, s_latchB = 0, s_latchL = 0, s_latchR = 0;
+        static int  candT = -2, candB = -2, candL = -2, candR = -2, stable = 0;
+        // Ticks are kBandWatchMs (40 ms), so the time-based proofs are derived:
+        // six seconds to replace a band, two seconds for a first confidence.
+        static constexpr int kRelatchTicks = 6000 / kBandWatchMs;
+        static constexpr int kFirstPictureTicks = 2000 / kBandWatchMs;
+
+        if (graphGen_ != s_latchGen) {   // new title: forget the old band
+            s_latchGen = graphGen_;
+            s_latched = false; s_latchValid = false;
+            s_latchT = s_latchB = s_latchL = s_latchR = 0;
+            candT = candB = candL = candR = -2; stable = 0;
+            m_nlsBandValid.store(false);
+            m_nlsBandTop.store(0.0f);
+            m_nlsBandBot.store(0.0f);
+            m_nlsBandLeft.store(0.0f);
+            m_nlsBandRight.store(0.0f);
+            m_nlsBandKnown.store(false);
+            m_nlsRefreshPending = true;
+        }
+
+        if (picture) {
+            int qt = -1, qb = -1, ql = -1, qr = -1;
+            if (have && ft >= 0.0f && fb >= 0.0f && ft < 0.45f && fb < 0.45f &&
+                fabsf(ft - fb) <= 0.015f) {
+                qt = (int)lroundf(ft * 1000.0f);
+                qb = (int)lroundf(fb * 1000.0f);
+            }
+            if (have && fl >= 0.0f && fr >= 0.0f && fl < 0.45f && fr < 0.45f) {
+                ql = (int)lroundf(fl * 1000.0f);
+                qr = (int)lroundf(fr * 1000.0f);
+            }
+            // The hold counter measures "how long has this reading been away from the
+            // band IN USE", not "how long has this exact tuple repeated". The
+            // detector jitters by a row/column between ticks (field log: T35 and
+            // T28 on the same IMAX scene), so an identical-tuple hold reset on
+            // every tick and kept the previous scope band in place for ~20 s
+            // after a scope -> IMAX cut - which cropped the top and bottom of the
+            // IMAX picture (reported 2026-11-03, Spider-Man FFH 16:05). Small
+            // deltas are the latched band and must not re-latch at all; a large
+            // delta is a format change and is real.
+            const bool candChanged = (qt != candT || qb != candB || ql != candL || qr != candR);
+            // Distance from the previous candidate, measured BEFORE it is
+            // overwritten. The first latch tolerates this much jitter (the
+            // detector alternates T35/T28 on the same IMAX frame); without the
+            // tolerance an identical-tuple count could never reach the 2 s
+            // confidence and NLS would never start on a jittery title.
+            const int candDelta = candChanged
+                ? std::max(std::max(std::abs(qt - candT), std::abs(qb - candB)),
+                           std::max(std::abs(ql - candL), std::abs(qr - candR)))
+                : 0;
+            if (candChanged) {
+                // At the 100 ms cadence the detector jitters between two rows
+                // many times a second; the raw stream would be ~10 log lines/s.
+                // One line a second is enough to follow a transition, and the
+                // LATCH line is never throttled.
+                static unsigned long long s_lastCandLog = 0;
+                const unsigned long long nowMs = GetTickCount64();
+                if (nowMs - s_lastCandLog >= 1000) {
+                    s_lastCandLog = nowMs;
+                    Log("[NLS] band candidate T%d/B%d L%d/R%d (held %d) <- per-frame %.4f/%.4f/%.4f/%.4f activeFrac=%.3f",
+                        qt, qb, ql, qr, stable, (double)ft, (double)fb, (double)fl, (double)fr, (double)act);
+                }
+                candT = qt; candB = qb; candL = ql; candR = qr;
+            }
+            // 2.5 % of a frame edge: letterbox jitter is 1-3/1000, a scope<->IMAX
+            // cut moves the band by ~90/1000, a clean frame replacing IMAX by 35.
+            constexpr int kFormatDelta = 25;
+            constexpr float kFastPicture = 0.60f;   // do not fast-latch a fade
+            int need;
+            if (s_latched) {
+                const int delta = std::max(std::max(std::abs(qt - s_latchT), std::abs(qb - s_latchB)),
+                                           std::max(std::abs(ql - s_latchL), std::abs(qr - s_latchR)));
+                if (delta < 3 || pendingNls_.lockBand) {
+                    stable = 0;
+                    need = 1000000;               // same band, or the user locked it
+                } else {
+                    if (stable < 1000) ++stable;
+                    // A format change (scope<->IMAX moves the band by ~90/1000,
+                    // a clean frame replacing IMAX by ~35) is a CUT, not a fade:
+                    // re-latch on the first picture-bearing reading. Waiting even
+                    // one extra tick kept NLS filling with the old band and
+                    // cropped the new frame; releasing to a plain fit instead
+                    // showed bars on the scope screen for the same interval
+                    // (both reported 2026-11-03). Smaller moves keep the
+                    // six-tick proof.
+                    need = (delta >= kFormatDelta && act >= kFastPicture) ? 1 : kRelatchTicks;
+                }
+            } else {
+                if (candChanged && candDelta > 10) stable = 1;
+                else if (stable < 1000) ++stable;
+                // A FIRST latch that says "no bars" is the weakest evidence there is: the
+                // opening frames of a graph are often black or mid-transition, and a
+                // detector that sees no bars reports 0/0 as confidently as it reports a
+                // real band. Accepting that on the second tick made the engine believe a
+                // scope film was 16:9 - measured 2026-10-30 15:12:15, latched 0/0 one tick
+                // after the previous candidate, which then fed a 34.6 % warp to a picture
+                // whose real band implied a correction of 0.99. A real band still latches
+                // in 2 s; "no bars" has to prove itself like everything else.
+                const bool anyBar = std::max(std::max(qt, qb), std::max(ql, qr)) > 0;
+                need = anyBar ? kFirstPictureTicks : kRelatchTicks;
+            }
+            if (stable >= need && (!s_latched || qt != s_latchT || qb != s_latchB ||
+                                   ql != s_latchL || qr != s_latchR)) {
+                // One detected row/column of bias: the detector's boundary is a box
+                // average and lands inside the real bar. A 0 report is never biased.
+                constexpr float kBandMinH = 1.5f / 144.0f;
+                constexpr float kBandMinW = 1.5f / 256.0f;
+                constexpr float kBandBiasH = 1.0f / 144.0f;
+                constexpr float kBandBiasW = 1.0f / 256.0f;
+                const bool validH = (qt >= 0 || qb >= 0) &&
+                    ((float)std::max(qt, qb) / 1000.0f >= kBandMinH);
+                const bool validW = (ql >= 0 || qr >= 0) &&
+                    ((float)std::max(ql, qr) / 1000.0f >= kBandMinW);
+                const bool valid = validH || validW;
+                float nt = 0.0f, nb = 0.0f, nl = 0.0f, nr = 0.0f;
+                if (validH) {
+                    nt = (float)qt / 1000.0f + kBandBiasH;
+                    nb = (float)qb / 1000.0f + kBandBiasH;
+                    if (nt + nb > 0.6f) { nt = (float)qt / 1000.0f; nb = (float)qb / 1000.0f; }
+                }
+                if (validW) {
+                    nl = (float)ql / 1000.0f + kBandBiasW;
+                    nr = (float)qr / 1000.0f + kBandBiasW;
+                    if (nl + nr > 0.6f) { nl = (float)ql / 1000.0f; nr = (float)qr / 1000.0f; }
+                }
+                s_latched = true; s_latchValid = valid;
+                s_latchT = qt; s_latchB = qb; s_latchL = ql; s_latchR = qr;
+                m_nlsBandValid.store(valid);
+                m_nlsBandTop.store(nt);
+                m_nlsBandBot.store(nb);
+                m_nlsBandLeft.store(nl);
+                m_nlsBandRight.store(nr);
+                m_nlsBandKnown.store(true);
+                m_nlsRefreshPending = true;
+                // THE BAND DECIDES THE GEOMETRY, so a new band has to re-derive the
+                // geometry AND the shader's share of the correction in one go. Only
+                // refreshing the shader left them disagreeing: the pass is fed
+                // m_nlsWarpRatio when it is set, and the shader's own ratioAR when it
+                // is not, so after a band change the picture was warped for the bar
+                // layout that had just been replaced (measured 15:12:21 - shader told
+                // ratio 1.346 while the band on screen implied 0.991). Toggling NLS
+                // forced this rebuild, which is why that "fixed" the picture.
+                m_videoRectPending = true;
+                Log("[NLS] band latched T%d/B%d L%d/R%d (valid=%d)",
+                    qt, qb, ql, qr, valid ? 1 : 0);
+            }
+        }
+    }
+}
+
 void MpcPlayer::RefreshLive()
 {
     // Runs on the DEDICATED refresh thread — never the UI. NO renderer/graph
@@ -3944,112 +4220,8 @@ void MpcPlayer::RefreshLive()
     DeckLinkSourceStats dl{};
     GetRendererStats(r);
     GetMlStats(ml);
-    // Detected-band watch (T5b). Samples the PER-FRAME band the renderer reports
-    // (barsNow, fractions of the frame) rather than the 90-frame union: the union
-    // is a running min/max, so a dark scene whose top rows dip under the
-    // detector's threshold grows the band until the window rolls over (measured
-    // live: 688/598 of 1436 on a night scene = a 17:1 "active picture").
-    //
-    // The band is LATCHED, not followed. Bars are a property of the title, not of
-    // the shot, and luminance alone cannot tell a letterbox from artwork on black:
-    // a black title card ("THE SHIELD" logo) reads as an enormous symmetric band
-    // and cropping to it cut into the artwork (reported from a live run). So:
-    //
-    //   * a frame whose activeFrac is low - mostly black - is NOT evidence at all;
-    //     it can neither create nor move a band (a title card leaves the latch
-    //     untouched);
-    //   * the first confidence needs two consecutive picture-bearing ticks;
-    //   * after that, replacing the band needs the new one to hold for
-    //     kRelatchTicks (an IMAX scene change is real; a fade is not);
-    //   * the latch resets when the graph generation changes (new title).
-    {
-        float ft = 0.0f, fb = 0.0f, frac = 0.0f;
-        bool have = false;
-        const wchar_t* bp = wcsstr(ml.c_str(), L"barsNow: top=");
-        if (bp) have = (swscanf_s(bp, L"barsNow: top=%f bot=%f", &ft, &fb) == 2);
-        float act = 1.0f;              // assume picture if the field is absent
-        const wchar_t* ap = wcsstr(ml.c_str(), L"activeFrac: ");
-        if (ap) { if (swscanf_s(ap, L"activeFrac: %f", &frac) == 1) act = frac; }
-        // Below this the frame is mostly black: text on black, a fade, the gap
-        // between scenes. Not a letterbox, whatever shape the detector reports.
-        constexpr float kPictureFloor = 0.45f;
-        const bool picture = (act >= kPictureFloor);
-
-        static unsigned long long s_latchGen = ~0ull;
-        static bool s_latched = false, s_latchValid = false;
-        static int  s_latchT = 0, s_latchB = 0;
-        static int  candT = -2, candB = -2, stable = 0;
-        static constexpr int kRelatchTicks = 6;
-
-        if (graphGen_ != s_latchGen) {   // new title: forget the old band
-            s_latchGen = graphGen_;
-            s_latched = false; s_latchValid = false; s_latchT = s_latchB = 0;
-            candT = candB = -2; stable = 0;
-            m_nlsBandValid.store(false);
-            m_nlsBandTop.store(0.0f);
-            m_nlsBandBot.store(0.0f);
-            m_nlsBandKnown.store(false);
-            m_nlsRefreshPending = true;
-        }
-
-        if (picture) {
-            int qt = -1, qb = -1;
-            if (have && ft >= 0.0f && fb >= 0.0f && ft < 0.45f && fb < 0.45f &&
-                fabsf(ft - fb) <= 0.015f) {
-                qt = (int)lroundf(ft * 1000.0f);
-                qb = (int)lroundf(fb * 1000.0f);
-            }
-            if (qt != candT || qb != candB) {
-                Log("[NLS] band candidate %d/%d (held %d) <- per-frame %.4f/%.4f activeFrac=%.3f",
-                    qt, qb, stable, (double)ft, (double)fb, (double)act);
-                candT = qt; candB = qb; stable = 1;
-            }
-            else if (stable < 1000) ++stable;
-
-            // A FIRST latch that says "no bars" is the weakest evidence there is: the
-            // opening frames of a graph are often black or mid-transition, and a
-            // detector that sees no bars reports 0/0 as confidently as it reports a
-            // real band. Accepting that on the second tick made the engine believe a
-            // scope film was 16:9 - measured 2026-10-30 15:12:15, latched 0/0 one tick
-            // after the previous candidate, which then fed a 34.6 % warp to a picture
-            // whose real band implied a correction of 0.99. A real band still latches
-            // in 2 ticks; "no bars" has to prove itself like everything else.
-            const int need = s_latched ? (pendingNls_.lockBand ? 1000000 : kRelatchTicks)
-                                       : (std::max(qt, qb) > 0 ? 2 : kRelatchTicks);
-            if (stable >= need && (!s_latched || qt != s_latchT || qb != s_latchB)) {
-                // One detected row of bias (1/144 of the frame). The detector's
-                // grid is 144 rows tall and its boundary is a box average, so it
-                // lands a row INSIDE the real bar: cropping exactly to it left
-                // ~7-13 px of black on the top and bottom edges (measured on
-                // screen). A 0/0 report is "no bars" and is never biased.
-                constexpr float kBandMin = 1.5f / 144.0f;
-                constexpr float kBandBias = 1.0f / 144.0f;
-                const bool valid = (qt >= 0) && ((float)std::max(qt, qb) / 1000.0f >= kBandMin);
-                float nt = 0.0f, nb = 0.0f;
-                if (valid) {
-                    nt = (float)qt / 1000.0f + kBandBias;
-                    nb = (float)qb / 1000.0f + kBandBias;
-                    if (nt + nb > 0.6f) { nt = (float)qt / 1000.0f; nb = (float)qb / 1000.0f; }
-                }
-                s_latched = true; s_latchValid = valid; s_latchT = qt; s_latchB = qb;
-                m_nlsBandValid.store(valid);
-                m_nlsBandTop.store(nt);
-                m_nlsBandBot.store(nb);
-                m_nlsBandKnown.store(true);
-                m_nlsRefreshPending = true;
-                // THE BAND DECIDES THE GEOMETRY, so a new band has to re-derive the
-                // geometry AND the shader's share of the correction in one go. Only
-                // refreshing the shader left them disagreeing: the pass is fed
-                // m_nlsWarpRatio when it is set, and the shader's own ratioAR when it
-                // is not, so after a band change the picture was warped for the bar
-                // layout that had just been replaced (measured 15:12:21 - shader told
-                // ratio 1.346 while the band on screen implied 0.991). Toggling NLS
-                // forced this rebuild, which is why that "fixed" the picture.
-                m_videoRectPending = true;
-                Log("[NLS] band latched %d/%d (valid=%d)", qt, qb, valid ? 1 : 0);
-            }
-        }
-    }
+    // The band watch lives in WatchBand(), on its own per-frame cadence (the
+    // rest of this snapshot keeps the 1 s telemetry tick).
     GetMlSettings(mls);
     GetHdrSettings(hd);
     GetOutSettings(ou);
@@ -4383,10 +4555,15 @@ std::string MpcPlayer::GetUiStatusJson() const
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"scPeak\":%.4f,\"scAvg\":%.4f,"
         "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}},"
         // NLS state for the INFO panel: on/off, what filling this title would cost
-        // (per cent vertical stretch), the user's budget, and whether it is filling.
-        // Four specifiers, four arguments — see the warning above about keeping
-        // these matched.
-        "\"nls\":{\"on\":%d,\"need\":%d,\"limit\":%d,\"filling\":%d,\"warp\":%d,\"crop\":%d},"
+        // at the CURRENT Bars removed value (need) and at 100 % (max), the user's
+        // budget, whether it is filling, and the per-axis warp actually left to
+        // the shader (wx/wy, signed per cent; negative = compression). "need"
+        // falls with Bars removed and reaches 0 when the bars are all kept — the
+        // panel shows max next to it so that reduction is legible.
+        // Eleven specifiers, eleven arguments — see the warning above about
+        // keeping these matched.
+        "\"nls\":{\"on\":%d,\"need\":%d,\"limit\":%d,\"filling\":%d,\"warp\":%d,\"crop\":%d,"
+        "\"bars\":%d,\"max\":%d,\"wx\":%d,\"wy\":%d,\"cap\":%d},"
         // The surface every aspect decision is based on: the client rect of the
         // renderer's host window, i.e. whatever the app actually covers (the
         // screen, full-screen). Nothing asks the user for a screen size — this is
@@ -4420,6 +4597,11 @@ std::string MpcPlayer::GetUiStatusJson() const
         (int)lround((double)pendingNls_.fillLimit * 100.0),
         m_nlsFillOk.load() ? 1 : 0,
         m_nlsWarpPct.load(), m_nlsCropPct.load(),
+        (int)lround((double)pendingNls_.barFill * 100.0),
+        m_nlsCostMaxPct.load(),
+        (int)lround(((double)m_nlsWarpRatio.load() - 1.0) * 100.0),
+        (int)lround(((double)m_nlsWarpRatioY.load() - 1.0) * 100.0),
+        (int)lround((double)pendingNls_.maxStretch * 100.0),
         dispW, dispH);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
@@ -4695,7 +4877,9 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "nlsStrength") { nls.strength = std::clamp((float)vd(v), 0.0f, 1.0f); nAny = true; }
             else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.90f); nAny = true; }
             else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }
-            else if (name == "nlsMax")    { nls.maxStretch = std::clamp((float)vd(v), 1.0f, 1.5f); nAny = true; }
+            else if (name == "nlsMax")    { nls.maxStretch = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }
+            // Retired from the UI (Max distortion is the budget now), but still parsed so
+            // presets written before the change load without a warning.
             else if (name == "nlsFillLimit") { nls.fillLimit = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }
             else if (name == "nlsLock")   { nls.lockBand = vb(v); nAny = true; }
             else if (name == "nlsFillMode") { nls.fillMode = std::clamp((int)vd(v), 0, 3); nAny = true; }
