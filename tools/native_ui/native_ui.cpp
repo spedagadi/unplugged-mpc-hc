@@ -5406,15 +5406,19 @@ struct Lib{
     struct SQSh{ std::wstring title,art,imdb; int tries; double next; bool needArt,needGenre; };
     std::vector<SQSh> shows;
     { char sql[1200]; snprintf(sql,sizeof(sql),
-        "SELECT title, MAX(COALESCE(show_art,'')), MAX(COALESCE(genre,'')), "
+        // MIN(show_art), not MAX: a show is missing its poster when ANY episode
+        // row lacks one. MAX hid the case where one episode had show_art and the
+        // rest were empty - "only one episode has a poster" (High Value Target,
+        // 2026-11-04). The UPDATE below fills every row of the title.
+        "SELECT title, MIN(COALESCE(show_art,'')), MAX(COALESCE(genre,'')), "
         "MAX(COALESCE(art_checked,0)), MAX(COALESCE(art_tries,0)), MAX(COALESCE(art_next_try,0)), "
         "MAX(COALESCE(imdb_id,'')) FROM items WHERE present=1 AND hidden=0 AND kind='episode' "
         "GROUP BY title COLLATE NOCASE HAVING "
-        "(MAX(COALESCE(art_next_try,0))<=%.0f AND MAX(COALESCE(show_art,''))='') OR "
+        "(MAX(COALESCE(art_next_try,0))<=%.0f AND MIN(COALESCE(show_art,''))='') OR "
         "(MAX(COALESCE(genre,''))='' AND MAX(COALESCE(genre_checked,0))<%.0f) OR "
-        "(MAX(COALESCE(show_art,''))<>'' AND MAX(COALESCE(art_checked,0))<%.0f) OR "
-        "(instr(MAX(COALESCE(show_art,'')),'omdb_')=0 "
-        " AND instr(MAX(COALESCE(show_art,'')),'wiki_')=0 "
+        "(MIN(COALESCE(show_art,''))<>'' AND MAX(COALESCE(art_checked,0))<%.0f) OR "
+        "(instr(MIN(COALESCE(show_art,'')),'omdb_')=0 "
+        " AND instr(MIN(COALESCE(show_art,'')),'wiki_')=0 "
         " AND MAX(COALESCE(art_checked,0))<%.0f) LIMIT 120",
         now,genreCutoff,dailyCutoff,cutoff);
       SQ::ST s=Prep(sql);
