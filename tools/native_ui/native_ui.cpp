@@ -5347,15 +5347,24 @@ struct Lib{
   // OMDb's poster URL is sometimes dead (Bad Apples 2025: both the Amazon image
   // and img.omdbapi 404). The film's own Wikipedia article still holds the poster
   // as a non-free file; use it only as a last resort, matched by page + "poster".
-  bool FetchWikiPoster(const std::wstring& title,int year,std::wstring& outPath){
+  bool FetchWikiPoster(const std::wstring& title,int year,std::wstring& outPath,bool tv=false){
     outPath.clear(); std::vector<std::wstring> pages;
-    if(year>0) pages.push_back(title+L" ("+std::to_wstring(year)+L" film)");
-    pages.push_back(title+L" (film)");
-    // Last: the PLAIN article title. Many films need no disambiguation - Beware
-    // Boiuna (2026) is the article's exact title - and without this the fallback
-    // only asked for "(2026 film)" and "(film)", both missing, so a title that
-    // OMDb does not carry ended with no poster at all (reported 2026-11-04).
-    pages.push_back(title);
+    if(tv){
+      // A TV series article is disambiguated differently from a film; the plain
+      // title is tried last (The Office, etc.).
+      pages.push_back(title+L" (TV series)");
+      pages.push_back(title+L" (television series)");
+      pages.push_back(title+L" (TV program)");
+      pages.push_back(title);
+    } else {
+      if(year>0) pages.push_back(title+L" ("+std::to_wstring(year)+L" film)");
+      pages.push_back(title+L" (film)");
+      // Last: the PLAIN article title. Many films need no disambiguation - Beware
+      // Boiuna (2026) is the article's exact title - and without this the fallback
+      // only asked for "(2026 film)" and "(film)", both missing, so a title that
+      // OMDb does not carry ended with no poster at all (reported 2026-11-04).
+      pages.push_back(title);
+    }
     for(auto&page:pages){
       std::wstring api=L"https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1"
         L"&prop=images&imlimit=max&titles="+UrlEnc(page);
@@ -5548,9 +5557,10 @@ struct Lib{
       // Politeness: one network item per ~120 ms. Cached/reused items do not
       // sleep, so a first scan is still fast; a failing pass cannot burst.
       if(tried) Sleep(120); }
-    if(key.empty()&&!shows.empty())
-      LogF("library art: no OMDb key - %d series poster(s) cannot be fetched",(int)shows.size());
-    for(auto&t:shows){ if(key.empty()||budget<=0) break; --budget;
+    // Even with no OMDb key or an exhausted daily budget, the Wikipedia
+    // fallback and the on-disk reuse must still run; only the OMDb call is
+    // skipped, not the whole show loop.
+    for(auto&t:shows){
       if(g_artGen.load(std::memory_order_relaxed)!=gen) return changed;   // superseded
       std::wstring p,genre,imdb=t.imdb; bool got=false;
       if(t.needArt){
@@ -5562,9 +5572,14 @@ struct Lib{
       // art. Otherwise Euphoria US (missing genre, recent art_checked) would never
       // get its newly-matched poster.
       bool wantPoster=t.needArt||!IsOnlineArt(t.art);
-      if(wantPoster||t.needGenre){
+      if((wantPoster||t.needGenre) && !key.empty() && budget>0){
+        --budget;
         bool ng=FetchPoster(key,t.title,0,L"series",p,&genre,wantPoster,nullptr,&imdb);
         got=got||ng; }
+      // OMDb missing the show must not leave every episode blank: use the same
+      // Wikipedia lead-image fallback as films, with TV disambiguation. No OMDb
+      // budget is spent by this path.
+      if(!got && wantPoster && FetchWikiPoster(t.title,0,p,true)) got=true;
       if(got){ SQ::ST u=Prep("UPDATE items SET show_art=?,"
           "imdb_id=CASE WHEN ?='' THEN imdb_id ELSE ? END,"
           "art_tries=0,art_next_try=0,art_checked=? "
