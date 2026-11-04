@@ -6555,7 +6555,18 @@ public:
     std::wstring tl=tail.empty()?ProgressTxt(t):tail; if(tl.empty()) tl=L"Continue";
     wchar_t b[192]; swprintf(b,192,L"S%02dE%02d  \x00B7  %s",e.season,e.episode,tl.c_str());
     t.sub=b; if(!e.present) t.sub+=L"  \x00B7  Unavailable";
-    ApplyTileScore(t); }
+    // IMDb chip for a Continue tile. Episode metadata is fetched lazily (only
+    // when that season is opened), so most Continue tiles had no epMeta yet and
+    // therefore no chip - the rating "appeared intermittently" after visiting
+    // the season (reported 2026-11-04). Prefer the episode rating, then the
+    // show's IMDb rating, then the season average; N/A if none is known, so a
+    // Continue tile always carries a chip while the rating setting is on.
+    ApplyTileScore(t);
+    if(t.score<0){
+      t.scoreText.clear();
+      ApplySeriesScore(t, show);
+      if(t.score<0){ t.scoreText.clear(); ApplySeasonScore(t, show, e.season); }
+      if(t.score<0){ t.score=-1; t.scoreText=L"N/A"; } } }
   static std::wstring DurTxt(double sec){ int t=(int)(sec+0.5); if(t<0)t=0; wchar_t b[32];
     if(t>=3600) swprintf(b,32,L"%d:%02d:%02d",t/3600,(t/60)%60,t%60);
     else swprintf(b,32,L"%d:%02d",t/60,t%60); return b; }
@@ -6570,15 +6581,22 @@ public:
     return b; }
   void ApplyTileScore(Tile& t){
     if(t.path.empty()) return;
-    Lib::MetaRow mm; if(!lib.MetaFor(t.path,mm)) return;
-    if(mm.epMeta.empty()) return;   // never fetched: no chip yet
+    Lib::MetaRow mm;
+    if(!lib.MetaFor(t.path,mm) || mm.epMeta.empty()){
+      // Not fetched yet (or no OMDb record). With the rating setting on, the
+      // chip is always present: show N/A rather than nothing, and
+      // RefreshPosterRatings replaces it when the record arrives. The old
+      // early-return is why ratings "appeared intermittently" after the
+      // background meta pass (reported 2026-11-04).
+      t.score=-1; t.scoreText=L"N/A"; return; }
     std::wstring r=JStr(mm.epMeta,"imdbRating");
     if(r.empty()||r==L"N/A"){ t.score=-1; t.scoreText=L"N/A"; return; }
     t.score=_wtof(r.c_str());
     wchar_t b[16]; swprintf(b,16,L"%.1f",t.score); t.scoreText=b; }
-  // -1 = no OMDb record at all (no chip), -2 = record exists but rating N/A.
+  // -1 = no OMDb record at all, -2 = record exists but rating N/A. Both draw
+  // an N/A chip now; a blank tile made the rating look intermittent.
   static void SetScore(Tile& t,double r){
-    if(r==-1.0) return;
+    if(r==-1.0){ t.score=-1; t.scoreText=L"N/A"; return; }
     t.score=(r==-2.0)?-1.0:r;
     if(r==-2.0){ t.scoreText=L"N/A"; return; }
     wchar_t b[16]; swprintf(b,16,L"%.1f",r); t.scoreText=b; }
