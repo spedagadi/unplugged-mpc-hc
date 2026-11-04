@@ -5327,7 +5327,13 @@ struct Lib{
         continue; }
       std::vector<std::wstring> files; std::string key="\"title\":\"File:"; size_t p=0;
       while((p=js.find(key,p))!=std::string::npos){ p+=key.size(); size_t e=js.find('"',p);
-        if(e==std::string::npos) break; files.push_back(L"File:"+Widen(js.substr(p,e-p))); p=e; }
+        if(e==std::string::npos) break;
+        // The API escapes non-ASCII as \uXXXX (Beware Boiúna.jpeg). Widen()
+        // takes UTF-8, so unescape first; otherwise the decoded title contains
+        // the literal backslash and no filename match or poster lookup works.
+        std::string raw=js.substr(p,e-p);
+        std::string un=JsonRaw("{\"title\":\""+raw+"\"}","title");
+        files.push_back(L"File:"+Widen(un)); p=e; }
       LogF("library art: '%s' Wikipedia page '%s' has %d file(s)",Narrow(title).c_str(),
            Narrow(page).c_str(),(int)files.size());
       for(auto&f:files){ std::wstring lf=PLower(f);
