@@ -554,11 +554,12 @@ static Row g_rows[]={
  // aspect, 100 fills the screen. The distortion scales with it, so this is the
  // "how many of the black bars do I get rid of" dial.
  {4,1,L"NON-LINEAR STRETCH",L"Bars removed","geo.nlsBars",0,100,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
- // Default Split: a scope film on 16:9 needs ~26 % of correction; paying it on
- // one axis is the visible half of the trade. Split 50 halves the warp per axis
- // (the Split row below), which is the setting that made the feature usable in
- // the field. It only has an effect when Enable NLS is on.
- {4,2,L"NON-LINEAR STRETCH",L"Axis","geo.nlsAxis",0,0,0,0,false,2,kNlsAxis,3,kNlsAxisV,{},0,0,0,0},
+ // Default Horizontal: it keeps sy = 1.000, so height - and therefore heads and
+// legs - is never stretched. Any vertical component (Vertical, Split) moves the
+// correction onto height and visibly elongates faces; Split 25 measured +26 %
+// vertical and failed the field test on 2026-11-04. Split remains available as
+// an opt-in only, never a default.
+ {4,2,L"NON-LINEAR STRETCH",L"Axis","geo.nlsAxis",0,0,0,0,false,0,kNlsAxis,3,kNlsAxisV,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Strength","geo.nlsStrength",0,100,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Centre protection","geo.nlsCenter",0,90,1,45,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Curve","geo.nlsCurve",1.0,2.9,0.05,1.2,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -566,6 +567,14 @@ static Row g_rows[]={
  // used when Axis = Split; the vertical axis takes the rest.
  {4,1,L"NON-LINEAR STRETCH",L"Split","geo.nlsSplit",0,100,1,50,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Max distortion","geo.nlsMax",100,200,1,140,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ // Post-NLS crop AMOUNTS, one per axis: percentage of the SCREEN dimension cut
+ // after the NLS pass (0 = none; 10 cuts 5 % from each side and stretches the
+ // rest to fill). It crops the whole frame, bars included, so it is the dial
+ // that consumes letterbox left by Bars removed < 100; past the bar width it
+ // starts cutting picture. Always visible when non-zero, whichever title or
+ // screen shape is loaded.
+ {4,1,L"NON-LINEAR STRETCH",L"Post NLS X-Crop","geo.nlsCropX",0,45,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {4,1,L"NON-LINEAR STRETCH",L"Post NLS Y-Crop","geo.nlsCropY",0,45,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,2,L"NON-LINEAR STRETCH",L"Fill mode","geo.nlsFillMode",0,0,0,0,false,0,kNlsFillMode,4,kNlsFillModeV,{},0,0,0,0},
  // Fill limit is retired: Auto now always fills to the Bars removed dial, and
  // Max distortion is the only budget. The engine still accepts geo.nlsFillLimit
@@ -671,8 +680,8 @@ static void LoadNlsPresets(){
       p.screenAR=(n==0)?1.7778:2.39; p.readOnly=false;
       for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
         if(r.key&&strncmp(r.key,"geo.nls",7)==0) p.values[r.key]=IniValue(r); }
-      p.values["geo.nls"]="1"; p.values["geo.nlsAxis"]="3";
-      p.values["geo.nlsMax"]="200"; p.values["geo.nlsFillMode"]="0";
+      p.values["geo.nls"]="1"; p.values["geo.nlsAxis"]="1";
+      p.values["geo.nlsMax"]="140"; p.values["geo.nlsFillMode"]="0";
       g_nlsPresets.push_back(p); } }
   // Auto is the default screen choice; keep it first regardless of directory
   // enumeration order, then sort the rest by display name.
@@ -1121,7 +1130,8 @@ static void PushAll(){
       const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                       !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
                       !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||!strcmp(r.key,"geo.nlsBars")||
-                      !strcmp(r.key,"geo.nlsMax"))
+                      !strcmp(r.key,"geo.nlsMax")||!strcmp(r.key,"geo.nlsCropX")||
+                      !strcmp(r.key,"geo.nlsCropY"))
                       ?r.val/100.0:r.val;
       snprintf(b,sizeof(b),"%s=%g",ek,v);
     }
@@ -1178,7 +1188,8 @@ static void PushRow(const Row& r){ char b[192];
     const double v=(!strcmp(r.key,"geo.zoom")||!strcmp(r.key,"geo.panX")||
                     !strcmp(r.key,"geo.panY")||!strcmp(r.key,"geo.nlsStrength")||
                     !strcmp(r.key,"geo.nlsCenter")||!strcmp(r.key,"geo.nlsSplit")||!strcmp(r.key,"geo.nlsBars")||
-                    !strcmp(r.key,"geo.nlsMax"))
+                    !strcmp(r.key,"geo.nlsMax")||!strcmp(r.key,"geo.nlsCropX")||
+                    !strcmp(r.key,"geo.nlsCropY"))
                     ?r.val/100.0:r.val;
     snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%g\"}",ek,v); break; }
   case 2: snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"%s=%d\"}",ek,r.optvals?r.optvals[r.opt]:r.opt); break;
@@ -1668,10 +1679,12 @@ public:
     if(const char* N=Sect(st,"nls")){
       double nOn=0,nNeed=0,nFill=0,nCrop=0;
       double nBars=0,nMax=0,nWx=0,nWy=0,nCap=0;
+      double nCxl=0,nCyl=0;
       JNumAt(N,"on",nOn); JNumAt(N,"need",nNeed);
       JNumAt(N,"filling",nFill); JNumAt(N,"crop",nCrop);
       JNumAt(N,"bars",nBars); JNumAt(N,"max",nMax);
       JNumAt(N,"wx",nWx); JNumAt(N,"wy",nWy); JNumAt(N,"cap",nCap);
+      JNumAt(N,"cxl",nCxl); JNumAt(N,"cyl",nCyl);
       if(nOn!=0){
         S_(L"NON-LINEAR STRETCH");
         // The dial and its two endpoints. "max" is the correction at Bars
@@ -1686,6 +1699,9 @@ public:
         // stretch. This is the geometry's split, not the total.
         AF(L"WARP H / V",L"%+d %% / %+d %%",(int)nWx,(int)nWy);
         AF(L"MAX DISTORTION",L"%d %%",(int)nCap);
+        // Post-NLS crop amounts from the rail; the shader applies them directly.
+        AF(L"POST-NLS X-CROP",L"%d %%",(int)nCxl);
+        AF(L"POST-NLS Y-CROP",L"%d %%",(int)nCyl);
         A(L"FILLING", nFill!=0?L"yes":L"no");
         AF(L"GEOM CROP",L"%d %%",(int)nCrop);
       } }

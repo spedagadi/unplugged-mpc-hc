@@ -343,8 +343,8 @@ public:
         int   axis = 1;             // 1 horizontal, 2 vertical, 3 split (0 = old "auto")
         float split = 0.5f;         // 0..1, horizontal's share of the correction
         float strength = 1.0f;      // 0..1
-        float center = 0.35f;       // protected centre fraction, 0..0.90
-        float curve = 2.0f;         // 1..2.9
+        float center = 0.45f;       // protected centre fraction, 0..0.90
+        float curve = 1.2f;         // 1..2.9
         float maxStretch = 1.4f;    // per-axis distortion cap (both directions)
         // HOW MUCH OF THE LETTERBOX TO TAKE. 0 = show the picture at its own
         // aspect (bars untouched), 1 = fill the screen (the bars are removed by
@@ -372,6 +372,14 @@ public:
         // instead. The warp keeps everything but squeezes/stretches the outer band,
         // which becomes visible on people somewhere around 25-35 %.
         int   fillMode = 0;
+        // POST-NLS CROP, per axis, as a FRACTION OF THE PICTURE CUT (0..0.45).
+        // Applied after the NLS pass: 0 = no crop, 0.10 = cut 10 % of that
+        // dimension (5 % each side) and stretch the rest to fill. This is an
+        // AMOUNT, not a limit: it always changes the picture when non-zero,
+        // whichever title or screen shape is loaded. Separate axes because the
+        // acceptable loss is usually asymmetric.
+        float cropX = 0.0f;
+        float cropY = 0.0f;
     };
 
     struct OutSettings {

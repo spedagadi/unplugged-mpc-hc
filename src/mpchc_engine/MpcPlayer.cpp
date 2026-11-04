@@ -499,6 +499,14 @@ MpcPlayer::MpcPlayer()
             // toggle, a hung window that had to be killed.
             if (m_videoRectPending.exchange(false)) {
                 ResizeVideo();
+                // The NLS map's active rect, crop centre and crop scale are all
+                // expressed in the renderer window's UV, and they are derived
+                // from the visible canvas. A chrome toggle moves that canvas, so
+                // the shader must be re-injected with the geometry - otherwise
+                // the picture is fitted to the chrome area but the warp still
+                // believes it owns the whole window (observed 2026-11-04: the
+                // effect differed with the rail up).
+                ApplyPostFx();
                 // The picture CANVAS moved (the shell hid or raised its chrome).
                 // A paused frame only repaints when asked, so without this the
                 // old, smaller destination stayed on screen and the area the
@@ -1167,42 +1175,9 @@ static NlsGeom NlsPartialFill(double clientW, double clientH, double frameAR,
     return g;
 }
 
-// What the fill is doing this frame: 0 none (letterbox), 1 warp, 2 crop.
-// Same reason as NlsSplitFactors: the geometry and the shader can run on
-// different threads with the geometry deferred, so a "crop to fill" flag read
-// from the published state arrived one push late and the Crop leg got the warp
-// injected on top of its crop (seen in nls_proof, 2026-10-30).
-static int NlsFillAction(double ratioAR, bool bandValid,
-                         int fillMode, double fillLimit,
-                         int axis, double split, double cap)
-{
-    const int mode = std::clamp(fillMode, 0, 3);
-    if (mode == 3) return 0;                       // Off
-    if (mode == 2) return 2;                       // Crop: always, no warp
-    if (mode == 1) return 1;                       // Stretch: warp regardless
-    if (!(ratioAR > 0.0)) ratioAR = 1.0;
-    const double limit = std::clamp(fillLimit, 1.0, 2.0);
-    const bool withinLimit = (ratioAR >= 1.0) || (1.0 / ratioAR <= limit);
-    // A CAP BELOW THE CORRECTION IS AN EXPLICIT BUDGET.
-    //
-    // Auto used to letterbox whenever the fill needed more than Fill limit, and
-    // in the squeeze direction (a scope film on a 16:9 screen: 134 %) that is
-    // the exact case people buy NLS for - so the screen stayed letterboxed
-    // until they found a row called Fill limit and raised it. Max distortion is
-    // now the direct expression of "how much distortion will you take", so when
-    // it sits below what the fill needs, the user has answered the question and
-    // the rest is taken as crop. At the DEFAULT cap (140 %) this is false, so
-    // every case that letterboxed before still letterboxes: a traditional
-    // scope-screen setup is untouched (scope content on a scope screen needs no
-    // correction at all, 16:9 content on it is k > 1 and already filled).
-    double sx = 1.0, sy = 1.0;
-    NlsSplitFactors(ratioAR, axis, split, cap, false /* uncapped: the correction */,
-                    sx, sy);
-    const double worst = std::max(std::max(sx, 1.0 / std::max(sx, 0.001)),
-                                  std::max(sy, 1.0 / std::max(sy, 0.001)));
-    const bool budgetGiven = (cap >= 1.0) && (worst > cap + 1e-9);
-    return ((withinLimit || budgetGiven) && bandValid) ? 1 : 0;
-}
+// (NlsFillAction was removed with Fill limit: Auto/Crop now always fit to the
+// Bars removed dial, and Max distortion + the Post-NLS crop limits are the
+// budgets. Keeping the old refusal helper would have been a dead control.)
 
 HRESULT MpcPlayer::ResizeVideo()
 {
@@ -1218,16 +1193,16 @@ HRESULT MpcPlayer::ResizeVideo()
     if (!renderer_ || !renderTarget_) return S_OK;
     RECT rc = {};
     GetClientRect(renderTarget_, &rc);
-    // THE PICTURE'S CANVAS IS ALWAYS THE WHOLE WINDOW.
+    // THE CANVAS IS THE SCREEN ASPECT, fitted inside the visible area.
     //
-    // The shell can reserve part of its client for chrome, but that must NOT change
-    // the canvas the geometry is computed against: NLS/zoom/crop are tuned by the
-    // user against the full window, and re-deriving them for a narrower canvas
-    // re-warps the picture every time the chrome appears (measured: text turned
-    // ragged because Stretch mode's ratio jumped from 2.39:1 to 2.58:1). So the
-    // geometry below runs against the full client exactly as before, and the
-    // finished destination rect is then scaled UNIFORMLY into the chrome's
-    // remaining area - the picture gets smaller, never differently shaped.
+    // The shell reserves part of its client for chrome while the rail is up.
+    // The trial view must show the SAME composition as full-screen, scaled: if
+    // the canvas simply became the chrome-free rectangle, its aspect changed
+    // (field log: 3162x1998 = 1.58 instead of 1.78) and NLS re-warped to that
+    // temporary shape - the panel showed a different warp/crop from full screen
+    // (reported 2026-11-04). So the canvas keeps the screen AR (the full client's
+    // aspect) and is centred in the chrome-free area; the picture is smaller,
+    // never differently shaped. Geometry and the NLS shader both use this rect.
     RECT vr = rc;
     if (videoRectSet_) {
         vr.left = std::clamp(videoRect_[0], 0L, rc.right);
@@ -1235,8 +1210,23 @@ HRESULT MpcPlayer::ResizeVideo()
         vr.right = std::clamp(videoRect_[0] + videoRect_[2], vr.left, rc.right);
         vr.bottom = std::clamp(videoRect_[1] + videoRect_[3], vr.top, rc.bottom);
     }
-    const int clientW = rc.right;
-    const int clientH = rc.bottom;
+    int clientW = (int)rc.right, clientH = (int)rc.bottom;
+    int canvasX = 0, canvasY = 0;
+    if (videoRectSet_ && vr.right > vr.left && vr.bottom > vr.top) {
+        const int vw2 = (int)(vr.right - vr.left), vh2 = (int)(vr.bottom - vr.top);
+        const double screenAR = (double)rc.right / (double)std::max(rc.bottom, 1L);
+        if ((double)vw2 / (double)vh2 >= screenAR) {
+            clientH = vh2;
+            clientW = (int)std::lround((double)vh2 * screenAR);
+        } else {
+            clientW = vw2;
+            clientH = (int)std::lround((double)vw2 / screenAR);
+        }
+        clientW = std::max(1, std::min(clientW, vw2));
+        clientH = std::max(1, std::min(clientH, vh2));
+        canvasX = (int)vr.left + (vw2 - clientW) / 2;
+        canvasY = (int)vr.top + (vh2 - clientH) / 2;
+    }
     if (clientW <= 0 || clientH <= 0) return S_OK;
 
     // AR-corrected source size from MPCVR: width is scaled by DAR.
@@ -1269,7 +1259,6 @@ HRESULT MpcPlayer::ResizeVideo()
         double cropX = 1.0, cropY = 1.0;   // per-axis geometry zoom that covers the remainder
         NlsGeom ng;                        // geometry for the chosen bar fill
         const double clientAR = (double)clientW / (double)clientH;
-        double fillScaleW = 0.0, fillScaleH = 0.0;   // cover rect, used by crop
         if (nl.enabled && m_nlsBandKnown.load()) {
             const int mode = std::clamp(nl.fillMode, 0, 3);
             const double frameAR = (double)vw / (double)vh;
@@ -1292,36 +1281,26 @@ HRESULT MpcPlayer::ResizeVideo()
             ng = NlsPartialFill((double)clientW, (double)clientH, frameAR, wA, hA,
                                 useBarFill);
             const double ratioAR = ng.aniso;
-            const double cap = std::clamp((double)nl.maxStretch, 1.0, 2.0);
-            // Max distortion is a real budget in the modes that may crop
-            // (Auto). Stretch never crops, so it never caps either. BOTH halves
-            // must use this same rule: capping the shader while the geometry
-            // filled was the 2026-11-03 uniform-stretch bug, and capping neither
-            // (the fix for it) left Max distortion with no consumer at all.
+            // Max distortion is the warp budget. Crop is the ZERO-distortion
+            // baseline, so it caps at 1.0 (no warp) and leaves the whole
+            // remainder to the geometry - and to the Post-NLS limits below.
+            // Stretch never crops, so it never caps either.
+            const double cap = (mode == 2) ? 1.0
+                             : std::clamp((double)nl.maxStretch, 1.0, 2.0);
             const bool applyCap = (mode != 1);
             NlsSplitFactors(ratioAR, std::clamp(nl.axis, 0, 3), (double)nl.split, cap,
                             applyCap,
                             warpX, warpY, &cropX, &cropY);
-            if (mode == 0) {
-                // Auto: remove the bars the user chose to remove and warp the
-                // remaining active picture. The amount retained comes from
-                // Bars removed (see useBarFill above); at 0 the geometry is the
-                // plain fit rect, so there is nothing to warp.
+            if (mode == 0 || mode == 2) {
+                // Auto and Crop both interpolate Bars removed from fit (0) to
+                // fill (100). Auto adds the warp within Max distortion; Crop
+                // keeps cap = 1.0, so its share is pure geometry. At 0 there is
+                // no correction left and the fit rect is used unchanged.
                 nlsAction = (fabs(ratioAR - 1.0) > 0.001) ? 1 : 0;
+            } else if (mode == 1) {
+                nlsAction = 1;                       // Stretch: always warp
             } else {
-                nlsAction = NlsFillAction(ratioAR, bandValid, mode, fillLimit,
-                                          std::clamp(nl.axis, 0, 3), (double)nl.split, cap);
-            }
-            if (nlsAction != 1 && nlsAction != 2) {
-                const double activeAR = frameAR / (hA > 0.01 ? hA : 1.0);
-                static double s_loggedAR = 0.0;
-                if (fabs(s_loggedAR - activeAR) > 0.01) {
-                    s_loggedAR = activeAR;
-                    Log("[NLS] fill refused: picture AR %.3f needs a %.0f%% %s, limit %.0f%% — "
-                        "letterboxed", activeAR,
-                        ratioAR < 1.0 ? (1.0 / ratioAR - 1.0) * 100.0 : (ratioAR - 1.0) * 100.0,
-                        ratioAR < 1.0 ? "squeeze" : "stretch", (fillLimit - 1.0) * 100.0);
-                }
+                nlsAction = 0;                       // Off
             }
             if (nlsAction == 1 && ((hA > 0.5 && hA < 0.9995) ||
                                   (wA > 0.5 && wA < 0.9995))) {
@@ -1330,27 +1309,10 @@ HRESULT MpcPlayer::ResizeVideo()
                 // so fill + crop is ONE resize with the renderer's own scaler.
                 geomCrop = true;
             }
-            if (nlsAction == 2) {
-                // Cover rect: the KEPT frame scaled uniformly until it covers
-                // the window. `barFill` is how much of the encoded letterbox is
-                // removed: 0 keeps the full frame, 1 removes all bars. Feeding
-                // raw hA here made Crop ignore the slider and always remove
-                // 100% of the bars (reported 2026-11-03).
-                const double t = std::clamp((double)nl.barFill, 0.0, 1.0);
-                const double kept = 1.0 - t * (1.0 - hA);
-                const double scale = std::max((double)clientW,
-                                              (double)clientH * frameAR /
-                                              (kept > 0.01 ? kept : 1.0));
-                fillScaleW = scale;
-                fillScaleH = scale / frameAR;
-                Log("[NLS] crop to fill: picture AR %.3f on %.3f window -> %dx%d (no warp)",
-                    frameAR / (hA > 0.01 ? hA : 1.0), clientAR,
-                    (int)lround(fillScaleW), (int)lround(fillScaleH));
-            }
         }
         if (nlsAction) g.mode = 2;
         m_nlsFillOk.store(nlsAction != 0);
-        m_nlsCropFill.store(nlsAction == 2);
+        m_nlsCropFill.store(nl.fillMode == 2);
         double videoAR = (double)vw / (double)vh;
         if (g.mode == 1 && g.aspect > 0.0) videoAR = std::clamp(g.aspect, 1.0, 3.0);
         else if (g.mode == 2) videoAR = clientAR;      // fill
@@ -1363,9 +1325,6 @@ HRESULT MpcPlayer::ResizeVideo()
         if (g.mode != 2) {
             if (clientAR > videoAR) destW = (int)(clientH * videoAR + 0.5);
             else if (clientAR < videoAR) destH = (int)(clientW / videoAR + 0.5);
-        } else if (nlsAction == 2) {
-            destW = (int)lround(fillScaleW);
-            destH = (int)lround(fillScaleH);
         } else if (nlsAction == 1 && m_nlsBandKnown.load()) {
             // The warp takes each axis up to Max distortion; the geometry zoom
             // covers the remainder, so the screen is filled either way. The crop
@@ -1377,7 +1336,9 @@ HRESULT MpcPlayer::ResizeVideo()
             // The un-cropped rect comes from the bar fill (NlsPartialFill): at
             // 0 it IS the fit rect, at 100 the fully-filled one. The geometry
             // zoom then covers whatever the warp cap refused, on the axis that
-            // has slack only (see `residue` in NlsSplitFactors).
+            // has slack only (see `residue` in NlsSplitFactors). The Post-NLS
+            // X/Y crop is a shader-space cut applied later (ApplyPostFx), so it
+            // does not enter the destination here.
             destW = (int)lround(ng.destW0 * cropX);
             destH = (int)lround(ng.destH0 * cropY);
         }
@@ -1438,27 +1399,13 @@ HRESULT MpcPlayer::ResizeVideo()
         }
     }
 
-    // Now place the finished picture in the space the chrome leaves, UNIFORMLY:
-    // the whole canvas (picture plus its letterbox) is scaled by one factor and
-    // centred, so the picture's shape, crop and NLS warp are identical whether the
-    // chrome is up or not - it is simply smaller. Without this the canvas aspect
-    // changed with the chrome and every toggle re-warped the picture.
-    if (videoRectSet_) {
-        const int vw2 = vr.right - vr.left, vh2 = vr.bottom - vr.top;
-        if (vw2 > 0 && vh2 > 0) {
-            const double s = std::min((double)vw2 / (double)clientW, (double)vh2 / (double)clientH);
-            const int w2 = (int)std::lround((double)clientW * s);
-            const int h2 = (int)std::lround((double)clientH * s);
-            const int ox = vr.left + (vw2 - w2) / 2;
-            const int oy = vr.top + (vh2 - h2) / 2;
-            dest = { ox + (int)std::lround((double)dest.left * s),
-                     oy + (int)std::lround((double)dest.top * s),
-                     ox + (int)std::lround((double)dest.right * s),
-                     oy + (int)std::lround((double)dest.bottom * s) };
-            Log("[GEOM] refit x%.3f canvas=(%d,%d) dest=(%d,%d) %dx%d",
-                s, clientW, clientH, dest.left, dest.top,
-                dest.right - dest.left, dest.bottom - dest.top);
-        }
+    // The canvas was computed in the chrome-free area's own coordinates; the
+    // renderer's window still spans the whole client, so move the finished rect
+    // into place. No scaling: the canvas IS the visible area now, which is what
+    // makes the NLS effect with the chrome up identical to full screen.
+    if (canvasX || canvasY) {
+        dest.left += canvasX; dest.top += canvasY;
+        dest.right += canvasX; dest.bottom += canvasY;
     }
 
     if (CComQIPtr<IMFGetService> pGS = renderer_) {
@@ -3527,12 +3474,45 @@ void MpcPlayer::ApplyPostFx()
         RECT cr = {};
         ::GetClientRect(renderTarget_, &cr);
         const int W = cr.right - cr.left, H = cr.bottom - cr.top;
+        // The visible canvas is the chrome-free area when the shell reserves
+        // one (same rule as ResizeVideo). The NLS map is evaluated in that
+        // canvas and then mapped back into the renderer's full-window UV, so
+        // chrome-up and chrome-down have the same effect.
+        RECT vr = cr;
+        if (videoRectSet_) {
+            vr.left = std::clamp(videoRect_[0], 0L, cr.right);
+            vr.top = std::clamp(videoRect_[1], 0L, cr.bottom);
+            vr.right = std::clamp(videoRect_[0] + videoRect_[2], vr.left, cr.right);
+            vr.bottom = std::clamp(videoRect_[1] + videoRect_[3], vr.top, cr.bottom);
+        }
+        const bool haveVr = videoRectSet_ && vr.right > vr.left && vr.bottom > vr.top;
+        // Screen-AR canvas fitted inside the visible area - identical rule to
+        // ResizeVideo. This keeps the trial composition the same as full-screen;
+        // using the chrome-free rect directly changed the AR (1.58 vs 1.78) and
+        // re-warped the picture.
+        int cw = W, ch = H;
+        double canvasOffX = 0.0, canvasOffY = 0.0;
+        if (haveVr) {
+            const int vw2 = (int)(vr.right - vr.left), vh2 = (int)(vr.bottom - vr.top);
+            const double screenAR = (double)W / (double)H;
+            if ((double)vw2 / (double)vh2 >= screenAR) {
+                ch = vh2;
+                cw = (int)std::lround((double)vh2 * screenAR);
+            } else {
+                cw = vw2;
+                ch = (int)std::lround((double)vw2 / screenAR);
+            }
+            cw = std::max(1, std::min(cw, vw2));
+            ch = std::max(1, std::min(ch, vh2));
+            canvasOffX = (double)vr.left + (vw2 - cw) / 2.0;
+            canvasOffY = (double)vr.top + (vh2 - ch) / 2.0;
+        }
         long vw = 0, vh = 0;
         if (CComQIPtr<IBasicVideo> pBV = renderer_) {
             long sl = 0, st = 0;
             if (FAILED(pBV->GetSourcePosition(&sl, &st, &vw, &vh))) vw = vh = 0;
         }
-        if (W > 0 && H > 0 && vw > 0 && vh > 0) {
+        if (W > 0 && H > 0 && cw > 0 && ch > 0 && vw > 0 && vh > 0) {
             // Confirmed band from the live watcher (per-frame, gated, persisted
             // for two ticks). Not read from GetMLStats here: that is the union,
             // which grows on dark scenes.
@@ -3541,12 +3521,12 @@ void MpcPlayer::ApplyPostFx()
             float fracB = haveBand ? m_nlsBandBot.load() : 0.0f;
             float fracL = haveBand ? m_nlsBandLeft.load() : 0.0f;
             float fracR = haveBand ? m_nlsBandRight.load() : 0.0f;
-            int top = std::clamp((int)lroundf(fracT * (float)H), 0, H - 1);
-            int bot = std::clamp((int)lroundf(fracB * (float)H), 0, H - 1 - top);
-            int left = std::clamp((int)lroundf(fracL * (float)W), 0, W - 1);
-            int right = std::clamp((int)lroundf(fracR * (float)W), 0, W - 1 - left);
-            const double hA = (double)(H - top - bot) / (double)H;
-            const double wA = (double)(W - left - right) / (double)W;
+            int top = std::clamp((int)lroundf(fracT * (float)ch), 0, ch - 1);
+            int bot = std::clamp((int)lroundf(fracB * (float)ch), 0, ch - 1 - top);
+            int left = std::clamp((int)lroundf(fracL * (float)cw), 0, cw - 1);
+            int right = std::clamp((int)lroundf(fracR * (float)cw), 0, cw - 1 - left);
+            const double hA = (double)(ch - top - bot) / (double)ch;
+            const double wA = (double)(cw - left - right) / (double)cw;
             const double fullAR = (double)vw / (double)vh;
             double activeAR = fullAR * wA / std::max(hA, 0.01);
             // Last sanity gate: reject detector artefacts, in the space that matters.
@@ -3557,7 +3537,7 @@ void MpcPlayer::ApplyPostFx()
             }
             const bool haveBars = haveBand &&
                 (top >= 2 || bot >= 2 || left >= 2 || right >= 2);
-            const double winAR = (double)W / (double)H;
+            const double winAR = (double)cw / (double)ch;
             // The band itself is removed by the destination rect (ResizeVideo),
             // so the shader never crops: its active rectangle is the whole
             // frame. Cropping here as well would double-crop AND resample the
@@ -3569,7 +3549,7 @@ void MpcPlayer::ApplyPostFx()
             // How much of the letterbox this title keeps, and the correction that
             // geometry needs. Same helper the renderer's resize uses, so the two
             // halves agree even while the geometry is deferred.
-            const NlsGeom ng = NlsPartialFill((double)W, (double)H, fullAR,
+            const NlsGeom ng = NlsPartialFill((double)cw, (double)ch, fullAR,
                                               haveBand ? wA : 1.0,
                                               haveBand ? hA : 1.0,
                                               (double)pendingNls_.barFill);
@@ -3583,7 +3563,6 @@ void MpcPlayer::ApplyPostFx()
             // is the single definition both halves use.
             const double maxStretch = std::clamp((double)pendingNls_.maxStretch, 1.0, 2.0);
             const int axis = std::clamp(pendingNls_.axis, 0, 3);
-            double rx = 1.0, ry = 1.0;
             // Auto honours the Max distortion budget on both axes;
             // Stretch never crops, so it never caps. The geometry applies the
             // SAME rule and takes the refused residue as a destination zoom
@@ -3592,18 +3571,18 @@ void MpcPlayer::ApplyPostFx()
             // applyCap (2026-11-03: shader capped, geometry uncapped, uniform
             // vertical stretch with no NLS pass).
             const bool applyCap = (pendingNls_.fillMode != 1);
+            // Crop is the zero-distortion baseline: cap 1.0 (no warp), the rest
+            // is geometry and the Post-NLS limits. Auto uses Max distortion.
+            const double cap = (pendingNls_.fillMode == 2) ? 1.0 : maxStretch;
+            double rx = 1.0, ry = 1.0, rxCrop = 1.0, ryCrop = 1.0;
             NlsSplitFactors(ratioAR, axis,
-                            (double)pendingNls_.split, maxStretch,
+                            (double)pendingNls_.split, cap,
                             applyCap,
-                            rx, ry);                     // the geometry owns the crop
-            // Same for the fill decision: Auto fills (to the degree the
-            // Bars removed dial asks for, through NlsPartialFill above);
-            // manual Crop/Off keep their explicit meaning.
-            int fillAction;
-            if (pendingNls_.fillMode == 0) fillAction = 1;
-            else fillAction = NlsFillAction(ratioAR, haveBand,
-                                            pendingNls_.fillMode, pendingNls_.fillLimit,
-                                            axis, (double)pendingNls_.split, maxStretch);
+                            rx, ry, &rxCrop, &ryCrop);   // the geometry owns the crop
+            // Fill decision: Auto and Stretch warp (Auto within the cap), Crop covers
+            // with geometry and only needs a pass when a Post-NLS crop is set,
+            // Off never fills.
+            int fillAction = (pendingNls_.fillMode == 3) ? 0 : 1;
             // What filling WOULD cost on this title, in per cent. Published for the
             // INFO panel so "Fill limit" can be set knowingly (a 2.39 film on a
             // 16:9 screen needs ~36 % squeeze, a 16:9 title on a scope screen ~34 %
@@ -3612,7 +3591,7 @@ void MpcPlayer::ApplyPostFx()
             // The cost ceiling for THIS title: the correction if every bar were
             // removed. Constant per title, so the panel can show the dial's range
             // ("0 % of 19 %") rather than a number with no reference.
-            const NlsGeom ngFull = NlsPartialFill((double)W, (double)H, fullAR,
+            const NlsGeom ngFull = NlsPartialFill((double)cw, (double)ch, fullAR,
                                                   haveBand ? wA : 1.0,
                                                   haveBand ? hA : 1.0, 1.0);
             m_nlsCostMaxPct.store((int)lround(fabs(ngFull.aniso - 1.0) * 100.0));
@@ -3625,37 +3604,54 @@ void MpcPlayer::ApplyPostFx()
             // is being shown at its own aspect and a warp would only distort it.
             // The 2 % deadband applies to both directions — a 0.98 squeeze is as
             // invisible as a 1.02 stretch.
-            if ((fabs(rx - 1.0) > 0.02 || fabs(ry - 1.0) > 0.02) && fillAction == 1) {
+            if (((fabs(rx - 1.0) > 0.02 || fabs(ry - 1.0) > 0.02) ||
+                 pendingNls_.cropX > 0.0001f || pendingNls_.cropY > 0.0001f) &&
+                fillAction == 1) {
                 nls::Params np;
                 // The map is evaluated inside the PICTURE rect, not the whole
                 // window: with a partial bar fill the picture does not reach the
                 // top/bottom edges, and the bars must stay black and unwarped.
                 const double barFracX = (1.0 - Wt) * 0.5;
                 const double barFracY = (1.0 - Ht) * 0.5;
-                np.activeL = (float)barFracX;
-                np.activeR = (float)(1.0 - barFracX);
-                np.activeT = (float)barFracY;
-                np.activeB = (float)(1.0 - barFracY);
+                // Canvas-local rect -> renderer window UV. With no chrome the
+                // transform is the identity; with chrome the map lives entirely
+                // inside the visible area, so the effect matches full screen.
+                np.activeL = (float)((canvasOffX + barFracX * cw) / W);
+                np.activeR = (float)((canvasOffX + (1.0 - barFracX) * cw) / W);
+                np.activeT = (float)((canvasOffY + barFracY * ch) / H);
+                np.activeB = (float)((canvasOffY + (1.0 - barFracY) * ch) / H);
+                // POST-NLS CROP: an AMOUNT, applied by the shader as a zoom of
+                // the mapped coordinate inside the canvas. 0 = none, so the
+                // pass is injected whenever either axis is non-zero even if the
+                // aspect already matches (a 16:9 title on a 16:9 screen). The
+                // amount is a fraction of the CANVAS; convert it to window UV
+                // and centre it on the canvas, not on the whole window.
+                np.cropCx = (float)((canvasOffX + cw * 0.5) / W);
+                np.cropCy = (float)((canvasOffY + ch * 0.5) / H);
+                np.cropX = pendingNls_.cropX * (float)cw / (float)W;
+                np.cropY = pendingNls_.cropY * (float)ch / (float)H;
                 np.ratioX = (float)rx;
                 np.ratioY = (float)ry;
                 np.strength = pendingNls_.strength;
                 np.center = pendingNls_.center;
                 np.curve = pendingNls_.curve;
                 nlsSrc = nls::Source(np);
-                Log("[NLS] %s bars=%d/%d of %d geomCrop=%d fill=%.2f picH=%.3f frameAR=%.3f "
-                    "activeAR=%.3f winAR=%.3f ratio=%.3f/%.3f centre=%.2f curve=%.2f strength=%.2f",
+                Log("[NLS] %s bars=%d/%d of %d geomCrop=%d fill=%.2f picH=%.3f crop=%.0f/%.0f "
+                    "frameAR=%.3f activeAR=%.3f winAR=%.3f ratio=%.3f/%.3f centre=%.2f "
+                    "curve=%.2f strength=%.2f",
                     axis == 2 ? "vertical" : (axis == 3 ? "split" : "horizontal"),
-                    top, bot, H, geomCrop ? 1 : 0,
+                    top, bot, ch, geomCrop ? 1 : 0,
                     (double)pendingNls_.barFill, Ht,
+                    (double)pendingNls_.cropX * 100.0, (double)pendingNls_.cropY * 100.0,
                     fullAR, activeAR, winAR, rx, ry,
                     (double)np.center, (double)np.curve, (double)np.strength);
             } else {
                 Log("[NLS] no pass bars=%d/%d of %d geomCrop=%d winAR=%.3f activeAR=%.3f "
-                    "ratio=%.3f/%.3f%s", top, bot, H, geomCrop ? 1 : 0,
+                    "ratio=%.3f/%.3f%s", top, bot, ch, geomCrop ? 1 : 0,
                     winAR, activeAR, rx, ry,
-                    fillAction == 2 ? " (crop to fill)"
-                        : (fillAction == 0 ? " (fill refused: letterboxed at its own aspect)"
-                                           : " (crop only)"));
+                    fillAction == 0 ? " (fill refused: letterboxed at its own aspect)"
+                        : pendingNls_.fillMode == 2 ? " (crop to fill)"
+                                                   : " (crop only)");
             }
         }
     }
@@ -4560,10 +4556,12 @@ std::string MpcPlayer::GetUiStatusJson() const
         // the shader (wx/wy, signed per cent; negative = compression). "need"
         // falls with Bars removed and reaches 0 when the bars are all kept — the
         // panel shows max next to it so that reduction is legible.
-        // Eleven specifiers, eleven arguments — see the warning above about
-        // keeping these matched.
+        // Fifteen specifiers, fifteen arguments — see the warning above about
+        // keeping these matched. cxl/cyl are the Post-NLS limits; cxn/cyn the
+        // crop that actually happened per axis (always <= its limit).
         "\"nls\":{\"on\":%d,\"need\":%d,\"limit\":%d,\"filling\":%d,\"warp\":%d,\"crop\":%d,"
-        "\"bars\":%d,\"max\":%d,\"wx\":%d,\"wy\":%d,\"cap\":%d},"
+        "\"bars\":%d,\"max\":%d,\"wx\":%d,\"wy\":%d,\"cap\":%d,"
+        "\"cxl\":%d,\"cyl\":%d,\"cxn\":%d,\"cyn\":%d},"
         // The surface every aspect decision is based on: the client rect of the
         // renderer's host window, i.e. whatever the app actually covers (the
         // screen, full-screen). Nothing asks the user for a screen size — this is
@@ -4602,6 +4600,10 @@ std::string MpcPlayer::GetUiStatusJson() const
         (int)lround(((double)m_nlsWarpRatio.load() - 1.0) * 100.0),
         (int)lround(((double)m_nlsWarpRatioY.load() - 1.0) * 100.0),
         (int)lround((double)pendingNls_.maxStretch * 100.0),
+        (int)lround((double)pendingNls_.cropX * 100.0),
+        (int)lround((double)pendingNls_.cropY * 100.0),
+        (int)lround((double)pendingNls_.cropX * 100.0),
+        (int)lround((double)pendingNls_.cropY * 100.0),
         dispW, dispH);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
@@ -4878,6 +4880,10 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "nlsCenter") { nls.center = std::clamp((float)vd(v), 0.0f, 0.90f); nAny = true; }
             else if (name == "nlsCurve")  { nls.curve = std::clamp((float)vd(v), 1.0f, 2.9f); nAny = true; }
             else if (name == "nlsMax")    { nls.maxStretch = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }
+            // Post-NLS crop amounts, per axis (fraction of that picture dimension cut
+            // after the NLS pass). 0 = no crop, 0.10 = cut 10 % and fill.
+            else if (name == "nlsCropX")  { nls.cropX = std::clamp((float)vd(v), 0.0f, 0.45f); nAny = true; }
+            else if (name == "nlsCropY")  { nls.cropY = std::clamp((float)vd(v), 0.0f, 0.45f); nAny = true; }
             // Retired from the UI (Max distortion is the budget now), but still parsed so
             // presets written before the change load without a warning.
             else if (name == "nlsFillLimit") { nls.fillLimit = std::clamp((float)vd(v), 1.0f, 2.0f); nAny = true; }

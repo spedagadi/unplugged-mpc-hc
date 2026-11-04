@@ -30,6 +30,16 @@ struct Params {
     float strength = 1.0f;    // 0..1
     float center = 0.35f;     // protected centre fraction
     float curve = 2.0f;       // 1..2.9
+    // Post-NLS crop, per axis, as a FRACTION OF THE PICTURE CUT (0..0.45).
+    // Applied after the warp: the central (1-crop) part of the warped image is
+    // stretched across the picture rect. 0 = no crop.
+    float cropX = 0.0f;
+    float cropY = 0.0f;
+    // Centre of the visible canvas in window UV (0.5/0.5 with no chrome). The
+    // crop must zoom about the canvas centre, not the whole window, or raising
+    // the rail's chrome would shift the crop.
+    float cropCx = 0.5f;
+    float cropCy = 0.5f;
 };
 
 inline std::string Source(const Params& p)
@@ -56,6 +66,10 @@ cbuffer PS_CONSTANTS : register(b0)
 #define STRENGTH  __STRENGTH__
 #define CENTER    __CENTER__
 #define CURVE     __CURVE__
+#define CROP_X    __CROPX__
+#define CROP_Y    __CROPY__
+#define CROP_CX   __CROP_CX__
+#define CROP_CY   __CROP_CY__
 
 // The post-scale pass binds a POINT sampler at s0 (DX11VideoProcessor::
 // TextureCopyRect -> m_pSamplerPoint), so a plain tex.Sample() here fetches the
@@ -148,13 +162,24 @@ float map_axis(float u, float lo, float hi, float ratio)
 
 float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
 {
+    // POST-NLS CROP applies to the WHOLE frame, bars included. This is what
+    // makes it the "remove the bars that are left" control: with Bars removed
+    // at 75 % the picture is grown into 75 % of the letterbox and 25 % of it
+    // remains around the picture. Zooming the full coordinate by (1-crop)
+    // first consumes THAT black band; only once the crop passes the bar width
+    // does it start cutting the picture (a head at the top of frame). Cropping
+    // only inside the active rect - the earlier behaviour - cut the picture
+    // immediately and could never remove the bars.
+    float2 c = coord;
+    c.x = CROP_CX + (c.x - CROP_CX) * (1.0 - saturate(CROP_X));
+    c.y = CROP_CY + (c.y - CROP_CY) * (1.0 - saturate(CROP_Y));
     // BOTH axes are mapped, each by its own factor with its own protected
     // centre, so the protected region stays a rectangle instead of a cross.
     // An axis whose factor is 1 is an exact identity (map_radius early-outs),
     // which is what makes the single-axis modes bit-for-bit what they were.
-    float2 src = coord;
-    src.x = map_axis(coord.x, ACTIVE_L, ACTIVE_R, RATIO_X);
-    src.y = map_axis(coord.y, ACTIVE_T, ACTIVE_B, RATIO_Y);
+    float2 src = c;
+    src.x = map_axis(c.x, ACTIVE_L, ACTIVE_R, RATIO_X);
+    src.y = map_axis(c.y, ACTIVE_T, ACTIVE_B, RATIO_Y);
     return sampleBilinear(src);
 }
 )SHADER";
@@ -167,6 +192,10 @@ float4 main(float4 pos : SV_POSITION, float2 coord : TEXCOORD) : SV_Target
     postfx::ReplaceAll(s, "__STRENGTH__", postfx::F(p.strength));
     postfx::ReplaceAll(s, "__CENTER__", postfx::F(p.center));
     postfx::ReplaceAll(s, "__CURVE__", postfx::F(p.curve));
+    postfx::ReplaceAll(s, "__CROPX__", postfx::F(p.cropX));
+    postfx::ReplaceAll(s, "__CROPY__", postfx::F(p.cropY));
+    postfx::ReplaceAll(s, "__CROP_CX__", postfx::F(p.cropCx));
+    postfx::ReplaceAll(s, "__CROP_CY__", postfx::F(p.cropCy));
     return s;
 }
 

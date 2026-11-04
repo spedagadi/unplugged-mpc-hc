@@ -23,6 +23,9 @@
 //   - Auto always fills to Bars removed (Fill limit is retired): bars100 fills
 //     fully, bars50 keeps half the bars at half the correction, bars0 is the
 //     plain fit rect with no pass and no crop.
+//   - Post-NLS crop limits: auto-capX0 reports cxn=0 with a dest narrower than
+//     the window (bars, not a cut); auto-capX10 reports cxn=10. Crop mode
+//     follows Bars removed: bars0 is the fit rect, bars100 covers.
 //
 // NOT a criterion: frame equality. A grab returns the renderer's last DRAWN
 // frame, and while paused a settings change does not always force a redraw, so
@@ -36,6 +39,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <vector>
 
 typedef int (*fn_attach)(long long);
 typedef int (*fn_cmd)(const char*);
@@ -120,6 +124,62 @@ static const Cfg kCfgs[] = {
                         "geo.nlsBars=0;geo.nlsMax=1.4;geo.nlsStrength=1;"
                         "geo.nlsCenter=0.45;geo.nlsCurve=1.2",
       "nls_proof_24_auto_bars0.bmp" },
+    // POST-NLS CROP LIMITS. Auto at Max 100 is the pure-crop baseline; the X
+    // limit then decides how much of the residue may actually be cut. capX0
+    // must show cxn=0 and a dest smaller than the window (bars); capX10 must
+    // show cxn=10. Crop mode must now follow Bars removed: 0 = fit, 100 = cover.
+    { "auto-capX0",     "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.0;geo.nlsCropX=0;geo.nlsCropY=0.5;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_25_auto_capX0.bmp" },
+    { "auto-capX10",    "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.0;geo.nlsCropX=0.1;geo.nlsCropY=0.5;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_26_auto_capX10.bmp" },
+    { "crop-bars0",     "geo.nls=1;geo.nlsFillMode=2;geo.nlsBars=0;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0.5;geo.nlsCropY=0.5;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_27_crop_bars0.bmp" },
+    { "crop-bars50",    "geo.nls=1;geo.nlsFillMode=2;geo.nlsBars=0.5;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0.5;geo.nlsCropY=0.5;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_28_crop_bars50.bmp" },
+    { "crop-bars100",   "geo.nls=1;geo.nlsFillMode=2;geo.nlsBars=1;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0.5;geo.nlsCropY=0.5;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_29_crop_bars100.bmp" },
+    // The always-visible case: Bars removed 0 leaves the fit rect (ratio 1),
+    // so only the Post-NLS crop should inject a pass. This is the 16:9-title-
+    // on-16:9-screen report: no warp, no geometry crop, but the picture must
+    // still zoom when X-Crop is raised.
+    { "crop-only-x10",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=0;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0.1;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_30_crop_only_x10.bmp" },
+    // AXIS COMPARISON on a 2.39 test frame with a perfect centre circle.
+    // Same correction, same budgets; only the axis distribution moves.
+    // Horizontal leaves height untouched; Split 50 scales the protected
+    // centre uniformly (sx == sy), pushing the anisotropy into the rim.
+    { "axis-horiz",     "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=1;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_31_axis_horiz.bmp" },
+    { "axis-split25",   "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.25;geo.nlsMax=1.4;geo.nlsCropX=0;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_32_axis_split25.bmp" },
+    { "axis-split50",   "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.5;geo.nlsMax=1.4;geo.nlsCropX=0;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_33_axis_split50.bmp" },
+    { "axis-split75",   "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=3;"
+                        "geo.nlsSplit=0.75;geo.nlsMax=1.4;geo.nlsCropX=0;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_34_axis_split75.bmp" },
+    { "axis-vertical",  "geo.nls=1;geo.nlsFillMode=0;geo.nlsBars=1;geo.nlsAxis=2;"
+                        "geo.nlsMax=1.4;geo.nlsCropX=0;geo.nlsCropY=0;"
+                        "geo.nlsStrength=1;geo.nlsCenter=0.45;geo.nlsCurve=1.2",
+      "nls_proof_35_axis_vertical.bmp" },
     // 28 Years Later / AVSForum workflow legs (2026-11-01): Crop is the zero-
     // distortion reference; Auto at Max 101 should be nearly identical, then
     // raising Max should trade crop for warp, ending at no crop.
@@ -230,6 +290,66 @@ static bool Grab(const char* name) {
     return rc == 0;
 }
 
+// Screen capture of the harness window. The engine's `grab` returns the
+// renderer's input frame, BEFORE the post-scale shaders - useless for judging
+// NLS. This BitBlts the composited window (the D3D swap chain in windowed mode
+// is on the desktop), so the warp/crop under test is in the picture.
+static HWND g_renderChild = nullptr;
+static BOOL CALLBACK FindChildProc(HWND h, LPARAM) {
+    wchar_t cls[128] = {};
+    GetClassNameW(h, cls, 128);
+    printf("[child] %p class=%ls\n", (void*)h, cls);
+    if (!g_renderChild) g_renderChild = h;
+    return TRUE;
+}
+
+static bool GrabScreen(const char* name) {
+    if (!g_renderChild) EnumChildWindows(g_hwnd, FindChildProc, 0);
+    HWND target = g_renderChild ? g_renderChild : g_hwnd;
+    RECT rc{};
+    GetClientRect(target, &rc);
+    const int w = rc.right, h = rc.bottom;
+    if (w <= 0 || h <= 0) return false;
+    HDC sdc = GetDC(nullptr), mdc = CreateCompatibleDC(sdc);
+    HBITMAP bm = CreateCompatibleBitmap(sdc, w, h);
+    HGDIOBJ old = SelectObject(mdc, bm);
+    // PrintWindow with PW_RENDERFULLCONTENT composites a D3D child (BitBlt of
+    // the desktop returns the window's white background for a swap chain).
+    BOOL ok = PrintWindow(target, mdc, 0x00000003 /*FULLCONTENT|CLIENTONLY*/);
+    if (!ok) {
+        POINT pt{0, 0};
+        ClientToScreen(target, &pt);
+        ok = BitBlt(mdc, 0, 0, w, h, sdc, pt.x, pt.y, SRCCOPY);
+    }
+    std::vector<unsigned char> buf((size_t)w * h * 4);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    GetDIBits(mdc, bm, 0, (UINT)h, buf.data(), &bi, DIB_RGB_COLORS);
+    SelectObject(mdc, old);
+    DeleteObject(bm);
+    DeleteDC(mdc);
+    ReleaseDC(nullptr, sdc);
+    const std::string path = g_outDir + "\\screen_" + name;
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return false;
+    BITMAPFILEHEADER fh{};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(bi.bmiHeader);
+    fh.bfSize = fh.bfOffBits + (DWORD)buf.size();
+    fwrite(&fh, 1, sizeof(fh), f);
+    fwrite(&bi.bmiHeader, 1, sizeof(bi.bmiHeader), f);
+    fwrite(buf.data(), 1, buf.size(), f);
+    fclose(f);
+    printf("[%7u ms] screen %-32s ok=%d\n", GetTickCount() - g_t0, name, (int)ok);
+    fflush(stdout);
+    return ok == TRUE;
+}
+
 static void PollOnce() {
     std::string j = Stats();
     g_lastPollMs = GetTickCount();
@@ -287,6 +407,7 @@ static void PollOnce() {
     case 4:
         if (now - g_phaseAt > 900) {
             Grab(kCfgs[g_cfg].bmp);
+            GrabScreen(kCfgs[g_cfg].bmp);
             printf("%-18s %s\n", kCfgs[g_cfg].name, ObjOf(j.c_str(), "nls").c_str());
             fflush(stdout);
             if (++g_cfg >= (int)(sizeof(kCfgs) / sizeof(kCfgs[0]))) {
@@ -357,6 +478,11 @@ int main(int argc, char** argv) {
     g_hwnd = CreateWindowExA(0, "nlsproof", "nlsproof", WS_OVERLAPPEDWINDOW,
                              0, 0, 640, 360, 0, 0, wc.hInstance, 0);
     if (!g_hwnd) { printf("FAIL: no window\n"); return 2; }
+    // The screen capture below reads the composited desktop; keep this window
+    // above everything so the grab is the rendered frame, not another app.
+    ShowWindow(g_hwnd, SW_SHOW);
+    SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    SetForegroundWindow(g_hwnd);
 
     std::thread watchdog([] {
         while (g_phase != 9) {
