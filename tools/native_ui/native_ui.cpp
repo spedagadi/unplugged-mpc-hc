@@ -1,4 +1,4 @@
-﻿// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
+// tools/native_ui/native_ui.cpp — Unplugged native MFC UI (PyQt = reference only).
 // SOURCE IS ASCII-ONLY: all non-ASCII glyphs use \uXXXX escapes (a prior
 // PowerShell Set-Content double-encoded raw UTF-8 literals into mojibake).
 // Must match the identifier in Unplugged.rc (the executable's icon resource).
@@ -788,7 +788,9 @@ static Row g_rows[]={
  {4,1,L"GEOMETRY",L"Pan X","geo.panX",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"GEOMETRY",L"Pan Y","geo.panY",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,0,L"NON-LINEAR STRETCH",L"Enable NLS","geo.nls",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {4,8,L"NON-LINEAR STRETCH",L"Screen","ui.nlsPreset",0,0,0,0,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ // (The Screen preset selector was removed: its three presets were identical
+ // and screen_ar was never read; the canvas IS the screen, so the geometry
+ // already adapts to it. See the 2.1.0 notes.)
  // How much of the letterbox the fill takes: 0 leaves the picture at its own
  // aspect, 100 fills the screen. The distortion scales with it, so this is the
  // "how many of the black bars do I get rid of" dial.
@@ -850,90 +852,6 @@ static void SyncUiFlags(){
     else if(!strcmp(r.key,"ui.autoNext")) g_autoNext=r.on;
     else if(!strcmp(r.key,"ui.showImdbRating")) g_showImdbRating=r.on; } }
 
-// ---- NLS presets -------------------------------------------------------------
-// `nls_presets` is deliberately separate from the main look presets. A main
-// preset is a look (tone map, HDR, post-FX); it links to one NLS preset by id.
-// NLS presets live in their own directory so a screen recipe can be reused,
-// shipped read-only, or overridden per user without rewriting the look.
-struct NlsPreset{ std::wstring id,name; double screenAR=0; int revision=1;
-                  bool readOnly=false; std::map<std::string,std::string> values; };
-static std::vector<NlsPreset> g_nlsPresets;
-static std::wstring g_nlsPresetId,g_nlsPresetName;
-static std::wstring NlsExeDir(){
-  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
-  std::wstring d(exe); size_t p=d.find_last_of(L'\\');
-  return p==std::wstring::npos?std::wstring(L"."):d.substr(0,p); }
-static std::wstring NlsUserDir(){
-  wchar_t la[MAX_PATH]={0};
-  if(GetEnvironmentVariableW(L"LOCALAPPDATA",la,MAX_PATH))
-    return std::wstring(la)+L"\\Unplugged\\nls_presets";
-  return NlsExeDir()+L"\\nls_presets"; }
-static bool ReadNlsPresetFile(const std::wstring& path,bool shipped,NlsPreset& p){
-  wchar_t b[512]={0};
-  GetPrivateProfileStringW(L"nls_preset",L"id",L"",b,512,path.c_str());
-  p.id=b; if(p.id.empty()) return false;
-  GetPrivateProfileStringW(L"nls_preset",L"name",L"",b,512,path.c_str());
-  p.name=b[0]?b:p.id;
-  GetPrivateProfileStringW(L"nls_preset",L"screen_ar",L"",b,32,path.c_str());
-  p.screenAR=_wtof(b);
-  GetPrivateProfileStringW(L"nls_preset",L"revision",L"1",b,32,path.c_str());
-  p.revision=_wtoi(b);
-  GetPrivateProfileStringW(L"nls_preset",L"read_only",shipped?L"1":L"0",b,32,path.c_str());
-  p.readOnly=_wtoi(b)!=0;
-  for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
-    if(!r.key||strncmp(r.key,"geo.nls",7)!=0) continue;
-    wchar_t v[512]={0};
-    GetPrivateProfileStringW(L"values",Widen(r.key).c_str(),L"",v,512,path.c_str());
-    if(*v) p.values[r.key]=Narrow(v); }
-  return true; }
-static int NlsPresetIndex(const std::wstring& id){
-  for(size_t i=0;i<g_nlsPresets.size();++i)
-    if(_wcsicmp(g_nlsPresets[i].id.c_str(),id.c_str())==0) return (int)i;
-  return -1; }
-static std::wstring NlsPresetIdAt(int i){
-  return (i>=0&&i<(int)g_nlsPresets.size())?g_nlsPresets[i].id:std::wstring(); }
-static std::wstring NlsPresetNameAt(int i){
-  return (i>=0&&i<(int)g_nlsPresets.size())?g_nlsPresets[i].name:std::wstring(); }
-static void LoadNlsPresets(){
-  g_nlsPresets.clear();
-  auto scan=[&](const std::wstring& dir,bool shipped){
-    WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW((dir+L"\\*.ini").c_str(),&fd);
-    if(h==INVALID_HANDLE_VALUE) return;
-    do{ if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
-      NlsPreset p; if(!ReadNlsPresetFile(dir+L"\\"+fd.cFileName,shipped,p)) continue;
-      int at=NlsPresetIndex(p.id);
-      if(at>=0) g_nlsPresets[at]=p;   // user file overrides shipped by id
-      else g_nlsPresets.push_back(p);
-    } while(FindNextFileW(h,&fd));
-    FindClose(h); };
-  const std::wstring exe=NlsExeDir();
-  scan(exe+L"\\nls_presets",true);
-  scan(exe+L"\\_internal\\nls_presets",true);
-  scan(NlsUserDir(),false);
-  // A fresh install with no data file still needs a usable dropdown. These are
-  // the compiled fallbacks; the installer copy can override both by id.
-  if(g_nlsPresets.empty()){
-    for(int n=0;n<2;++n){
-      NlsPreset p; p.id=(n==0)?L"16x9-balanced":L"scope-balanced";
-      p.name=(n==0)?L"16:9 \x2014 Balanced":L"Scope \x2014 Balanced";
-      p.screenAR=(n==0)?1.7778:2.39; p.readOnly=false;
-      for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
-        if(r.key&&strncmp(r.key,"geo.nls",7)==0) p.values[r.key]=IniValue(r); }
-      p.values["geo.nls"]="1"; p.values["geo.nlsAxis"]="1";
-      p.values["geo.nlsMax"]="140"; p.values["geo.nlsFillMode"]="0";
-      g_nlsPresets.push_back(p); } }
-  // Auto is the default screen choice; keep it first regardless of directory
-  // enumeration order, then sort the rest by display name.
-  std::sort(g_nlsPresets.begin(),g_nlsPresets.end(),[](const NlsPreset&a,const NlsPreset&b){
-    const bool aa=(_wcsicmp(a.id.c_str(),L"auto")==0), bb=(_wcsicmp(b.id.c_str(),L"auto")==0);
-    if(aa!=bb) return aa;
-    return _wcsicmp(a.name.c_str(),b.name.c_str())<0; });
-  // Populate the row's display names. The persisted id is applied by the
-  // settings loader once g_ini has been read.
-  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
-    if(!strcmp(r.key,"ui.nlsPreset")){
-      r.names.clear(); for(auto&p:g_nlsPresets) r.names.push_back(p.name); } }
-  LogF("nls presets: %d loaded",(int)g_nlsPresets.size()); }
 static bool SetRowFromText(Row& r,const std::wstring& val){
   if(val.empty()) return false;
   bool diff=false;
@@ -1072,7 +990,6 @@ static std::string IniValue(const Row& r){
   if(r.kind==0&&!strcmp(r.key,"out.superRes")) return r.on?"4":"0"; // SUPERRES_1440p
   if(r.kind==0) return r.on?"True":"False";
   if(r.kind==4) return Narrow(r.file);
-  if(r.kind==8) return Narrow(NlsPresetIdAt(r.opt));
   char b[64];
   if(r.kind==1){
     if(IsIntSlider(r.key)){ snprintf(b,sizeof(b),"%d",(int)floor(r.val+0.5)); return b; }
@@ -1092,34 +1009,6 @@ static std::string IniValue(const Row& r){
   else snprintf(b,sizeof(b),"%d",r.opt);
   return b;
 }
-static bool ApplyNlsPresetById(const std::wstring& id){
-  int idx=NlsPresetIndex(id); if(idx<0) return false;
-  const NlsPreset p=g_nlsPresets[idx];
-  g_nlsPresetId=p.id; g_nlsPresetName=p.name;
-  g_ini["ui.nlsPreset"]=Narrow(p.id); g_iniDirty=true;
-  const bool prev=g_applyingPreset; g_applyingPreset=true;
-  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i];
-    if(!r.key||strncmp(r.key,"geo.nls",7)!=0) continue;
-    auto it=p.values.find(r.key);
-    if(it!=p.values.end()&&SetRowFromText(r,Widen(it->second))) PushRow(r); }
-  g_applyingPreset=prev;
-  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
-    if(!strcmp(r.key,"ui.nlsPreset")) r.opt=idx; }
-  SaveIni("nls preset");
-  LogF("nls preset: applied '%s'",Narrow(p.name).c_str());
-  return true; }
-static bool ApplyNlsPresetByIndex(int idx){
-  if(idx<0||idx>=(int)g_nlsPresets.size()) return false;
-  return ApplyNlsPresetById(g_nlsPresets[idx].id); }
-static void SelectNlsPresetRowFromIni(){
-  const std::wstring id=Widen(IniGet("ui.nlsPreset"));
-  int idx=id.empty()?-1:NlsPresetIndex(id);
-  if(idx<0&&!g_nlsPresets.empty()) idx=0;
-  for(int i=0;i<NROWS;++i){ Row&r=g_rows[i]; if(!r.key) continue;
-    if(!strcmp(r.key,"ui.nlsPreset")){ r.opt=idx<0?0:idx;
-      if(idx>=0){ g_nlsPresetId=g_nlsPresets[idx].id; g_nlsPresetName=g_nlsPresets[idx].name;
-        if(IniGet("ui.nlsPreset")!=Narrow(g_nlsPresetId)){
-          g_ini["ui.nlsPreset"]=Narrow(g_nlsPresetId); g_iniDirty=true; } } } } }
 static void SaveIni(const char* why){
   if(!g_iniDirty) return;
   if(g_iniPath.empty()) g_iniPath=SettingsIniPath();
@@ -1301,7 +1190,6 @@ static void CaptureDefaults(){
 }
 static void LoadSettingsIni(){
   CaptureDefaults();       // born defaults, before any persisted value is applied
-  LoadNlsPresets();        // names/ids before the ui.nlsPreset row is selected
   g_iniPath=SettingsIniPath(); g_ini.clear();
   std::ifstream in(g_iniPath.c_str(),std::ios::binary); std::string line;
   while(std::getline(in,line)){ line=IniTrim(line);
@@ -1346,7 +1234,6 @@ static void LoadSettingsIni(){
       }
     }
   }
-  SelectNlsPresetRowFromIni();
   SyncUiFlags();       // ui.helpBanner / ui.autoNext from the persisted rows
   g_showInfo=IniBool(IniGet("ui.showInfo"));
   g_showSettings=IniBool(IniGet("ui.showSettings"));
@@ -1557,9 +1444,6 @@ static bool WritePresetFile(const std::wstring& name,bool announce){
   std::wstring path=PresetFilePath(name,true); if(path.empty()) return false;
   DeleteFileW(path.c_str());
   WritePrivateProfileStringW(L"preset",L"name",name.c_str(),path.c_str());
-  // The main preset links to the geometry preset. NLS rows are still written as
-  // a fallback snapshot, so old builds and a missing nls_presets file still work.
-  WritePrivateProfileStringW(L"preset",L"nls_preset",g_nlsPresetId.c_str(),path.c_str());
   for(const Row& r:g_rows){
     if(!PresetEligible(r)) continue;
     wchar_t val[4096]={0};
@@ -1610,23 +1494,6 @@ static bool ApplyPreset(const std::wstring& name){
     g_applyingPreset=true;
     for(Row* r:changed) PushRow(*r);
     g_applyingPreset=false; }
-  // A main preset can reference an NLS preset by id. The reference is applied
-  // after its row snapshot, so the shared geometry preset wins. Missing ids
-  // leave the snapshot in place and are logged, never silently zeroed.
-  if(!path.empty()){
-    wchar_t nid[256]={0};
-    GetPrivateProfileStringW(L"preset",L"nls_preset",L"",nid,256,path.c_str());
-    if(*nid){
-      if(!ApplyNlsPresetById(nid))
-        LogF("preset apply '%s': NLS preset '%S' missing; using snapshot",
-             Narrow(name).c_str(),nid);
-    } else {
-      // This main preset has no NLS link. Do not let the autosave pick up the
-      // globally selected NLS id and attach one behind the user's back; that
-      // turned a Crop test preset into Auto on the next save (reported
-      // 2026-11-03).
-      g_nlsPresetId.clear(); g_nlsPresetName.clear();
-    } }
   SetActivePreset(name,false);
   // Say which mode this apply leaves the engine with: "preset apply" alone cannot
   // be lined up against the renderer's `mode: Off active: no`, which is the exact
@@ -2475,7 +2342,7 @@ protected:
       // Kind 8 (Screen) is a dropdown like kind 2: same column, same chevron
       // spacing. It used to get its own 240 px column, which made its chevrons
       // sit apart from every other control in the tab (reported 2026-11-03).
-      const int ctlW = (r.kind==2 || r.kind==8) ? Px(210) : Px(CONTROL_W);
+      const int ctlW = (r.kind==2) ? Px(210) : Px(CONTROL_W);
       int labW = wide? Px(104) : (r.kind==1?Px(RAIL_W+150-8):(Px(RIGHT_W)-ctlW));
       const bool inert=RowInert(r);
       if(r.kind!=6) TxtW(dc,CRect(cx0+Px(PAD+6),y,cx0+Px(PAD+6)+labW,y+RowH()),r.label,inert?LO:TEXT,12,false,DT_LEFT|DT_VCENTER|DT_END_ELLIPSIS);
@@ -2590,16 +2457,6 @@ protected:
     else if(r.kind==4){ if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+15,0,0); }
     else if(r.kind==2){ if(r.nopts>1){r.opt=(r.opt+1)%r.nopts; PushRow(r);} }
     else if(r.kind==5||r.kind==7){ int c=(int)r.names.size(); if(c>1){r.opt=(r.opt+1)%c; PushRow(r);} }
-    else if(r.kind==8){
-      int c=(int)r.names.size();
-      if(c>1){ r.opt=(r.opt+1)%c; ApplyNlsPresetByIndex(r.opt); SaveRowIni(r);
-        // The link lives in the main preset, not in a settings row, so mark it
-        // dirty explicitly (PresetEligible excludes ui.*).
-        if(_wcsicmp(g_activePreset.c_str(),L"Default")!=0){
-          g_presetDirty=true; g_ini["ui.presetDirty"]="True"; g_iniDirty=true;
-          SaveIni("nls preset link");
-          if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+48,0,0); } }
-      Invalidate(FALSE); }
     else {
       // Split is greyed while Axis is not Split: the engine ignores it there,
       // so accepting a drag would only promise a change that cannot happen.
@@ -10122,9 +9979,9 @@ public:
   afx_msg LRESULT OnPresetState(WPARAM,LPARAM){
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty;
     m_top.Invalidate(FALSE);
-    // A main preset also carries NLS rows (and may resolve an nls_preset link).
-    // Repaint the rail or the rows keep showing the previous preset's values
-    // even though the engine already has the new ones.
+    // A main preset also carries the NLS rows. Repaint the rail or the rows keep
+    // showing the previous preset's values even though the engine already has
+    // the new ones.
     m_settings.Invalidate(FALSE);
     if(m_presets.IsWindowVisible()){ m_presets.Refresh(); m_presets.Invalidate(FALSE); }
     return 0; }

@@ -32,6 +32,10 @@ required: install over 2.0.0 and your library, presets and calibration remain.
   default. Centre 45, Curve 1.2, Max distortion 140; shipped presets aligned.
 - INFO panel reports bars removed, max/current cost, per-axis warp, cap,
   geometry crop and the Post-NLS crops.
+- **The Screen preset selector is gone.** Its Auto/16:9/Scope entries loaded
+  three identical recipes and `screen_ar` was never read, so it could not change
+  geometry — the canvas is the window/screen. NLS values remain part of every
+  main preset; there is no separate `nls_presets` folder any more.
 
 ## Library and UI
 
