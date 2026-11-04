@@ -5,7 +5,7 @@ required: install over 2.0.0 and your library, presets and calibration remain.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.1.0.exe` | 127,049,728 bytes | `C6C7ACCA91CB20DCD89826E6BC97F1E9030C5C061E85472CAF6203FD94A4D0DB` |
+| `Unplugged-setup-2.1.0.exe` | 127,066,591 bytes | `C29D4D4917942865E1CE53A9B8F2C5977FFE162900423BAFACF7C02A757EC9C4` |
 
 ## Non-linear stretch
 
@@ -54,6 +54,11 @@ required: install over 2.0.0 and your library, presets and calibration remain.
 - **OMDb budget protection.** All OMDb calls are counted locally and capped at
   900/day (free key limit is 1,000), surviving restarts; Wikipedia is not
   counted. Large libraries may take several days to populate fully.
+- **Rating chips are always present.** Movie, show and Continue tiles no longer
+  wait for their background metadata lookup to grow a chip. Continue tiles
+  prefer the episode rating, then the series rating, then the season average;
+  anything still unknown shows **IMDb N/A** and is replaced when the record
+  arrives.
 
 ## Renderer
 
