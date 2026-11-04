@@ -1,6 +1,6 @@
 # Unplugged Settings Guide
 
-For **Unplugged 2.0.0**. Covers every control visible in the settings panel:
+For **Unplugged 2.1.0**. Covers every control visible in the settings panel:
 what it does, its full range, and what the picture does when you move it.
 
 ## Playback keys

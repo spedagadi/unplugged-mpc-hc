@@ -25,11 +25,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "unplugged"
             VALUE "FileDescription",  "Unplugged"
-            VALUE "FileVersion",      "2.0.0.0"
+            VALUE "FileVersion",      "2.1.0.0"
             VALUE "InternalName",     "Unplugged"
             VALUE "OriginalFilename", "Unplugged.exe"
             VALUE "ProductName",      "Unplugged"
-            VALUE "ProductVersion",   "2.0.0.0"
+            VALUE "ProductVersion",   "2.1.0.0"
         END
     END
     BLOCK "VarFileInfo"

@@ -76,10 +76,10 @@ static int g_dpi=96;
 // THE release identity, in one place: the title strip draws it and measures it.
 // The version resource (Unplugged.rc) and the installer carry the same number;
 // the strip's literal used to say 1.3.1 while those said 2.0.0.
-static const wchar_t* kAppTitle = L"Unplugged 2.0.0";
+static const wchar_t* kAppTitle = L"Unplugged 2.1.0";
 // The bare version, for the update check. Keep the two in step (and with
 // Unplugged.rc + the installer): the check compares against this string.
-static const wchar_t* kAppVersion = L"2.0.0";
+static const wchar_t* kAppVersion = L"2.1.0";
 // What the signal is (SDR / PQ / HLG / Dolby Vision). Defined with the input
 // dialog; declared here because the status rail labels the signal too.
 static int DrClassify(int locked,int cs,int dr,int eotf,double tf,double hdrMeta,double dovi);
