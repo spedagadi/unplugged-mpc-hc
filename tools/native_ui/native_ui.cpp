@@ -4547,8 +4547,7 @@ struct Lib{
     js.clear();
     std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
       L"&Season="+std::to_wstring(season)+L"&Episode="+std::to_wstring(ep)+L"&plot=short";
-    js=GetJsonUrl(u);
-    if(js.empty()) return false;
+    if(!OmdbGetJson(u,js)) return false;
     if(js.find("Request limit reached")!=std::string::npos||
        js.find("Invalid API key")!=std::string::npos){
       omdbLimited=true;
@@ -4557,6 +4556,7 @@ struct Lib{
     return JStr(js,"Response")==L"True"; }
   int FetchSeasonMeta(const std::wstring& show,int season,unsigned gen){
     if(g_metaGen.load(std::memory_order_relaxed)!=gen) return 0;
+    omdbLimited=false;   // a new pass may resume after a quota/key refusal
     std::wstring key=OmdbKey();
     if(key.empty()){ LogF("episode meta: no OMDb key"); return 0; }
     auto due=EpisodeMetaDue(show,season);
@@ -4679,8 +4679,7 @@ struct Lib{
     js.clear();
     std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
       L"&plot=short";
-    js=GetJsonUrl(u);
-    if(js.empty()) return false;
+    if(!OmdbGetJson(u,js)) return false;
     if(js.find("Request limit reached")!=std::string::npos||
        js.find("Invalid API key")!=std::string::npos){
       omdbLimited=true;
@@ -4692,8 +4691,7 @@ struct Lib{
     js.clear();
     std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&i="+UrlEnc(imdb)+
       L"&Season="+std::to_wstring(season);
-    js=GetJsonUrl(u);
-    if(js.empty()) return false;
+    if(!OmdbGetJson(u,js)) return false;
     if(js.find("Request limit reached")!=std::string::npos||
        js.find("Invalid API key")!=std::string::npos){
       omdbLimited=true;
@@ -4787,6 +4785,7 @@ struct Lib{
     SQ::p_fin(s); return due; }
   int FetchSeriesOverviews(unsigned gen){
     if(g_seriesGen.load(std::memory_order_relaxed)!=gen) return 0;
+    omdbLimited=false;
     std::wstring key=OmdbKey(); if(key.empty()) return 0;
     struct S{ std::wstring title,imdb; };
     std::vector<S> rows;
@@ -4832,6 +4831,7 @@ struct Lib{
     bool due=SQ::p_step(s)==SQ::ROW; SQ::p_fin(s); return due; }
   int FetchMovieMeta(unsigned gen){
     if(g_movieGen.load(std::memory_order_relaxed)!=gen) return 0;
+    omdbLimited=false;
     std::wstring key=OmdbKey();
     if(key.empty()){ LogF("movie meta: no OMDb key"); return 0; }
     struct M{ std::wstring path,title,imdb; int year=0,tries=0; };
@@ -4852,8 +4852,8 @@ struct Lib{
         if(m.year>0) u+=L"&y="+std::to_wstring(m.year);
         u+=L"&type=movie"; }
       u+=L"&plot=short";
-      std::string js=GetJsonUrl(u);
-      if(js.empty()){
+      std::string js;
+      if(!OmdbGetJson(u,js)){
         int tries=m.tries+1;
         SetEpisodeMetaFail(m.path,now,tries,now+BackoffSeconds(tries));
         LogF("movie meta: '%s' request failed, retry %d",Narrow(m.title).c_str(),tries);
@@ -5167,6 +5167,44 @@ struct Lib{
   static std::string GetJsonUrl(const std::wstring& url){
     wchar_t td[MAX_PATH],tf[MAX_PATH]; GetTempPathW(MAX_PATH,td); GetTempFileNameW(td,L"unp",0,tf);
     std::string s; if(HttpGet(url,tf)) s=ReadTextFile(tf); DeleteFileW(tf); return s; }
+  // ---- OMDb daily budget ----------------------------------------------------
+  // The shipped key is a free OMDb key with 1,000 requests/day. A first scan of
+  // a large library (movies + series art + genre + year, then metadata) can ask
+  // far more than that; once the server answers "Request limit reached" the key
+  // is already spent for the day. Count locally in the `meta` table and stop
+  // before the quota, leaving headroom for manual/metadata lookups. Wikipedia
+  // does not use the key and keeps working.
+  static constexpr int kOmdbDailyCap = 900;
+  std::wstring MetaGet(const wchar_t* k){
+    std::wstring v; SQ::ST s=Prep("SELECT value FROM meta WHERE key=?");
+    if(s){ BText(s,1,k); if(SQ::p_step(s)==SQ::ROW) v=Col(s,0); SQ::p_fin(s); }
+    return v; }
+  void MetaPut(const wchar_t* k,const std::wstring& v){
+    SQ::ST u=Prep("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)");
+    if(u){ BText(u,1,k); BText(u,2,v); SQ::p_step(u); SQ::p_fin(u); } }
+  static std::wstring OmdbToday(){
+    time_t t=time(nullptr); tm lt{}; localtime_s(&lt,&t);
+    wchar_t b[16]; swprintf(b,16,L"%04d%02d%02d",lt.tm_year+1900,lt.tm_mon+1,lt.tm_mday);
+    return b; }
+  int OmdbCallsToday(){
+    const std::wstring today=OmdbToday();
+    if(MetaGet(L"omdb_day")!=today){
+      MetaPut(L"omdb_day",today); MetaPut(L"omdb_calls",L"0"); return 0; }
+    return (int)wcstol(MetaGet(L"omdb_calls").c_str(),nullptr,10); }
+  bool OmdbBudgetAllowed(){
+    if(OmdbCallsToday()<kOmdbDailyCap) return true;
+    if(!omdbLimited)
+      LogF("library art: OMDb daily budget reached (%d) - paused until tomorrow",kOmdbDailyCap);
+    omdbLimited=true; return false; }
+  void OmdbSpent(){
+    const int n=OmdbCallsToday()+1; wchar_t b[16]; swprintf(b,16,L"%d",n);
+    MetaPut(L"omdb_calls",b); }
+  bool OmdbGetJson(const std::wstring& url,std::string& js){
+    js.clear();
+    if(!OmdbBudgetAllowed()) return false;
+    js=GetJsonUrl(url);
+    OmdbSpent();
+    return !js.empty(); }
   static bool ImageDims(const std::wstring& f,int& w,int& h){
     Gdiplus::Bitmap* b=Gdiplus::Bitmap::FromFile(f.c_str(),FALSE);
     w=h=0; if(b&&b->GetLastStatus()==Gdiplus::Ok){ w=(int)b->GetWidth(); h=(int)b->GetHeight(); }
@@ -5206,8 +5244,10 @@ struct Lib{
       std::wstring u=L"https://www.omdbapi.com/?apikey="+UrlEnc(key)+L"&t="+UrlEnc(cand);
       if(year>0&&kind==L"movie") u+=L"&y="+std::to_wstring(year);
       u+=L"&type="+kind;
+      if(!OmdbBudgetAllowed()) return false;
       wchar_t td[MAX_PATH],tf[MAX_PATH]; GetTempPathW(MAX_PATH,td); GetTempFileNameW(td,L"unp",0,tf);
       js.clear(); if(HttpGet(u,tf)) js=ReadTextFile(tf); DeleteFileW(tf);
+      OmdbSpent();
       if(js.empty()){ LogF("library art: '%s' OMDb request failed as '%s'",
                            Narrow(title).c_str(),Narrow(cand).c_str()); continue; }
       if(JStr(js,"Response")==L"True"){
@@ -5373,6 +5413,7 @@ struct Lib{
     return false; }
   int FetchMissingArt(unsigned gen){
     if(g_artGen.load(std::memory_order_relaxed)!=gen) return 0;
+    omdbLimited=false;
     if(artDir.empty()){ LogF("library art: no art directory"); return 0; }
     int changed=0; DWORD lastReady=0;
     std::wstring key=OmdbKey();
