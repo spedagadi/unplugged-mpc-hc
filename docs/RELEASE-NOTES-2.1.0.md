@@ -5,7 +5,7 @@ required: install over 2.0.0 and your library, presets and calibration remain.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.1.0.exe` | 127,066,591 bytes | `C29D4D4917942865E1CE53A9B8F2C5977FFE162900423BAFACF7C02A757EC9C4` |
+| `Unplugged-setup-2.1.0.exe` | 127,088,787 bytes | `5830D04E27EE212320063157A9851627F36E914D81B59EBC58A6A8D3E53759D2` |
 
 ## Non-linear stretch
 
@@ -59,6 +59,14 @@ required: install over 2.0.0 and your library, presets and calibration remain.
   prefer the episode rating, then the series rating, then the season average;
   anything still unknown shows **IMDb N/A** and is replaced when the record
   arrives.
+- **Report a problem.** A dedicated card creates a diagnostics zip on the
+  Desktop with the UI, engine and renderer logs, settings and presets, the
+  environment (OS, GPU, displays, binary versions, filter health, codec
+  registration) and a crash-dump listing with up to two dumps. The card shows
+  the support address with **Copy address**, **Show file**, and an
+  **Email support** action that opens a pre-filled message; attach the zip
+  yourself, as mailto cannot carry attachments. Logs are compressed, so the
+  archive is ~4 MB rather than ~45 MB.
 
 ## Renderer
 
