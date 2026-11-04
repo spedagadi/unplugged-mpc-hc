@@ -10,8 +10,8 @@ report can be produced in one click.
 
 ## Non-linear stretch
 
-- **Auto works on every title.** It fills clean 16:9 and scope sources as well
-  as letterboxed ones; no valid bar band is required.
+- **Fill mode Auto works on every title.** It fills clean 16:9 and scope sources
+  as well as letterboxed ones; no valid bar band is required.
 - **Bars removed is authoritative in every fill mode**, and **Crop** now follows
   it too: 0 % keeps the bars, 100 % fills.
 - **Max distortion is the warp budget.** It caps the shape change per axis and
@@ -29,8 +29,9 @@ report can be produced in one click.
 - **Horizontal is the default axis.** It keeps height untouched. Split and
   Vertical remain available but introduce a vertical component; they are opt-in.
 - **The Screen preset selector is gone.** Its entries were identical and the
-  canvas is the screen, so Auto already adapts per title. NLS settings remain
-  part of every main preset; there is no separate `nls_presets` folder.
+  canvas is the screen, so the adaptive fill already follows each title. NLS
+  settings remain part of every main preset; there is no separate
+  `nls_presets` folder.
 
 ## Library
 
