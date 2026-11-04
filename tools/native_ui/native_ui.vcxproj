@@ -42,6 +42,7 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src\thirdparty\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -56,6 +57,7 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src\thirdparty\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -74,6 +76,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="native_ui.cpp" />
+    <!-- zlib for the diagnostics zip (raw deflate). Compiled here with the same
+         /MD runtime as the UI: linking the engine's /MT zlib.lib produced
+         LNK4098. Only the deflate side is needed. -->
+    <ClCompile Include="..\..\src\thirdparty\zlib\adler32.c" />
+    <ClCompile Include="..\..\src\thirdparty\zlib\crc32.c" />
+    <ClCompile Include="..\..\src\thirdparty\zlib\deflate.c" />
+    <ClCompile Include="..\..\src\thirdparty\zlib\trees.c" />
+    <ClCompile Include="..\..\src\thirdparty\zlib\zutil.c" />
     <ResourceCompile Include="Unplugged.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

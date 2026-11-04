@@ -55,6 +55,9 @@
 #pragma comment(lib,"urlmon.lib")
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"winhttp.lib")
+#pragma comment(lib,"version.lib")
+#include <shlobj.h>
+#include "zlib.h"
 
 extern "C" {
 __declspec(dllimport) int  s3_attach(int64_t hwnd);
@@ -62,6 +65,7 @@ __declspec(dllimport) int  s3_cmd(const char* jsonUtf8);
 __declspec(dllimport) int  s3_stats(char* buf, int cap);
 __declspec(dllimport) void s3_shutdown(void);
 __declspec(dllimport) int  s3_start_device(const char* deviceUtf8);   // "" = capture off
+__declspec(dllimport) int  s3_recent_log(char* buf, int cap);
 }
 
 static const COLORREF PANEL=RGB(14,14,16), PANEL2=RGB(35,35,39), ACTIVE_BG=RGB(30,30,32),
@@ -192,6 +196,241 @@ static std::string Narrow(const std::wstring& w){ int n=WideCharToMultiByte(CP_U
   std::string s(n,0); WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);
   while(!s.empty()&&s.back()==0)s.pop_back(); return s; }
 static std::wstring Widen(const std::string& u);
+
+// ── Report a problem: diagnostics zip ───────────────────────────────────────
+// Port of the PyQt diagnostics dialog (engine_error.py / diagnostics.py): one
+// zip on the Desktop with the logs, settings, crash-dump listing and a
+// description of the PC. The user attaches it to an email to the support
+// address; mailto cannot carry attachments, so the file is created first.
+static std::string DiagFileVersion(const std::wstring& p){
+  DWORD dummy=0; DWORD sz=GetFileVersionInfoSizeW(p.c_str(),&dummy);
+  if(!sz) return "-";
+  std::vector<BYTE> b(sz);
+  if(!GetFileVersionInfoW(p.c_str(),0,sz,b.data())) return "-";
+  VS_FIXEDFILEINFO* fi=nullptr; UINT n=0;
+  if(!VerQueryValueW(b.data(),L"\\",(void**)&fi,&n)||!fi) return "-";
+  char s[64];
+  snprintf(s,sizeof(s),"%u.%u.%u.%u",HIWORD(fi->dwFileVersionMS),LOWORD(fi->dwFileVersionMS),
+           HIWORD(fi->dwFileVersionLS),LOWORD(fi->dwFileVersionLS));
+  return s; }
+static std::string DiagTime(const FILETIME& ft){
+  FILETIME l{}; SYSTEMTIME st{}; FileTimeToLocalFileTime(&ft,&l); FileTimeToSystemTime(&l,&st);
+  char b[32]; snprintf(b,sizeof(b),"%04d-%02d-%02d %02d:%02d",st.wYear,st.wMonth,st.wDay,
+                       st.wHour,st.wMinute); return b; }
+static std::string DiagEnvironment(){
+  std::string s;
+  s += "Unplugged " + Narrow(kAppVersion) + "\n";
+  SYSTEMTIME now{}; GetLocalTime(&now);
+  char ts[40]; snprintf(ts,sizeof(ts),"%04d-%02d-%02d %02d:%02d:%02d",
+                        now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond);
+  s += "Generated: "+std::string(ts)+"\n";
+  struct RtlVer { ULONG size, major, minor, build, platform; WCHAR csd[128]; };
+  RtlVer vi{}; vi.size=sizeof(vi);
+  if(HMODULE nt=GetModuleHandleW(L"ntdll.dll")){
+    typedef LONG (WINAPI* Fn)(RtlVer*);
+    if(auto fn=(Fn)GetProcAddress(nt,"RtlGetVersion")) fn(&vi); }
+  char os[128]; snprintf(os,sizeof(os),"OS: Windows %lu.%lu build %lu\n",
+                         (unsigned long)vi.major,(unsigned long)vi.minor,(unsigned long)vi.build);
+  s += os;
+  SYSTEM_INFO si{}; GetNativeSystemInfo(&si);
+  char m[128]; snprintf(m,sizeof(m),"Machine: arch=%u cpus=%lu\n",
+                        (unsigned)si.wProcessorArchitecture,(unsigned long)si.dwNumberOfProcessors);
+  s += m;
+  wchar_t exe[MAX_PATH]={0}; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  s += "Exe: "+Narrow(exe)+" v"+DiagFileVersion(exe)+"\n";
+  std::wstring exeDir(exe); size_t q=exeDir.find_last_of(L'\\');
+  if(q!=std::wstring::npos) exeDir.resize(q);
+  s += "\nGPU:\n";
+  HKEY k=nullptr;
+  if(RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+      L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
+      0,KEY_READ,&k)==ERROR_SUCCESS){
+    for(DWORD i=0;;++i){
+      wchar_t sub[64]; DWORD len=64;
+      if(RegEnumKeyExW(k,i,sub,&len,nullptr,nullptr,nullptr,nullptr)!=ERROR_SUCCESS) break;
+      HKEY sk=nullptr;
+      if(RegOpenKeyExW(k,sub,0,KEY_READ,&sk)!=ERROR_SUCCESS) continue;
+      auto get=[&](const wchar_t* name)->std::wstring{
+        wchar_t b[256]; DWORD cb=sizeof(b); DWORD t=0;
+        if(RegQueryValueExW(sk,name,nullptr,&t,(LPBYTE)b,&cb)==ERROR_SUCCESS &&
+           (t==REG_SZ||t==REG_EXPAND_SZ)) return b;
+        return L""; };
+      std::wstring desc=get(L"DriverDesc");
+      if(!desc.empty()) s += "  "+Narrow(desc)+"  driver "+Narrow(get(L"DriverVersion"))+
+                             " ("+Narrow(get(L"DriverDate"))+")\n";
+      RegCloseKey(sk); }
+    RegCloseKey(k); }
+  s += "\nDisplays:\n";
+  for(DWORD i=0;;++i){
+    DISPLAY_DEVICEW dd{}; dd.cb=sizeof(dd);
+    if(!EnumDisplayDevicesW(nullptr,i,&dd,0)) break;
+    if(!(dd.StateFlags & DISPLAY_DEVICE_ACTIVE)) continue;
+    std::string line="  "+Narrow(dd.DeviceName)+"  "+Narrow(dd.DeviceString);
+    DEVMODEW dm{}; dm.dmSize=sizeof(dm);
+    if(EnumDisplaySettingsW(dd.DeviceName,ENUM_CURRENT_SETTINGS,&dm)){
+      char b[64]; snprintf(b,sizeof(b),"  %lux%lu @ %lu Hz",dm.dmPelsWidth,dm.dmPelsHeight,
+                           dm.dmDisplayFrequency); line+=b; }
+    s += line+"\n";
+    for(DWORD j=0;;++j){
+      DISPLAY_DEVICEW mon{}; mon.cb=sizeof(mon);
+      if(!EnumDisplayDevicesW(dd.DeviceName,j,&mon,0)) break;
+      s += "    monitor: "+Narrow(mon.DeviceString)+"\n"; } }
+  s += "\nBinaries:\n";
+  auto bin=[&](const std::wstring& p,const char* label){
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if(!GetFileAttributesExW(p.c_str(),GetFileExInfoStandard,&fa)){
+      s += std::string("  ")+label+": (not present)\n"; return; }
+    ULONGLONG sz=((ULONGLONG)fa.nFileSizeHigh<<32)|fa.nFileSizeLow;
+    char b[128]; snprintf(b,sizeof(b),"  %-22s v%-14s %10llu B  %s\n",label,
+                          DiagFileVersion(p).c_str(),(unsigned long long)sz,
+                          DiagTime(fa.ftLastWriteTime).c_str());
+    s += b; };
+  bin(exe,"Unplugged.exe");
+  bin(exeDir+L"\\s3engine.dll","s3engine.dll");
+  bin(exeDir+L"\\decklink_monitor.dll","decklink_monitor.dll");
+  const wchar_t* flt[]={L"unplugged_vr.ax",L"LAVSplitter.ax",L"LAVVideo.ax",L"LAVAudio.ax",
+                        L"DeckLinkSource.ax",L"onnxruntime.dll",L"LAVFilters.Dependencies.manifest"};
+  for(auto f:flt) bin(exeDir+L"\\filters\\"+f,Narrow(f).c_str());
+  s += "\nInstallation health:\n";
+  int problems=0;
+  for(auto f:flt){
+    std::wstring p=exeDir+L"\\filters\\"+f;
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if(!GetFileAttributesExW(p.c_str(),GetFileExInfoStandard,&fa)){
+      s += "  missing " + Narrow(f) + "\n"; ++problems; continue; }
+    ULONGLONG sz=((ULONGLONG)fa.nFileSizeHigh<<32)|fa.nFileSizeLow;
+    if(sz==0){ s += "  empty " + Narrow(f) + "\n"; ++problems; continue; }
+    if(f[0] && (wcsstr(f,L".ax")||wcsstr(f,L".dll"))){
+      FILE* fh=_wfopen(p.c_str(),L"rb"); char mz[2]={0,0};
+      if(fh){ fread(mz,1,2,fh); fclose(fh); }
+      if(mz[0]!='M'||mz[1]!='Z'){ s += "  damaged " + Narrow(f) + "\n"; ++problems; } } }
+  if(!problems) s += "  OK\n";
+  s += "\nCodec registration:\n";
+  for(const wchar_t* ext:{L".mkv",L".mp4"}){
+    std::wstring key=std::wstring(L"Media Type\\Extensions\\")+ext;
+    wchar_t v[512]={0}; DWORD cb=sizeof(v);
+    if(RegGetValueW(HKEY_CLASSES_ROOT,key.c_str(),L"Source Filter",RRF_RT_REG_SZ,nullptr,v,&cb)==ERROR_SUCCESS)
+      s += "  "+Narrow(ext)+": "+Narrow(v)+"\n";
+    else s += "  "+Narrow(ext)+": (default)\n"; }
+  return s; }
+
+struct DiagEntry{ std::string name; std::vector<unsigned char> data; };
+static unsigned long DiagCrc(const unsigned char* p,size_t n){
+  static unsigned long t[256]; static bool init=false;
+  if(!init){ for(unsigned long i=0;i<256;++i){ unsigned long c=i;
+      for(int k=0;k<8;++k) c=(c&1)?(0xEDB88320UL^(c>>1)):(c>>1); t[i]=c; } init=true; }
+  unsigned long c=0xFFFFFFFFUL;
+  for(size_t i=0;i<n;++i) c=t[(c^*p++)&0xFF]^(c>>8);
+  return c^0xFFFFFFFFUL; }
+static void DiagPut16(std::string& b,unsigned v){ b.push_back((char)(v&0xFF)); b.push_back((char)((v>>8)&0xFF)); }
+static void DiagPut32(std::string& b,unsigned v){ for(int i=0;i<4;++i) b.push_back((char)((v>>(8*i))&0xFF)); }
+static bool DiagWriteZip(const std::wstring& path,const std::vector<DiagEntry>& es){
+  FILE* f=_wfopen(path.c_str(),L"wb"); if(!f) return false;
+  // Logs are text and compress ~10x; a store-only zip was ~45 MB and could not
+  // be attached to email. Raw deflate (windowBits -15) is zip method 8.
+  struct Packed{ std::vector<unsigned char> data; unsigned method=0; };
+  auto pack=[&](const std::vector<unsigned char>& in)->Packed{
+    Packed p; p.data=in;
+    if(in.empty()||in.size()>(size_t)0x7FFFFFFF) return p;
+    z_stream zs{}; if(deflateInit2(&zs,Z_DEFAULT_COMPRESSION,Z_DEFLATED,-MAX_WBITS,8,
+                                   Z_DEFAULT_STRATEGY)!=Z_OK) return p;
+    std::vector<unsigned char> out(deflateBound(&zs,(uLong)in.size()));
+    zs.next_in=(Bytef*)in.data(); zs.avail_in=(uInt)in.size();
+    zs.next_out=out.data(); zs.avail_out=(uInt)out.size();
+    const int r=deflate(&zs,Z_FINISH);
+    if(r==Z_STREAM_END && zs.total_out<in.size()){
+      p.method=8; out.resize(zs.total_out); p.data.swap(out); }
+    deflateEnd(&zs); return p; };
+  struct CD{ unsigned crc,csize,usize,off; std::string name; unsigned method; };
+  std::vector<CD> cd; unsigned off=0;
+  for(const auto& e:es){
+    const Packed pk=pack(e.data);
+    unsigned crc=DiagCrc(e.data.empty()?nullptr:e.data.data(),e.data.size());
+    std::string h; DiagPut32(h,0x04034b50); DiagPut16(h,20); DiagPut16(h,0); DiagPut16(h,pk.method);
+    DiagPut16(h,0); DiagPut16(h,0); DiagPut32(h,crc); DiagPut32(h,(unsigned)pk.data.size());
+    DiagPut32(h,(unsigned)e.data.size()); DiagPut16(h,(unsigned)e.name.size()); DiagPut16(h,0);
+    fwrite(h.data(),1,h.size(),f); fwrite(e.name.data(),1,e.name.size(),f);
+    if(!pk.data.empty()) fwrite(pk.data.data(),1,pk.data.size(),f);
+    cd.push_back({crc,(unsigned)pk.data.size(),(unsigned)e.data.size(),off,e.name,pk.method});
+    off += (unsigned)(h.size()+e.name.size()+pk.data.size()); }
+  unsigned cdOff=off;
+  for(const auto& c:cd){
+    std::string h; DiagPut32(h,0x02014b50); DiagPut16(h,20); DiagPut16(h,20); DiagPut16(h,0);
+    DiagPut16(h,c.method); DiagPut16(h,0); DiagPut16(h,0); DiagPut32(h,c.crc); DiagPut32(h,c.csize);
+    DiagPut32(h,c.usize); DiagPut16(h,(unsigned)c.name.size()); DiagPut16(h,0); DiagPut16(h,0);
+    DiagPut16(h,0); DiagPut16(h,0); DiagPut32(h,0); DiagPut32(h,c.off);
+    fwrite(h.data(),1,h.size(),f); fwrite(c.name.data(),1,c.name.size(),f);
+    off += (unsigned)(h.size()+c.name.size()); }
+  std::string end; DiagPut32(end,0x06054b50); DiagPut16(end,0); DiagPut16(end,0);
+  DiagPut16(end,(unsigned)cd.size()); DiagPut16(end,(unsigned)cd.size());
+  DiagPut32(end,off-cdOff); DiagPut32(end,cdOff); DiagPut16(end,0);
+  fwrite(end.data(),1,end.size(),f); fclose(f); return true; }
+static bool DiagReadTail(const std::wstring& p,size_t limit,std::vector<unsigned char>& out){
+  FILE* f=_wfopen(p.c_str(),L"rb"); if(!f) return false;
+  _fseeki64(f,0,SEEK_END); long long n=_ftelli64(f);
+  long long start=(n>(long long)limit)?n-(long long)limit:0;
+  _fseeki64(f,start,SEEK_SET); out.resize((size_t)(n-start));
+  size_t rd=fread(out.data(),1,out.size(),f); out.resize(rd); fclose(f); return true; }
+static void DiagAddFile(std::vector<DiagEntry>& es,const std::wstring& p,const std::string& arc){
+  std::vector<unsigned char> d;
+  if(DiagReadTail(p,8u<<20,d)&&!d.empty()) es.push_back({arc,d}); }
+static bool DiagCollectZip(std::wstring& outPath){
+  std::vector<DiagEntry> es;
+  auto addText=[&](const char* name,const std::string& text){
+    DiagEntry e; e.name=name; e.data.assign(text.begin(),text.end()); es.push_back(std::move(e)); };
+  addText("environment.txt",DiagEnvironment());
+  char recent[64*1024]={0};
+  int rn=s3_recent_log(recent,(int)sizeof(recent)-1);
+  if(rn>0){ recent[rn]=0; addText("engine-recent.txt",std::string(recent)); }
+  wchar_t exe[MAX_PATH]={0}; GetModuleFileNameW(nullptr,exe,MAX_PATH);
+  std::wstring exeDir(exe); size_t q=exeDir.find_last_of(L'\\');
+  if(q!=std::wstring::npos) exeDir.resize(q);
+  DiagAddFile(es,exeDir+L"\\native_ui_log.txt","logs/native_ui_log.txt");
+  wchar_t la[MAX_PATH]={0},up[MAX_PATH]={0};
+  if(GetEnvironmentVariableW(L"LOCALAPPDATA",la,MAX_PATH)){
+    std::wstring root=std::wstring(la)+L"\\Unplugged";
+    DiagAddFile(es,root+L"\\logs\\native_ui_log.txt","logs/native_ui_log.peruser.txt");
+    DiagAddFile(es,root+L"\\logs\\mpcvr_trace.log","logs/mpcvr_trace.log");
+    DiagAddFile(es,root+L"\\logs\\mpcvr_trace.prev.log","logs/mpcvr_trace.prev.log");
+    DiagAddFile(es,root+L"\\s3_shell.ini","s3_shell.ini");
+    DiagAddFile(es,root+L"\\s3_shell.mod.ini","s3_shell.mod.ini");
+    WIN32_FIND_DATAW fd{}; std::wstring pat=root+L"\\presets\\*.ini";
+    HANDLE h=FindFirstFileW(pat.c_str(),&fd);
+    if(h!=INVALID_HANDLE_VALUE){ do{
+        DiagAddFile(es,root+L"\\presets\\"+fd.cFileName,"presets/"+Narrow(fd.cFileName));
+      }while(FindNextFileW(h,&fd)); FindClose(h); }
+    std::wstring dd=root+L"\\CrashDumps";
+    std::string listing=std::string("Crash dumps: ")+Narrow(dd)+"\n";
+    int dumps=0;
+    h=FindFirstFileW((dd+L"\\*.dmp").c_str(),&fd);
+    if(h!=INVALID_HANDLE_VALUE){ do{
+        char b[256]; snprintf(b,sizeof(b),"  %s  %llu B\n",Narrow(fd.cFileName).c_str(),
+                              ((unsigned long long)fd.nFileSizeHigh<<32)|fd.nFileSizeLow);
+        listing+=b;
+        if(dumps<2 && fd.nFileSizeHigh==0 && fd.nFileSizeLow<=(64u<<20)){
+          DiagAddFile(es,dd+L"\\"+fd.cFileName,"crashdumps/"+Narrow(fd.cFileName)); ++dumps; }
+      }while(FindNextFileW(h,&fd)); FindClose(h); }
+    if(!dumps) listing+="  (no crash dumps)\n";
+    addText("crashdumps.txt",listing); }
+  if(GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH)){
+    std::wstring ldir=std::wstring(up)+L"\\.unplugged\\logs";
+    DiagAddFile(es,ldir+L"\\engine.log","logs/engine.log");
+    DiagAddFile(es,ldir+L"\\engine.prev.log","logs/engine.prev.log");
+    DiagAddFile(es,ldir+L"\\last-error.txt","logs/last-error.txt");
+    DiagAddFile(es,std::wstring(up)+L"\\.unplugged\\segfault.log","segfault.log"); }
+  DiagAddFile(es,exeDir+L"\\s3_shell_diag.log","logs/s3_shell_diag.log");
+  DiagAddFile(es,exeDir+L"\\s3engine.log","logs/s3engine.log");
+  wchar_t desk[MAX_PATH]={0};
+  if(FAILED(SHGetFolderPathW(nullptr,CSIDL_DESKTOPDIRECTORY,nullptr,0,desk))){
+    if(GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH))
+      wcscpy_s(desk,std::wstring(std::wstring(up)+L"\\Desktop").c_str()); }
+  SYSTEMTIME st{}; GetLocalTime(&st);
+  wchar_t name[96]; swprintf_s(name,L"\\Unplugged-diagnostics-%04d%02d%02d-%02d%02d%02d.zip",
+                               st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute,st.wSecond);
+  outPath=std::wstring(desk)+name;
+  bool ok=DiagWriteZip(outPath,es);
+  LogF("report: diagnostics zip %s (%d entries)",ok?"written":"FAILED",(int)es.size());
+  return ok; }
 
 static void RR(CDC* dc,CRect r,int rad,COLORREF f){ CPen p(PS_NULL,0,f); CBrush b(f);
   CPen* op=dc->SelectObject(&p); CBrush* ob=dc->SelectObject(&b);
@@ -2343,7 +2582,7 @@ protected:
       if(!strcmp(r.key,"zion.reset")) AfxGetMainWnd()->PostMessageW(WM_APP+11,0,0);
       else if(!strcmp(r.key,"sys.resetRenderer")) AfxGetMainWnd()->PostMessageW(WM_APP+12,0,0);
       else if(!strcmp(r.key,"__capFrame")) AfxGetMainWnd()->PostMessageW(WM_APP+14,0,0);
-    else if(!strcmp(r.key,"__report"))   LogF("report a problem clicked (not wired)");
+    else if(!strcmp(r.key,"__report"))   AfxGetMainWnd()->PostMessageW(WM_APP+58,0,0);
       else if(!strcmp(r.key,"sys.updateNow")) AfxGetMainWnd()->PostMessageW(WM_APP+56,0,0);
       else if(!strcmp(r.key,"src.rescan")) AfxGetMainWnd()->PostMessageW(WM_APP+19,0,0);
       else if(!strcmp(r.key,"src.rename")) AfxGetMainWnd()->PostMessageW(WM_APP+20,0,0);
@@ -3383,6 +3622,151 @@ BEGIN_MESSAGE_MAP(CTopStrip,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTO
   ON_WM_MOUSELEAVE() END_MESSAGE_MAP()
 BEGIN_MESSAGE_MAP(CConfirmCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
   ON_WM_ERASEBKGND() END_MESSAGE_MAP()
+
+// Report a problem (port of engine_error.py DiagnosticsDialog). One card:
+// explanation, support address + Copy, then Create diagnostics file ->
+// Show file / Email support. The zip is written to the Desktop and the user
+// attaches it; mailto cannot carry an attachment.
+class CReportCard : public CUiWnd {
+public:
+  static constexpr const wchar_t* kSupport = L"fossunplugged@gmail.com";
+  std::wstring zipPath;
+  bool created=false, copied=false, busy=false;
+  int hov=0, w=0, h=0;
+  CRect msgR, emailR, pathR, copyR, cancelR, showR, mainR;
+  BOOL CreateCard(CWnd* owner){
+    return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,
+                    CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,10,10),owner,0); }
+  const wchar_t* Message() const {
+    return created
+      ? L"Diagnostics saved. Email it to the support address with a short description of what happened and when."
+      : L"Unplugged will save a diagnostics file to your Desktop with its logs, settings and a description of this PC (graphics card, displays, other codec software). It contains the names of files you played. Attach it to your email."; }
+  void Layout(){
+    w=Px(620);
+    const int pad=Px(28), inner=w-pad*2;
+    CClientDC dc(this); CFont f; f.CreateFont(-Px(13),0,0,0,FW_NORMAL,0,0,0,
+      DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,g_fontFam);
+    CFont* of=dc.SelectObject(&f);
+    CRect mr(0,0,inner,0); ::DrawTextW(dc.GetSafeHdc(),Message(),-1,&mr,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);
+    dc.SelectObject(of);
+    const int msgH=mr.Height();
+    int y=Px(24);
+    // title 26, message, email row 34, optional path, buttons 40
+    y+=Px(26)+Px(12)+msgH+Px(14);
+    emailR=CRect(pad,y,pad+inner,y+Px(30)); y+=Px(38);
+    pathR=CRect(pad,y,pad+inner,y+Px(34)); if(!created) pathR.SetRectEmpty();
+    y+=created?Px(40):0;
+    const int bh=Px(38), bw2=Px(120), bw1=Px(220);
+    if(created){
+      const int rowW=bw2+Px(10)+bw2+Px(10)+bw1, x0=(w-rowW)/2;
+      cancelR=CRect(x0,y,x0+bw2,y+bh);
+      showR=CRect(x0+bw2+Px(10),y,x0+bw2+Px(10)+bw2,y+bh);
+      mainR=CRect(x0+bw2+Px(10)+bw2+Px(10),y,w-pad,y+bh);
+    } else {
+      const int rowW=bw2+Px(10)+bw1, x0=(w-rowW)/2;
+      cancelR=CRect(x0,y,x0+bw2,y+bh);
+      mainR=CRect(x0+bw2+Px(10),y,x0+bw2+Px(10)+bw1,y+bh);
+      showR.SetRectEmpty();
+    }
+    h=y+bh+Px(26);
+    copyR=CRect(emailR.right-Px(130),emailR.top,emailR.right,emailR.top+Px(28));
+    msgR=CRect(pad,Px(62),w-pad,Px(62)+msgH); }
+  void Place(){
+    if(!GetOwner()) return;
+    CRect pr; GetOwner()->GetWindowRect(pr);
+    MoveWindow(pr.left+(pr.Width()-w)/2, pr.top+(pr.Height()-h)/2, w, h);
+    SetWindowRgn(nullptr,FALSE); ApplyDwmRound(m_hWnd); }
+  void ShowCard(){
+    created=false; busy=false; zipPath.clear();
+    Layout(); Place();
+    ShowWindow(SW_SHOW);
+    SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    ::InvalidateRect(m_hWnd,nullptr,TRUE); ::UpdateWindow(m_hWnd);
+    LogF("report: card opened"); }
+  void HideCard(){ if(IsWindowVisible()){ ShowWindow(SW_HIDE); LogF("report: card closed"); } }
+  bool HandAt(CPoint p) override {
+    return copyR.PtInRect(p)||cancelR.PtInRect(p)||showR.PtInRect(p)||mainR.PtInRect(p); }
+  void CopyEmail(){
+    if(OpenClipboard()){
+      ::EmptyClipboard();
+      const size_t cb=(wcslen(kSupport)+1)*sizeof(wchar_t);
+      HGLOBAL g=GlobalAlloc(GMEM_MOVEABLE,cb);
+      if(g){ memcpy(GlobalLock(g),kSupport,cb); GlobalUnlock(g); ::SetClipboardData(CF_UNICODETEXT,g); }
+      CloseClipboard(); }
+    copied=true; SetTimer(12,2000,nullptr); Invalidate(FALSE);
+    LogF("report: support address copied"); }
+  static std::wstring Escape(const std::wstring& s){
+    // Escape UTF-8 bytes: a wide char outside ASCII (a user name in the Desktop
+    // path) must not be truncated to its low byte.
+    const std::string u=Narrow(s); std::wstring o; wchar_t b[8];
+    for(unsigned char c:u){
+      if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~') o+=(wchar_t)c;
+      else if(c==' ') o+=L"%20";
+      else { swprintf_s(b,L"%%%02X",(unsigned)c); o+=b; } }
+    return o; }
+  void EmailSupport(){
+    std::wstring subject=std::wstring(L"Unplugged ")+kAppVersion+L" problem report";
+    std::wstring body=L"Unplugged version: "+std::wstring(kAppVersion)+L"\r\n"
+      L"Diagnostics file: "+(zipPath.empty()?L"(not created)":zipPath)+L"\r\n"
+      L"(please attach the file above)\r\n\r\nWhat happened:\r\n\r\n"
+      L"What were you doing when it happened:\r\n";
+    std::wstring url=std::wstring(L"mailto:")+kSupport+L"?subject="+Escape(subject)+L"&body="+Escape(body);
+    HINSTANCE r=ShellExecuteW(m_hWnd,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+    LogF("report: mailto rc=%lld",(long long)(INT_PTR)r);
+    if((INT_PTR)r<=32){
+      MessageBoxW(L"No email program is set up on this PC. Email the file above to the support address.",
+                  L"Report a problem",MB_OK|MB_ICONINFORMATION); } }
+  void ShowFile(){
+    if(zipPath.empty()) return;
+    std::wstring args=L"/select,\""+zipPath+L"\"";
+    ShellExecuteW(m_hWnd,L"open",L"explorer.exe",args.c_str(),nullptr,SW_SHOWNORMAL); }
+  void CreateZip(){
+    if(busy) return;
+    busy=true; Invalidate(FALSE); UpdateWindow();
+    std::wstring path;
+    bool ok=DiagCollectZip(path);
+    busy=false;
+    if(ok){ created=true; zipPath=path; Layout(); Place(); Invalidate(FALSE); }
+    else { MessageBoxW(L"The diagnostics file could not be created. Check that the Desktop is writable.",
+                       L"Report a problem",MB_OK|MB_ICONERROR); } }
+  void OnPaint(){ CPaintDC dc(this); CRect rc; GetClientRect(rc);
+    CardAA(&dc,rc,RGB(12,12,14),BORDER,Px(10));
+    TxtW(&dc,CRect(Px(28),Px(18),rc.right-Px(28),Px(44)),L"Report a problem",TEXT,16,true,
+         DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    TxtW(&dc,msgR,Message(),RGB(0x99,0x99,0x99),13,false,DT_LEFT|DT_WORDBREAK|DT_NOPREFIX);
+    // email + copy
+    TxtW(&dc,CRect(emailR.left,emailR.top,emailR.right-Px(140),emailR.bottom),
+         kSupport,TEXT,14,true,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+    RR(&dc,copyR,Px(6),hov==1?PANEL2:BORDER);
+    TxtW(&dc,copyR,copied?L"Copied":L"Copy address",TEXT,12,false,
+         DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    if(created){
+      TxtW(&dc,pathR,zipPath.c_str(),RGB(0xdd,0xdd,0xdd),12,false,
+           DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS); }
+    auto btn=[&](const CRect& r,int id,const wchar_t* label,bool primary){
+      RR(&dc,r,Px(7),primary?(hov==id?ACCENT2:ACCENT):(hov==id?PANEL2:BORDER));
+      TxtW(&dc,r,label,primary?RGB(0,0,0):TEXT,13,primary,DT_CENTER|DT_VCENTER|DT_SINGLELINE); };
+    btn(cancelR,2,created?L"Close":L"Cancel",false);
+    if(created) btn(showR,3,L"Show file",false);
+    btn(mainR,4,busy?L"Collecting\x2026":(created?L"Email support":L"Create diagnostics file"),true); }
+  afx_msg BOOL OnEraseBkgnd(CDC* dc){ CRect rc; GetClientRect(rc);
+    dc->FillSolidRect(rc,RGB(12,12,14)); return TRUE; }
+  afx_msg void OnMouseMove(UINT,CPoint p){
+    int h0=copyR.PtInRect(p)?1:cancelR.PtInRect(p)?2:showR.PtInRect(p)?3:mainR.PtInRect(p)?4:0;
+    if(h0!=hov){ hov=h0; Invalidate(FALSE); } }
+  afx_msg void OnLButtonDown(UINT,CPoint p){
+    if(copyR.PtInRect(p)){ CopyEmail(); return; }
+    if(cancelR.PtInRect(p)){ HideCard(); return; }
+    if(created && showR.PtInRect(p)){ ShowFile(); return; }
+    if(mainR.PtInRect(p)){ if(created) EmailSupport(); else CreateZip(); } }
+  afx_msg void OnKeyDown(UINT k,UINT,UINT){ if(k==VK_ESCAPE) HideCard(); }
+  afx_msg void OnTimer(UINT_PTR id){
+    if(id==12){ KillTimer(12); copied=false; Invalidate(FALSE); }
+    CWnd::OnTimer(id); }
+  DECLARE_MESSAGE_MAP()
+};
+BEGIN_MESSAGE_MAP(CReportCard,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_ERASEBKGND() ON_WM_KEYDOWN() ON_WM_TIMER() END_MESSAGE_MAP()
 
 // Transient playback feedback (seek/chapter/volume/stop), topmost over the video.
 class CToastCard : public CUiWnd {
@@ -8934,7 +9318,7 @@ BEGIN_MESSAGE_MAP(CPosterPane,CUiWnd) ON_WM_PAINT() ON_WM_MOUSEMOVE() ON_WM_LBUT
 class CMainFrame : public CFrameWnd {
 public:
   CTopStrip m_top; CStatusRail m_status; CSettingsRail m_settings; CTransportBar m_bar;
-  CConfirmCard m_confirm; CSetupCard m_setup; CFoldersCard m_folders; CHelpCard m_help;
+  CConfirmCard m_confirm; CReportCard m_report; CSetupCard m_setup; CFoldersCard m_folders; CHelpCard m_help;
   CUpdateCard m_update;
   CPresetCard m_presets; CChapterTip m_uiTip; CTitlePanel m_titlePanel;
   CToastCard m_toast; CSplashPane m_splash; CPosterPane m_lib; bool m_shutdown=false;
@@ -9172,6 +9556,7 @@ public:
     m_settings.CreateUi(this,903); m_bar.CreateUi(this,904);
     m_top.preset=PresetLabel(); m_top.presetDirty=g_presetDirty; m_top.Invalidate(FALSE);
     m_confirm.CreateCard(this);              // top-level, hidden until the X raises it
+    m_report.CreateCard(this);               // Report a problem (diagnostics zip)
     m_update.CreateCard(this);               // "update available" card (start-up prompt)
     m_setup.CreateCard(this);                // first-run / Rename-input, hidden until requested
     m_folders.CreateCard(this); m_folders.Bind(&m_lib.lib);   // Library folders…
@@ -9408,7 +9793,8 @@ public:
     // been used for 2.5 s. Being re-asserted is the point — a hidden cursor can no
     // longer get stuck for want of a message, which is what made the pointer
     // invisible over the video until the user left the app.
-    const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
+    const bool card = m_confirm.IsWindowVisible() || m_report.IsWindowVisible() ||
+                      m_presets.IsWindowVisible() ||
                       m_setup.IsWindowVisible()   || m_folders.IsWindowVisible() ||
                       m_update.IsWindowVisible();
     if((m_vp || InFilePlayback()) && !card && UiIdleMs()>=2500 && !OverChrome()) CursorHide();
@@ -9424,7 +9810,8 @@ public:
   // a rail left standing over the picture is not "hidden".
   void OnChromeIdle(){
     if(!m_uiUp){ ChromeTimerStop(); return; }
-    const bool card = m_confirm.IsWindowVisible() || m_presets.IsWindowVisible() ||
+    const bool card = m_confirm.IsWindowVisible() || m_report.IsWindowVisible() ||
+                      m_presets.IsWindowVisible() ||
                       m_setup.IsWindowVisible()   || m_folders.IsWindowVisible() ||
                       m_update.IsWindowVisible();
     // Mode-agnostic: VP is always "showing something", media needs a file loaded.
@@ -9688,6 +10075,7 @@ public:
     else { LogF("preset picker open"); m_presets.Show(); }
     return 0; }
   afx_msg LRESULT OnUpdateNow(WPARAM,LPARAM){ StartUpdateCheck(true); return 0; }
+  afx_msg LRESULT OnReportProblem(WPARAM,LPARAM){ m_report.ShowCard(); return 0; }
   afx_msg LRESULT OnUpdateDone(WPARAM user,LPARAM){
     UpdateState s; { std::lock_guard<std::mutex> lk(g_updMtx); s=g_upd; }
     // Stamp the attempt: success or failure, the next automatic try is a day out.
@@ -10431,6 +10819,7 @@ BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_MESSAGE(WM_APP+54, &CMainFrame::OnPresetLocked)
   ON_MESSAGE(WM_APP+56, &CMainFrame::OnUpdateNow)
   ON_MESSAGE(WM_APP+57, &CMainFrame::OnAcquireSwitchInput)
+  ON_MESSAGE(WM_APP+58, &CMainFrame::OnReportProblem)
   ON_MESSAGE(WM_UPDATE_DONE, &CMainFrame::OnUpdateDone)
 END_MESSAGE_MAP()
 
@@ -10442,6 +10831,18 @@ public:
     // from the executable's resource (Unplugged.rc), set on the frame below so the
     // taskbar and Alt-Tab show it for a WS_POPUP window too.
     ::SetCurrentProcessExplicitAppUserModelID(L"Unplugged.Desktop.2");
+    // Support path: create the diagnostics zip without opening the UI. Used by
+    // the Report a problem card's collector and testable from a shell:
+    //   Unplugged.exe --diag-zip
+    if(__argc>1 && !_wcsicmp(__wargv[1],L"--diag-zip")){
+      std::wstring p;
+      const bool ok=DiagCollectZip(p);
+      if(ok){
+        const std::wstring args=L"/select,\""+p+L"\"";
+        ::ShellExecuteW(nullptr,L"open",L"explorer.exe",args.c_str(),nullptr,SW_SHOWNORMAL); }
+      else ::MessageBoxW(nullptr,L"The diagnostics file could not be created.",
+                         L"Unplugged diagnostics",MB_OK|MB_ICONERROR);
+      return FALSE; }
     // ONE INSTANCE, enforced by the kernel. Two copies cannot coexist here: only
     // one may hold the DeckLink input (the second gets EnableVideoInput
     // 0x80004005 and a black picture), and two always-on-top overlay windows stack
