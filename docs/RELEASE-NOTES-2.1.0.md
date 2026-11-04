@@ -5,7 +5,7 @@ required: install over 2.0.0 and your library, presets and calibration remain.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.1.0.exe` | 127,088,787 bytes | `5830D04E27EE212320063157A9851627F36E914D81B59EBC58A6A8D3E53759D2` |
+| `Unplugged-setup-2.1.0.exe` | 127,087,675 bytes | `A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF` |
 
 ## Non-linear stretch
 
