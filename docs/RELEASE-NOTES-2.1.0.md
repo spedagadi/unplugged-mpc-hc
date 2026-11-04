@@ -1,7 +1,8 @@
 # Unplugged 2.1.0
 
-Bug-fix and NLS release on top of 2.0.0. No library or settings migration is
-required: install over 2.0.0 and your library, presets and calibration remain.
+2.1.0 builds on the 2.0.0 native player. Non-linear stretch is now a set-once
+tool instead of a tuning exercise, the library is more reliable, and a problem
+report can be produced in one click.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
@@ -9,82 +10,73 @@ required: install over 2.0.0 and your library, presets and calibration remain.
 
 ## Non-linear stretch
 
-- **Auto now fills clean sources.** 2.0.0 required a valid detected band, so a
-  16:9 or scope picture with no encoded bars did nothing. Auto fills whenever
-  the band is known, including “no bars”.
-- **Max distortion is a live control again.** It caps the warp per axis; the
-  remainder is cropped. 100 % is the zero-warp Crop baseline.
-- **Bars removed is authoritative in every fill mode.** Auto no longer forced
-  it to 100 % while the shader read the slider (the horizontal-squeeze bug).
-- **Crop follows Bars removed.** 0 % keeps the bars, 100 % covers; the old
-  branch always covered and ignored the dial.
-- **Post NLS X-Crop / Y-Crop.** New per-axis amounts applied after the NLS
-  pass, bars first, stretching the remainder to fill. Real time, even when the
-  aspect already matches the screen.
-- **Aspect transitions.** The detected band is watched per frame (40 ms)
-  instead of once a second; scope↔IMAX cuts re-latch immediately and cannot
-  leave the old band cropping the new frame for ~20 s.
-- **Trial view with the rail up.** Geometry and shader share a screen-aspect
-  canvas fitted inside the visible area, and the shader is re-injected on chrome
-  toggles — the picture and INFO panel now match full screen.
-- **Axis defaults to Horizontal.** Split 25 measured +26 % vertical and
-  visibly elongated heads; Split remains an opt-in with a warning, never a
-  default. Centre 45, Curve 1.2, Max distortion 140; shipped presets aligned.
-- INFO panel reports bars removed, max/current cost, per-axis warp, cap,
-  geometry crop and the Post-NLS crops.
-- **The Screen preset selector is gone.** Its Auto/16:9/Scope entries loaded
-  three identical recipes and `screen_ar` was never read, so it could not change
-  geometry — the canvas is the window/screen. NLS values remain part of every
-  main preset; there is no separate `nls_presets` folder any more.
+- **Auto works on every title.** It fills clean 16:9 and scope sources as well
+  as letterboxed ones; no valid bar band is required.
+- **Bars removed is authoritative in every fill mode**, and **Crop** now follows
+  it too: 0 % keeps the bars, 100 % fills.
+- **Max distortion is the warp budget.** It caps the shape change per axis and
+  the remainder is cropped; 100 % is the zero-warp Crop baseline.
+- **Post NLS X-Crop / Y-Crop** are new per-axis amounts applied after the
+  stretch. They crop the whole frame, bars first, and stretch the remainder to
+  fill — so they can consume bars left by a partial Bars removed, and only cut
+  picture once past the bar width. Changes are visible immediately.
+- **Aspect transitions are clean.** The detected band is watched per frame, so
+  scope↔IMAX cuts re-latch at once: no stale crop and no NLS drop-out through
+  the transition.
+- **Tuning with the rail up shows the real result.** Geometry and shader share
+  a screen-aspect canvas fitted inside the visible area; the picture and INFO
+  numbers match full screen.
+- **Horizontal is the default axis.** It keeps height untouched. Split and
+  Vertical remain available but introduce a vertical component; they are opt-in.
+- **The Screen preset selector is gone.** Its entries were identical and the
+  canvas is the screen, so Auto already adapts per title. NLS settings remain
+  part of every main preset; there is no separate `nls_presets` folder.
 
-## Library and UI
+## Library
 
-- **Back returns to the full-section page** you drilled from (the “85 titles”
-  list), with scroll and selection, instead of dropping to Home.
-- **Episode grids draw every visible row** (previously only four thumbnails).
-- **Right-click hide/restore is a themed card**, not the default Windows menu;
-  the soft hide survives rescans and has “Restore all hidden titles”.
-- **Now Playing year is deterministic** — taken from the item, not the tile’s
-  state-dependent subtitle.
-- **Removed-root duplicates are hidden.** Rows from a folder that is no longer
-  registered (e.g. F: → E:) no longer appear as UNAVAILABLE twins; cleanup runs
-  at library open as well as after a scan.
-- **Series art fills every episode.** The series-art query used MAX(show_art),
-  so one episode having the poster made the show look complete. It now repairs
-  all rows.
-- **Wikipedia poster fallback** now handles films whose article is the plain
-  title, JSON-escaped image names, and TV series (`Title (TV series)` etc.).
-  It runs even when OMDb is unavailable.
-- **OMDb budget protection.** All OMDb calls are counted locally and capped at
-  900/day (free key limit is 1,000), surviving restarts; Wikipedia is not
-  counted. Large libraries may take several days to populate fully.
-- **Rating chips are always present.** Movie, show and Continue tiles no longer
-  wait for their background metadata lookup to grow a chip. Continue tiles
-  prefer the episode rating, then the series rating, then the season average;
-  anything still unknown shows **IMDb N/A** and is replaced when the record
-  arrives.
-- **Report a problem.** A dedicated card creates a diagnostics zip on the
-  Desktop with the UI, engine and renderer logs, settings and presets, the
-  environment (OS, GPU, displays, binary versions, filter health, codec
-  registration) and a crash-dump listing with up to two dumps. The card shows
-  the support address with **Copy address**, **Show file**, and an
-  **Email support** action that opens a pre-filled message; attach the zip
-  yourself, as mailto cannot carry attachments. Logs are compressed, so the
-  archive is ~4 MB rather than ~45 MB.
+- **Row-based season, episode and movie views** with poster, plot, file facts
+  and IMDb rating chips; movies can switch between posters and rows.
+- **Ratings are always present.** Movie, show and Continue tiles show a value or
+  **IMDb N/A** immediately, replaced when the record arrives. Continue tiles
+  prefer the episode rating, then the series, then the season average.
+- **Back returns to the full titles page** you drilled from, with scroll and
+  selection, instead of dropping to Home.
+- **Every visible episode thumbnail draws** (previously only four).
+- **Right-click Hide/Restore is a themed card**, survives rescans, and
+  “Restore all hidden titles” brings items back. Rows from a removed folder no
+  longer appear as UNAVAILABLE duplicates.
+- **Now Playing year is consistent** — read from the item, not its progress
+  subtitle.
+- **Poster and art reliability.** Wikipedia is a fallback for films and TV
+  series when OMDb has no match; a series poster is applied to every episode;
+  failures retry with backoff. OMDb calls are capped at 900/day (the free-key
+  limit is 1,000), so a very large library may take several days to populate.
 
-## Renderer
+## Picture
 
-- Left/right bar detection added to the per-frame detector; `barsNow` reports
-  all four edges.
-- Krig shader generation uses `frameW` instead of the width macro `w`, which
-  was rewriting `.w` swizzles and made every Krig converter fall back.
+- Left/right black-bar detection added; the renderer reports all four edges.
+- Krig chroma conversion fixed (the generated shader’s width macro was
+  rewriting `.w` swizzles, forcing every Krig path to fall back).
+
+## Report a problem
+
+A new card in System creates `Unplugged-diagnostics-<stamp>.zip` on the
+Desktop: UI/engine/renderer logs, settings and presets, crash-dump listing, and
+an environment report (OS, GPU, displays, binary versions, filter health, codec
+registration). It shows the support address with **Copy address**, **Show file**
+and an **Email support** action; attach the zip yourself (mailto cannot carry
+attachments). Logs are compressed, so the archive is a few MB.
+
+## Upgrade
+
+Install over 2.0.0. The media library, look presets and calibration data are
+preserved. No settings migration is required.
 
 ## Known limitations
 
-- **Split / Vertical** introduce a vertical component; faces can look elongated.
-  They are opt-in, and Horizontal is the default.
-- Per-episode stills are not available from OMDb/Wikipedia; episodes share the
-  series poster.
-- Windows cannot signal an **SDR BT.2020** gamut flag. HDR10/PQ/2020 is emitted
-  when HDR output is on; for SDR the sink should be BT.709 (or set manually).
-- The installer still ships the same LAV and DeckLinkSource binaries as 2.0.0.
+- Split/Vertical stretch introduces a vertical component and can visibly
+  elongate faces; Horizontal is the default.
+- OMDb/Wikipedia provide one series poster, not unique stills per episode.
+- Windows cannot signal an SDR BT.2020 gamut flag. HDR10/PQ/2020 is sent when
+  HDR output is on; for SDR the display should be set to BT.709 (or manually).
+- The LAV and DeckLinkSource binaries are unchanged from 2.0.0.
