@@ -4224,6 +4224,10 @@ struct Lib{
         "ALTER TABLE items ADD COLUMN ep_meta_next_try REAL DEFAULT 0"};
       for(const char* sql:cols){ SQ::ST s=0;
         if(!SQ::p_prep(db,sql,-1,&s,nullptr)){ SQ::p_step(s); SQ::p_fin(s); } } }
+    // Clean stale-root rows at start-up as well: a root removed while the app
+    // was closed must not come back as an "UNAVAILABLE" duplicate until the
+    // next scan. This only touches rows whose root is no longer registered.
+    HideOrphanRoots();
     ok=true; LogF("library: index open, %ld present titles",Count()); return true; }
   long Count(){ SQ::ST s=0; long n=0;
     if(!ok||SQ::p_prep(db,"SELECT COUNT(*) FROM items WHERE present=1 AND hidden=0",-1,&s,nullptr)) return 0;
@@ -4361,7 +4365,14 @@ struct Lib{
   // (reported 2026-11-01).
   void HideOrphanRoots(){
     if(!ok) return;
-    bool ok2=Exec("UPDATE items SET present=0,"
+    // HIDE, not just mark unavailable. A row whose root was removed from the
+    // library (the F: -> E: repoint is the field case) is not "a title whose
+    // storage is detached": its location will never come back under that root,
+    // and leaving it visible produced a duplicate "UNAVAILABLE" episode beside
+    // the present one (reported 2026-11-04). `hidden` survives rescans; art is
+    // untouched, and Restore all hidden titles brings it back if the root
+    // returns.
+    bool ok2=Exec("UPDATE items SET hidden=1, present=0,"
       "missing_since=COALESCE(missing_since,CAST(strftime('%s','now') AS REAL)) "
       "WHERE root NOT IN (SELECT pkey FROM roots)");
     LogF("library: orphan roots hidden (%s)",ok2?"ok":"failed"); }
