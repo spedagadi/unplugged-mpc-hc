@@ -5311,6 +5311,11 @@ struct Lib{
     outPath.clear(); std::vector<std::wstring> pages;
     if(year>0) pages.push_back(title+L" ("+std::to_wstring(year)+L" film)");
     pages.push_back(title+L" (film)");
+    // Last: the PLAIN article title. Many films need no disambiguation - Beware
+    // Boiuna (2026) is the article's exact title - and without this the fallback
+    // only asked for "(2026 film)" and "(film)", both missing, so a title that
+    // OMDb does not carry ended with no poster at all (reported 2026-11-04).
+    pages.push_back(title);
     for(auto&page:pages){
       std::wstring api=L"https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1"
         L"&prop=images&imlimit=max&titles="+UrlEnc(page);
@@ -5326,7 +5331,13 @@ struct Lib{
       LogF("library art: '%s' Wikipedia page '%s' has %d file(s)",Narrow(title).c_str(),
            Narrow(page).c_str(),(int)files.size());
       for(auto&f:files){ std::wstring lf=PLower(f);
-        if(lf.find(L"poster")==std::wstring::npos) continue;
+        // Accept "poster" files AND the article's own lead image. Wikipedia
+        // often names the infobox image after the film (File:Beware Boiuna.jpeg)
+        // with no "poster" in it; the old filter skipped exactly that and the
+        // title stayed blank even though the article page was found.
+        std::wstring lf2=lf; for(auto&c:lf2) if(c==L'_') c=L' ';
+        const std::wstring base=PLower(title);
+        if(lf2.find(L"poster")==std::wstring::npos && lf2.find(base)==std::wstring::npos) continue;
         std::wstring ext=PExtLower(f); if(ext!=L".jpg"&&ext!=L".jpeg"&&ext!=L".png") continue;
         std::string ij=GetJsonUrl(L"https://en.wikipedia.org/w/api.php?action=query&format=json"
           L"&prop=imageinfo&iiprop=url&titles="+UrlEnc(f));
