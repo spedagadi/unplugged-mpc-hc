@@ -266,8 +266,8 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>User guide — unplugged</title>
 <meta name="description" content="{description}">
-<link rel="canonical" href="https://unplugged-mpc-hc.pages.dev/guide">
-<meta property="og:url" content="https://unplugged-mpc-hc.pages.dev/guide">
+<link rel="canonical" href="https://www.unpluggedvideo.com/guide">
+<meta property="og:url" content="https://www.unpluggedvideo.com/guide">
 <meta name="theme-color" content="#000000">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="unplugged">

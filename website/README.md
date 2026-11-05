@@ -2,7 +2,7 @@
 
 Static marketing site for unplugged. No framework, no tracking, no server. The user guide and search index are generated from `docs/settings-guide.md`; everything else is hand-authored HTML.
 
-**Live:** https://unplugged-mpc-hc.pages.dev
+**Live:** https://www.unpluggedvideo.com
 
 ## Files
 
@@ -34,7 +34,7 @@ Any static host works. The folder has no build step at deploy time; the generate
 3. Build command: none.
 4. Output directory: `website`.
 
-The site is live at https://unplugged-mpc-hc.pages.dev. Cloudflare redirects `.html` paths to clean URLs (`/guide.html` → `/guide`); canonical and sitemap URLs use the clean form.
+The site is live at https://www.unpluggedvideo.com. Cloudflare redirects `.html` paths to clean URLs (`/guide.html` → `/guide`); canonical and sitemap URLs use the clean form.
 
 The free plan is sufficient: 500 builds/month, 20,000 files, 25 MiB per file and 100 custom domains. A domain is the only cost.
 
@@ -58,11 +58,12 @@ This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js
 
 ## Before going live
 
-1. **Custom domain:** when you add one, replace `https://unplugged-mpc-hc.pages.dev` in `sitemap.xml`, `robots.txt`, every canonical/`og:url`, and the guide template in `build_guide.py`. Re-run `build_guide.py`.
-2. **Canonical and `og:url`** currently point at the clean `https://unplugged-mpc-hc.pages.dev` URLs. Keep them extensionless to match Cloudflare's redirects.
-3. **Check the download URL and hash** on `download.html` against the GitHub release before publishing. The site currently points at `v2.1.0` and `Unplugged-setup-2.1.0.exe`.
-4. **Add `og:image`** if you want a social card. It must be an absolute URL.
-5. **Decide on analytics.** There is none by default. If you add any, add a privacy page and a consent path where required.
+1. **Custom domain:** the site is live at `https://www.unpluggedvideo.com`. If the domain changes, replace it in `sitemap.xml`, `robots.txt`, every canonical/`og:url`, and the guide template in `build_guide.py`, then re-run `build_guide.py`.
+2. **Canonical and `og:url`** point at the clean `https://www.unpluggedvideo.com` URLs. Keep them extensionless to match Cloudflare's redirects.
+3. **Apex forwarding:** set `unpluggedvideo.com` (without www) to forward to `https://www.unpluggedvideo.com` at GoDaddy, so the bare domain does not show a parked page.
+4. **Check the download URL and hash** on `download.html` against the GitHub release before publishing. The site currently points at `v2.1.0` and `Unplugged-setup-2.1.0.exe`.
+5. **Add `og:image`** if you want a social card. It must be an absolute URL.
+6. **Decide on analytics.** There is none by default. If you add any, add a privacy page and a consent path where required.
 
 ## Regenerating `preview.html`
 
