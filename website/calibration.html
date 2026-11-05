@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Picture calibration for your projector or TV — unplugged</title>
+<meta name="description" content="Set your screen's measured brightness and black level once, then apply a DisplayCAL .cube as the final polish. Unplugged keeps calibration separate from the film.">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="unplugged">
+<meta property="og:title" content="Picture calibration for your projector or TV">
+<meta property="og:description" content="Measured white, measured black and a .cube applied as the final polish — separate from the film's tone mapping.">
+<link rel="icon" href="assets/brand/png/unplugged-icon-32.png" sizes="32x32">
+<link rel="icon" href="assets/brand/ico/unplugged.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/brand/png/unplugged-icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap head-in">
+    <a class="brand" href="index.html" aria-label="unplugged home">
+      <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="176" height="26">
+    </a>
+    <nav id="primary-nav" aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="decklink-capture.html">Live HDMI</a></li>
+        <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+        <li><a href="non-linear-stretch.html">Scope screens</a></li>
+        <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+      </ul>
+    </nav>
+    <span class="head-spacer"></span>
+    <a class="btn small head-cta" href="download.html">Download free</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="page-hero wrap">
+    <div class="crumbs"><a href="index.html">unplugged</a><span>/</span><span>Calibration</span></div>
+    <p class="eyebrow"><span class="dot"></span> Calibration</p>
+    <h1>A picture tuned to your screen.</h1>
+    <p class="lede">Tell Unplugged what your projector or TV can actually do — measured white, measured black and peak brightness — then apply a calibration LUT as the final polish.</p>
+    <div class="actions">
+      <a class="btn" href="download.html">Download free</a>
+      <a class="btn ghost" href="hdr-tone-mapping.html">The tone mapper →</a>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="prose">
+      <div class="callout">
+        <strong>The short version:</strong> measure your screen once, enter its white, black and peak brightness, and load a calibration file if you have one. Every film is then mapped into what your projector or TV can actually show.
+      </div>
+
+      <figure class="figure" style="margin: 26px 0;">
+        <svg viewBox="0 0 520 130" role="img" aria-label="Calibration path: measure the screen, enter the display target once, optionally load a LUT, then display.">
+          <defs>
+            <marker id="cal-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="#E8551F"/>
+            </marker>
+          </defs>
+          <g fill="#141416" stroke="#242428">
+            <rect x="20" y="30" width="110" height="64" rx="4"/>
+            <rect x="150" y="30" width="125" height="64" rx="4"/>
+            <rect x="295" y="30" width="100" height="64" rx="4"/>
+            <rect x="415" y="30" width="85" height="64" rx="4"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1" text-anchor="middle">
+            <text x="75" y="54" fill="#F2F2F2">MEASURE</text>
+            <text x="75" y="72" fill="#8A8A90" font-size="8">measured values</text>
+            <text x="212.5" y="54" fill="#F2F2F2">TARGET</text>
+            <text x="212.5" y="72" fill="#8A8A90" font-size="8">entered once</text>
+            <text x="345" y="54" fill="#F2F2F2">LUT</text>
+            <text x="345" y="72" fill="#8A8A90" font-size="8">optional .cube</text>
+            <text x="457.5" y="54" fill="#F2F2F2">DISPLAY</text>
+            <text x="457.5" y="72" fill="#8A8A90" font-size="8">your screen</text>
+          </g>
+          <g fill="none" stroke="#E8551F" stroke-width="1.5" marker-end="url(#cal-arrow)">
+            <path d="M130 62 H150"/>
+            <path d="M275 62 H295"/>
+            <path d="M395 62 H415"/>
+          </g>
+        </svg>
+        <figcaption>Measure once, enter the target once, then the grade maps into your screen.</figcaption>
+      </figure>
+
+      <h2>Three numbers, set once</h2>
+      <p>Your display target is not a look. It is a description of the screen: where white sits, how bright the peak is, and how dark black actually goes. Set it from a measurement and leave it. Every tone curve and every source is mapped into it.</p>
+      <table class="spec" style="margin: 22px 0;">
+        <tbody>
+          <tr><th>SDR display nits</th><td>25–400, default 80. The measured SDR white of your display. A TV in a bright room is typically 100–200; a projector in a dark room 40–80. The AVSForum reference comparison used 120 nits.</td></tr>
+          <tr><th>Static nits (max)</th><td>10–1000, default 1000. Your display's measured peak white in SDR mode — the destination the tone curve maps to.</td></tr>
+          <tr><th>Display black</th><td>0–2, default 0. Your measured black level. OLED at true black stays 0; a projector measuring 0.3 gets 0.3, so shadow detail is not spent on a level the panel cannot show.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Why the numbers matter</h3>
+      <p>Declared <strong>below</strong> your measurement, SDR white makes the picture run bright and the highlights pay: the shoulder clips sooner and sky detail goes first. Declared <strong>above</strong> it, films render dark with headroom unused.</p>
+      <p>Brightness without lying about the panel is what <strong>Exposure</strong> is for. It works before the curve, in thirds of a stop, so the shoulder absorbs it instead of clipping. The display numbers stay measurements.</p>
+
+      <h2>Calibration is the final polish</h2>
+      <p>A DisplayCAL <code>.cube</code> loads into the app and is applied after tone mapping and grading. That ordering matters: the LUT corrects what the panel does to the picture, not what the film asked the panel to do.</p>
+      <ul>
+        <li><strong>Separate from the tone curve.</strong> Change the source, the curve or the grade and the panel correction still applies.</li>
+        <li><strong>An enable toggle, not an unload.</strong> A/B the LUT without losing the loaded file.</li>
+        <li><strong>One display per LUT.</strong> Moving the PC to another panel means another measurement.</li>
+      </ul>
+
+      <h2>Colour that fits your screen</h2>
+      <p>Colours can look garish not when they exceed the display gamut but when they sit exactly on its edge — the maximum for their lightness. <strong>Gamut capacity (709)</strong> lands each colour at a fraction of its own distance to the edge: 1.00 is off; 0.55 is the breathing room measured reference software leaves a deep-blue sky.</p>
+      <p>Pale colours have long distances and stay untouched at any setting, so this cannot desaturate a whole film. It only relaxes colours crowded against the edge.</p>
+
+      <h2>Smooth away the steps</h2>
+      <p>HDR tone mapping down to an 8-bit SDR signal creates steps in slow gradients: sky fades, dark walls, the bloom around a lamp. <strong>Deband</strong> flattens each band edge and covers the work with fine grain.</p>
+      <table class="spec" style="margin: 22px 0;">
+        <tbody>
+          <tr><th>Deband</th><td>On by default. Turn it off only if you want to keep the grain exactly as encoded.</td></tr>
+          <tr><th>Threshold</th><td>0–256, default 32. How small a gradient step is treated.</td></tr>
+          <tr><th>Range</th><td>1–64, default 16. How wide an area is blended per band.</td></tr>
+          <tr><th>Iterations</th><td>1–4, default 1. Two is usually the honest maximum.</td></tr>
+          <tr><th>Grain</th><td>0–128, default 24. The noise that hides the blending; matching real film grain is the target.</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Adaptive sharpen</strong> is the other finishing pass: it measures each edge against its local neighbourhood and limits itself, so it adds detail without white halos. It is off by default because clean 4K rarely needs it.</p>
+
+      <h2>How to measure</h2>
+      <ol>
+        <li><strong>Measure the panel.</strong> Use a colorimeter and DisplayCAL, in the display mode you actually watch in.</li>
+        <li><strong>Enter the three numbers.</strong> SDR white, peak white and black go into the Display Target section once. Do not re-enter them per film.</li>
+        <li><strong>Export a .cube.</strong> Load it in the calibration row; the LUT is applied as the final pass.</li>
+        <li><strong>A/B it.</strong> Use the enable toggle on a scene you know. If the LUT is doing its job, the difference should be in the panel's error, not in the film's look.</li>
+      </ol>
+
+      <div class="callout">
+        <strong>Keep the jobs separate.</strong> If one film looks wrong, reach for Exposure or the curve, not the display target. If every film looks wrong the same way, the display target or the LUT is the suspect.
+      </div>
+
+      <div class="page-cta">
+        <div>
+          <h2>Measure once. Watch everything.</h2>
+          <p>Free · GPL-3.0 · Windows 10/11 x64</p>
+        </div>
+        <a class="btn" href="download.html">Download unplugged</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="150" height="22">
+        <p>An open-source HDR video processor and player for the home cinema PC. Free your nits.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="decklink-capture.html">Live HDMI</a></li>
+          <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+          <li><a href="non-linear-stretch.html">Scope screens</a></li>
+          <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Source</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">unplugged-mpc-hc</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-VideoRenderer">unplugged-VideoRenderer</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-LAVFilters">unplugged-LAVFilters</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-ffmpeg">unplugged-ffmpeg</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Notes</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">Releases</a></li>
+          <li><a href="download.html#release-notes">Release notes</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issues</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/blob/zion-s3-shell/docs/settings-guide.md">Settings guide</a></li>
+          <li><a href="download.html">Install notes</a></li>
+          <li><a href="content-protection.html">Content protection</a></li>
+          <li><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></li>
+          <li><a href="download.html#licences">Licences</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <p>Built on MPC-HC, MPC Video Renderer, LAV Filters and FFmpeg. Not affiliated with or endorsed by the MPC-HC, LAV Filters, FFmpeg or Blackmagic Design projects. Unplugged does not decrypt, strip or bypass HDCP or any other content protection.</p>
+      <p>Dolby, Dolby Vision and Gran Turismo 7 are trademarks of their respective owners. HDMI is a trademark of HDMI Licensing Administrator, Inc. Blackmagic, DeckLink and Desktop Video are trademarks of Blackmagic Design. unplugged is not affiliated with Dolby Laboratories, Sony Interactive Entertainment or Polyphony Digital. madVR Envy and Lumagen Radiance Pro are trademarks of their respective owners. unplugged is not affiliated with madVR Labs or Lumagen, Inc.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

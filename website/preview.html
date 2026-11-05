@@ -1,0 +1,674 @@
+<title>unplugged</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap head-in">
+    <a class="brand" href="index.html" aria-label="unplugged home">
+      <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="176" height="26">
+    </a>
+    <nav id="primary-nav" aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="decklink-capture.html">Live HDMI</a></li>
+        <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+        <li><a href="non-linear-stretch.html">Scope screens</a></li>
+        <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+      </ul>
+    </nav>
+    <span class="head-spacer"></span>
+    <a class="btn small head-cta" href="download.html">Download free</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero wrap">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="dot"></span> Free Â· Open source Â· Home cinema video processor</p>
+      <h1>Cinema-grade HDR tone mapping. <br>Open source. Real time.</h1>
+      <p class="lede">Unplugged bridges the gap â€” scene-by-scene tone mapping, three ML models, and a picture you can actually tune. Free, open source, runs on your HTPC.</p>
+      <div class="actions">
+        <a class="btn" href="download.html">Download free</a>
+        <a class="btn ghost" href="#how">How it works</a>
+      </div>
+      <p class="fine">Windows 10/11 Â· 127 MB Â· No subscription Â· No account</p>
+      <blockquote class="hero-quote">
+        â€œUnplugged + Zion on default settings looked better than my tuned madVR setup.â€
+        <cite>â€” AVS Forum user</cite>
+      </blockquote>
+    </div>
+  </section>
+
+  <figure class="hero-shot wrap">
+    <picture>
+      <source type="image/webp" srcset="assets/screenshots/library-960.webp 960w, assets/screenshots/library-1440.webp 1440w, assets/screenshots/library-1920.webp 1920w" sizes="(max-width: 1180px) 100vw, 1180px">
+      <img src="assets/screenshots/library-1920.webp" alt="Unplugged 2.1.0 media player and HDR tone mapping interface, showing the movie library, poster rows and playback controls." width="1920" height="1080" fetchpriority="high" decoding="async">
+    </picture>
+    <figcaption><span>Unplugged 2.1.0</span><span>Media Player Â· real screenshot</span></figcaption>
+  </figure>
+
+  <div class="chain wrap" aria-label="Works with">
+    <span class="chain-label">Works with</span>
+    <b>Unencrypted HDMI</b><b>PC &amp; camera output</b><b>Projectors</b><b>OLED &amp; QLED TVs</b><b>MKV &amp; MP4</b>
+  </div>
+
+  <section class="section wrap" id="how">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Plug in and play</p>
+      <h2>Three steps to a better picture.</h2>
+      <p class="lede">No subscription, no cloud account, no installer labyrinth. Set it up once and leave it alone.</p>
+    </div>
+
+    <div class="grid-3">
+      <article class="card">
+        <span class="step-num">01</span>
+        <h3>Install on your PC</h3>
+        <p>One 127 MB download for Windows 10 or 11. The installer brings the runtime it needs, so there is nothing else to fetch.</p>
+      </article>
+      <article class="card">
+        <span class="step-num">02</span>
+        <h3>Point it at your movie library</h3>
+        <p>Media Player mode needs no capture card. Open your films, choose a track and watch â€” MKV, MP4, HEVC and TrueHD/Atmos are handled natively.</p>
+      </article>
+      <article class="card">
+        <span class="step-num">03</span>
+        <h3>Add live HDMI</h3>
+        <p>When you want consoles, cameras or PC output, add a DeckLink card and Blackmagic's Desktop Video runtime. Unplugged locks the signal and applies the tone map and grade.</p>
+      </article>
+    </div>
+    <p class="fine" style="margin-top: 20px;">Live HDMI needs an unencrypted source and Blackmagic's free Desktop Video runtime, installed separately â€” Unplugged does not bundle it. Most people start with Media Player mode and add a capture card later.</p>
+  </section>
+
+  <section class="section wrap" id="features">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> One video processor, every source</p>
+      <h2>Live TV, movies and games â€” one picture.</h2>
+      <p class="lede">An unencrypted HDMI source and a file on disk get the same tone mapping, the same picture controls and the same calibration. The only difference is where the picture comes from.</p>
+    </div>
+
+    <div class="pipeline" style="max-width: 760px; margin-bottom: 20px;" aria-label="Picture pipeline">
+      <div class="pipe-head">
+        <span>Picture pipeline</span>
+        <span>DeckLink Â· files</span>
+      </div>
+      <div class="pipe-row">
+        <span class="pipe-step">01</span>
+        <div><span class="pipe-name">HDMI input</span><span class="pipe-note">4K HDR10 Â· HLG Â· Dolby Vision</span></div>
+        <span class="badge hdr">Live</span>
+      </div>
+      <div class="pipe-row">
+        <span class="pipe-step">02</span>
+        <div><span class="pipe-name">Tone mapping</span><span class="pipe-note">Unplugged default Â· GT7 Adapt</span></div>
+        <span class="badge">2 curves</span>
+      </div>
+      <div class="pipe-row">
+        <span class="pipe-step">03</span>
+        <div><span class="pipe-name">Zion Grade</span><span class="pipe-note">Shadow Â· mid-tone Â· highlight</span></div>
+        <span class="badge">3 models</span>
+      </div>
+      <div class="pipe-row">
+        <span class="pipe-step">04</span>
+        <div><span class="pipe-name">Calibration</span><span class="pipe-note">Optional DisplayCAL .cube</span></div>
+        <span class="badge">Final pass</span>
+      </div>
+      <div class="pipe-row">
+        <span class="pipe-step">05</span>
+        <div><span class="pipe-name">Display</span><span class="pipe-note">BT.709 SDR Â· your measured target</span></div>
+        <span class="badge">Out</span>
+      </div>
+    </div>
+    <p class="hero-visual-note" style="margin-bottom: 24px;">The same five stages run for live HDMI and files.</p>
+
+    <div class="grid-2">
+      <article class="card">
+        <span class="tag">Live HDMI</span>
+        <h3>An unencrypted HDMI source â€” just press play</h3>
+        <p>Plug an unencrypted source into the PC and Unplugged takes it from there. SDR, HDR10, HLG and Dolby Vision are recognised automatically.</p>
+        <ul>
+          <li>4K HDR from an unencrypted source you control</li>
+          <li>Name your inputs: Camera, PC, Console</li>
+          <li>Switch sources in one click, without leaving the picture</li>
+        </ul>
+        <a class="more" href="decklink-capture.html">More about live HDMI â†’</a>
+      </article>
+
+      <article class="card">
+        <span class="tag">Media player</span>
+        <h3>Your movie library, the same great picture</h3>
+        <p>Play your own films with the same renderer, the same tone mapping and the same calibration as live HDMI.</p>
+        <ul>
+          <li>MKV, MP4 and the usual formats; HEVC and AVC video</li>
+          <li>TrueHD/Atmos, DTS-HD and AC-3; bitstream or PCM</li>
+          <li>SRT, ASS, SSA, PGS and VobSub subtitles, right in the picture</li>
+          <li>A library with posters, ratings and episode artwork</li>
+        </ul>
+        <a class="more" href="download.html">Requirements and download â†’</a>
+      </article>
+    </div>
+
+    <h3 style="margin-top: 36px;">Video Processor or Media Player?</h3>
+    <p class="fine" style="margin-top: 8px;">Both modes run the same picture pipeline. The difference is where the picture comes from.</p>
+    <div class="compare-wrap">
+      <table class="compare">
+        <thead>
+          <tr><th>Choose your setup</th><th>Video Processor</th><th>Media Player</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>Picture source</th><td>Live HDMI from an unencrypted source</td><td>Your own MKV, MP4 and similar files</td></tr>
+          <tr><th>Capture hardware</th><td>DeckLink card + Desktop Video runtime</td><td>None</td></tr>
+          <tr><th>Best for</th><td>Consoles, cameras, PC output</td><td>Films you already own</td></tr>
+          <tr><th>Picture pipeline</th><td>Tone mapping Â· Zion Grade Â· LUT</td><td>The same pipeline</td></tr>
+          <tr><th>Setup</th><td>Pick the input once</td><td>Point it at a folder</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section wrap" id="compare">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> How Unplugged compares</p>
+      <h2>Different approach. Different price.</h2>
+      <p class="lede">The dedicated processors are mature, and they lead on turnkey hardware, latency, geometry and dealer support. Unplugged leads on learned grading, price and openness. Here is the honest split.</p>
+    </div>
+
+    <div class="compare-wrap">
+      <table class="compare compare-3">
+        <thead>
+          <tr><th>Choose your setup</th><th>Unplugged</th><th>madVR Envy</th><th>Lumagen Radiance Pro</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>Price</th><td>Free (GPL-3.0)</td><td>From ~$5,000 (Core); Extreme higher</td><td>From ~Â£5,000 (4242); config-dependent</td></tr>
+          <tr><th>Tone mapping</th><td>Base curve + ML scene-by-scene correction</td><td>Per-frame dynamic tone mapping</td><td>Per-frame dynamic tone mapping</td></tr>
+          <tr><th>ML grade</th><td>Zion: 3 models, 1,700 trees</td><td>No learned grade</td><td>No learned grade</td></tr>
+          <tr><th>NLS</th><td>Dual-axis, split, centre protection</td><td>NLS+ dual-axis</td><td>NLS</td></tr>
+          <tr><th>Open source</th><td>GPL-3.0</td><td>Closed</td><td>Closed</td></tr>
+          <tr><th>Calibration</th><td>DisplayCAL .cube final pass</td><td>3D LUT calibration</td><td>CMS + 3D LUT</td></tr>
+          <tr><th>Hardware</th><td>Windows HTPC + DeckLink for live HDMI</td><td>Dedicated box, NVIDIA GPU</td><td>Dedicated FPGA box</td></tr>
+          <tr><th>Best at</th><td>Price, openness, learned grade</td><td>Turnkey setup, dedicated latency, geometry tools</td><td>Turnkey setup, auto aspect, CMS depth</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="fine" style="margin-top: 14px;">Competitor information is indicative as of November 2026; prices and features are dealer- and region-dependent. Verify with the vendor. madVR Envy and Lumagen Radiance Pro are trademarks of their respective owners; unplugged is not affiliated.</p>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Dynamic tone mapping</p>
+      <h2>HDR that looks right on your screen.</h2>
+      <p class="lede">HDR is mastered for a cinema screen. Unplugged maps it, scene by scene, to the brightness and black level your projector or TV actually has â€” so you see the detail instead of clipped whites and crushed shadows.</p>
+    </div>
+
+    <div class="grid-3">
+      <article class="card">
+        <h3>Scene-by-scene tone mapping</h3>
+        <p>Every scene is measured and mapped for your display. Skies keep their gradient, shadows keep their texture, and bright highlights roll off instead of clipping.</p>
+      </article>
+      <article class="card">
+        <h3>Two tone curves, one decision</h3>
+        <p><strong>Unplugged</strong> uses a Hable filmic roll-off: highlights compress instead of clipping, and Dolby Vision is handled by default. <strong>GT7 Adapt</strong> reads the title's own peak brightness for a second flavour. Pick one, or A/B them live.</p>
+      </article>
+      <article class="card">
+        <h3>Easy picture controls</h3>
+        <p>Exposure, shadow detail and contrast. Every slider starts neutral â€” move it only when you want to, and a look you like stays put.</p>
+      </article>
+      <article class="card">
+        <h3>Made for your screen</h3>
+        <p>Tell Unplugged your screen's measured brightness and black level once. Every film is then mapped into the range your projector or TV can actually show.</p>
+      </article>
+      <article class="card">
+        <h3>Calibrated to your panel</h3>
+        <p>Load a DisplayCAL <code>.cube</code> as a final polish. Use the enable toggle to compare it without unloading the file.</p>
+      </article>
+      <article class="card">
+        <h3>Clean-up that stays subtle</h3>
+        <p>Deband smooths the steps in skies and dark walls. Adaptive sharpen adds detail without white halos. Both stay out of the way of the film.</p>
+      </article>
+    </div>
+
+    <figure class="figure" style="max-width: 760px; margin-top: 28px;">
+      <svg viewBox="0 0 520 310" role="img" aria-label="Illustrative graph comparing a hard-clipped highlight with a smooth roll-off.">
+        <rect x="20" y="20" width="480" height="230" fill="#141416" stroke="#35353b"/>
+        <g stroke="#242428" stroke-width="1">
+          <line x1="140" y1="20" x2="140" y2="250" stroke-dasharray="2 6"/>
+          <line x1="260" y1="20" x2="260" y2="250" stroke-dasharray="2 6"/>
+          <line x1="380" y1="20" x2="380" y2="250" stroke-dasharray="2 6"/>
+          <line x1="20" y1="80" x2="500" y2="80" stroke-dasharray="2 6"/>
+          <line x1="20" y1="140" x2="500" y2="140" stroke-dasharray="2 6"/>
+          <line x1="20" y1="200" x2="500" y2="200" stroke-dasharray="2 6"/>
+        </g>
+        <line x1="20" y1="250" x2="500" y2="250" stroke="#35353b"/>
+        <line x1="20" y1="20" x2="20" y2="250" stroke="#35353b"/>
+        <path d="M20 250 L300 20 L500 20" fill="none" stroke="#5a5a62" stroke-width="2" stroke-dasharray="6 5"/>
+        <path d="M20 250 C120 225 210 165 290 115 C370 70 440 52 500 46" fill="none" stroke="#E8551F" stroke-width="3" stroke-linecap="round"/>
+        <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1.2">
+          <text x="32" y="38" fill="#8A8A90">DISPLAY</text>
+          <text x="500" y="268" text-anchor="end" fill="#8A8A90">INPUT</text>
+          <text x="410" y="38" fill="#8A8A90">CLIPPED</text>
+          <text x="410" y="76" fill="#FF8A4C">ROLL-OFF</text>
+          <line x1="32" y1="288" x2="52" y2="288" stroke="#5A5A62" stroke-dasharray="4 3"/>
+          <text x="58" y="292" fill="#8A8A90">without tone mapping</text>
+          <line x1="260" y1="288" x2="280" y2="288" stroke="#E8551F" stroke-width="2"/>
+          <text x="286" y="292" fill="#8A8A90">with Unplugged</text>
+        </g>
+      </svg>
+      <figcaption>Illustrative: without tone mapping the highlight clips flat; the Unplugged curve rolls it off instead.</figcaption>
+    </figure>
+
+    <div class="actions" style="margin-top: 28px;">
+      <a class="btn ghost" href="hdr-tone-mapping.html">More about the HDR picture â†’</a>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="split">
+      <div class="split-copy">
+        <p class="eyebrow"><span class="dot"></span> The Zion Grade</p>
+        <h2>A colourist's eye, running in real time.</h2>
+        <p class="lede">The Zion Grade uses three real-time machine-learning models to read every frame and decide how shadow, mid-tone and highlight should be shaped. Where a traditional processor sets a curve once per title, Zion shifts the balance scene by scene â€” a dark interior followed by a bright exterior gets a different grade, automatically.</p>
+        <ul class="list-block" style="padding-left: 18px; color: var(--muted); font-size: 15px;">
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Three models, every frame.</strong> Shadow, mid-tone and highlight are judged together rather than one at a time.</li>
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Auto by default.</strong> Leave it on Auto and the grade follows the scene; switch to Manual when you want the last word.</li>
+          <li><strong style="color: var(--text); font-weight: 500;">Tuned by you, not baked in.</strong> Exposure, shadow detail and contrast sit on top and return to an exact no-op at zero.</li>
+        </ul>
+        <p class="fine" style="margin-top: 16px;">3 models Â· 1,700 trees Â· 88 features per frame Â· metadata-free model inference</p>
+        <div class="actions" style="margin-top: 24px;">
+          <a class="btn ghost" href="hdr-tone-mapping.html#zion">More about the Zion Grade â†’</a>
+        </div>
+      </div>
+      <figure class="figure" style="margin: 0;">
+        <svg viewBox="0 0 520 330" role="img" aria-label="The Zion Grade: shadow, mid-tone and highlight models feed a per-frame grade, then the tone curve.">
+          <defs>
+            <marker id="zion-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="#E8551F"/>
+            </marker>
+          </defs>
+          <g fill="#141416" stroke="#242428">
+            <rect x="20" y="30" width="175" height="64" rx="4"/>
+            <rect x="20" y="118" width="175" height="64" rx="4"/>
+            <rect x="20" y="206" width="175" height="64" rx="4"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.2">
+            <text x="34" y="56" fill="#F2F2F2">SHADOW</text>
+            <text x="34" y="74" fill="#8A8A90">toe and dark detail</text>
+            <text x="34" y="144" fill="#F2F2F2">MID-TONE</text>
+            <text x="34" y="162" fill="#8A8A90">faces and interiors</text>
+            <text x="34" y="232" fill="#F2F2F2">HIGHLIGHT</text>
+            <text x="34" y="250" fill="#8A8A90">sky and speculars</text>
+          </g>
+          <rect x="235" y="100" width="115" height="120" rx="4" fill="#141416" stroke="#E8551F"/>
+          <g text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.2">
+            <text x="292.5" y="136" fill="#E8551F">ZION</text>
+            <text x="292.5" y="151" fill="#E8551F">GRADE</text>
+            <text x="292.5" y="176" fill="#F2F2F2">3 models</text>
+            <text x="292.5" y="192" fill="#8A8A90">every frame</text>
+          </g>
+          <rect x="390" y="112" width="110" height="96" rx="4" fill="#141416" stroke="#242428"/>
+          <g text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.2">
+            <text x="445" y="146" fill="#F2F2F2">TONE</text>
+            <text x="445" y="161" fill="#F2F2F2">CURVE</text>
+            <text x="445" y="186" fill="#8A8A90">your display</text>
+          </g>
+          <g fill="none" stroke="#E8551F" stroke-width="1.5" marker-end="url(#zion-arrow)">
+            <path d="M195 62 C215 62 220 118 235 128"/>
+            <path d="M195 150 H235"/>
+            <path d="M195 238 C215 238 220 182 235 172"/>
+            <path d="M350 160 H390"/>
+          </g>
+        </svg>
+        <figcaption>Shadow, mid-tone and highlight are judged together, every frame, then the curve maps them to your display.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="split">
+      <div class="split-copy">
+        <p class="eyebrow"><span class="dot"></span> Live HDMI</p>
+        <h2>Plug in. Lock on. Press play.</h2>
+        <p class="lede">Unplugged handles the handshake, the format changes and the odd unplugged cable. Your unencrypted HDMI source just works.</p>
+        <ul class="list-block" style="padding-left: 18px; color: var(--muted); font-size: 15px;">
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Reconnects itself.</strong> Brief signal dropouts are handled automatically â€” no manual reconnection â€” and a source switching from SDR to HDR mid-session is followed automatically.</li>
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Name your inputs.</strong> â€œCameraâ€, â€œPCâ€, â€œConsoleâ€ â€” your names, everywhere the input appears.</li>
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">One-click switching.</strong> Move between sources without leaving the picture.</li>
+          <li><strong style="color: var(--text); font-weight: 500;">Built for live, not files.</strong> No read-ahead buffer, and late frames are dropped rather than queued.</li>
+        </ul>
+        <div class="actions" style="margin-top: 24px;">
+          <a class="btn ghost" href="decklink-capture.html">More about live HDMI â†’</a>
+        </div>
+      </div>
+
+      <div class="ports" aria-label="Example input list">
+        <div class="ports-head"><span>Source</span><span>Signal</span></div>
+        <div class="port">
+          <div><span class="port-name">Camera</span><span class="port-sub">DeckLink Quad PCIe Â· HDMI</span></div>
+          <span class="badge hdr">Locked Â· HDR PQ</span>
+        </div>
+        <div class="port">
+          <div><span class="port-name">Games console</span><span class="port-sub">DeckLink Quad PCIe Â· HDMI</span></div>
+          <span class="badge lock">Locked Â· SDR</span>
+        </div>
+        <div class="port">
+          <div><span class="port-name">PC output</span><span class="port-sub">DeckLink Quad PCIe Â· HDMI</span></div>
+          <span class="badge off">No signal</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="split">
+      <div class="split-copy">
+        <p class="eyebrow"><span class="dot"></span> Scope screens and projectors</p>
+        <h2>No black bars. No cropped picture.</h2>
+        <p class="lede">A 2.39:1 film on your 16:9 screen wastes 25% of the picture area on black. Crop alone loses the edges. Stretch alone distorts faces. Unplugged splits the correction across both axes â€” the same dual-axis approach found in high-end video processors.</p>
+        <ul class="list-block" style="padding-left: 18px; color: var(--muted); font-size: 15px;">
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Choose how much to fill.</strong> 0â€“100% of the bars gone. Half the bars costs half the distortion.</li>
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Share the stretch.</strong> Horizontal, vertical or split. At 50/50, a 24% correction becomes about 12% each way.</li>
+          <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Protect the centre.</strong> Keep the middle of the picture uniform and push the correction into the rim.</li>
+          <li><strong style="color: var(--text); font-weight: 500;">See the cost.</strong> The Warp/Crop readout shows what the current settings are doing. <strong style="color: var(--text); font-weight: 500;">N</strong> toggles it for an A/B.</li>
+        </ul>
+        <div class="actions" style="margin-top: 24px;">
+          <a class="btn ghost" href="non-linear-stretch.html">More about wide screens â†’</a>
+        </div>
+      </div>
+
+      <figure class="figure">
+        <svg viewBox="0 0 520 310" role="img" aria-label="A 2.39:1 picture inside a 16:9 panel, with the correction shared between the vertical and horizontal axes.">
+          <rect x="20" y="20" width="480" height="260" fill="#141416" stroke="#35353b" stroke-width="1.5"/>
+          <rect x="20" y="55" width="480" height="190" fill="#1c1c20" stroke="#3b3b42" stroke-width="1"/>
+          <rect x="20" y="20" width="480" height="35" fill="#0a0a0b"/>
+          <rect x="20" y="245" width="480" height="35" fill="#0a0a0b"/>
+          <g stroke="#E8551F" stroke-width="1.5" stroke-dasharray="5 4">
+            <line x1="20" y1="55" x2="500" y2="55"/>
+            <line x1="20" y1="245" x2="500" y2="245"/>
+          </g>
+          <g stroke="#FF8A4C" stroke-width="1.5" fill="none">
+            <path d="M40 62v18M34 68l6-6 6 6"/>
+            <path d="M480 62v18M474 68l6-6 6 6"/>
+            <path d="M40 238v-18M34 232l6 6 6-6"/>
+            <path d="M480 238v-18M474 232l6 6 6-6"/>
+            <path d="M52 75h34M46 69l-6 6 6 6"/>
+            <path d="M434 75h34M474 69l6 6-6 6"/>
+            <path d="M52 225h34M46 231l-6-6 6-6"/>
+            <path d="M434 225h34M474 231l6-6-6-6"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1.5" fill="#8A8A90">
+            <text x="36" y="36">16:9 PANEL</text>
+            <text x="484" y="36" text-anchor="end">BARS</text>
+            <text x="260" y="155" text-anchor="middle" fill="#F2F2F2">2.39:1 PICTURE</text>
+            <text x="260" y="172" text-anchor="middle">SHARED CORRECTION</text>
+            <text x="260" y="298" text-anchor="middle">12% VERTICAL + 12% HORIZONTAL</text>
+          </g>
+        </svg>
+        <figcaption>Illustrative: sharing a 24% correction across both axes instead of spending it on one.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Free and open source</p>
+      <h2>No subscription. No licence key. No waitlist.</h2>
+      <p class="lede">Unplugged is an open research project and GPL-3.0 software. Download it, install it, keep it. The source is public, so you can see exactly what your picture is doing.</p>
+    </div>
+
+    <div class="split" style="align-items: start;">
+      <div class="split-copy">
+        <ul class="list-block" style="padding-left: 18px; color: var(--muted); font-size: 15px;">
+          <li style="margin-bottom: 10px;"><strong style="color: var(--text); font-weight: 500;">Settings survive updates and reinstalls.</strong> A tuned picture is never the price of an upgrade.</li>
+          <li style="margin-bottom: 10px;"><strong style="color: var(--text); font-weight: 500;">Presets save themselves.</strong> Five ready presets are created on first run; switching is immediate and stays open to compare.</li>
+          <li style="margin-bottom: 10px;"><strong style="color: var(--text); font-weight: 500;">Updates notify only.</strong> Once a day the app can ask GitHub whether a newer release exists. Nothing installs itself, and the check can be turned off.</li>
+          <li><strong style="color: var(--text); font-weight: 500;">No account.</strong> The download is the whole transaction.</li>
+        </ul>
+      </div>
+
+      <ul class="repos">
+        <li>
+          <div><div class="repo-name">unplugged-mpc-hc</div><div class="repo-note">Application, engine, installer</div></div>
+          <a href="https://github.com/spedagadi/unplugged-mpc-hc">GitHub â†’</a>
+        </li>
+        <li>
+          <div><div class="repo-name">unplugged-VideoRenderer</div><div class="repo-note">DirectX video renderer and grade</div></div>
+          <a href="https://github.com/spedagadi/unplugged-VideoRenderer">GitHub â†’</a>
+        </li>
+        <li>
+          <div><div class="repo-name">unplugged-LAVFilters</div><div class="repo-note">Modified LAV Filters</div></div>
+          <a href="https://github.com/spedagadi/unplugged-LAVFilters">GitHub â†’</a>
+        </li>
+        <li>
+          <div><div class="repo-name">unplugged-ffmpeg</div><div class="repo-note">FFmpeg with the DeckLink capture path</div></div>
+          <a href="https://github.com/spedagadi/unplugged-ffmpeg">GitHub â†’</a>
+        </li>
+      </ul>
+    </div>
+    <p class="fine" style="margin-top: 28px; max-width: 78ch;">Unplugged began as an open research project on the Windows HTPC: how much of a colorist's grade can be learned from the image itself? It is maintained in public by <a href="https://github.com/spedagadi">spedagadi</a>. Questions, build logs and bug reports are welcome in the <a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">issue tracker</a>.</p>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Built in public</p>
+      <h2>The proof is in the repository.</h2>
+      <p class="lede">Unplugged is new, so there is no decade of awards to show. There is source code, a release history and a reference rig you can inspect.</p>
+    </div>
+
+    <div class="proof-grid">
+      <div><span class="proof-num">77</span><span class="proof-label">release downloads since 17 October 2026</span></div>
+      <div><span class="proof-num">6</span><span class="proof-label">releases since 17 October 2026</span></div>
+      <div><span class="proof-num">4</span><span class="proof-label">public repositories</span></div>
+      <div><span class="proof-num">GPL-3.0</span><span class="proof-label">open source, not source-available</span></div>
+      <div><span class="proof-num">127 MB</span><span class="proof-label">single native installer</span></div>
+      <div><span class="proof-num">3</span><span class="proof-label">ML models in the Zion Grade</span></div>
+    </div>
+    <p class="fine" style="margin-top: 18px;">Counts from GitHub on 4 November 2026. <a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">See every release on GitHub â†’</a></p>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> The bigger picture</p>
+      <h2>A PC today. A single box tomorrow.</h2>
+      <p class="lede">Unplugged is an open research project with a simple question: if a modern 4K chip can run dynamic tone mapping, an ML grade and full playback at once, why should a video processor cost what it does?</p>
+    </div>
+
+    <div class="grid-3">
+      <article class="card">
+        <span class="tag">Available now</span>
+        <h3>Windows HTPC</h3>
+        <p>The reference implementation: live HDMI, media player, the Zion Grade and calibration on Windows 10 or 11.</p>
+      </article>
+      <article class="card">
+        <span class="tag">The target</span>
+        <h3>Osiris</h3>
+        <p>A standalone ARM board with HDMI input â€” the same pipeline in a small box, with no PC in the chain.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Planned</span>
+        <h3>COM object</h3>
+        <p>A standalone COM wrapper for the grade engine, so third-party DirectX players can call it without the full filter.</p>
+      </article>
+    </div>
+    <p class="fine" style="margin-top: 20px;">Roadmap items are future work, not shipped features.</p>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Before you install</p>
+      <h2>What you need â€” and what it won't do.</h2>
+    </div>
+
+    <div class="split" style="align-items: start;">
+      <div class="list-block">
+        <h3>What you need</h3>
+        <ul>
+          <li><strong>Windows 10 or 11, 64-bit.</strong> Tested on an RTX 4070.</li>
+          <li><strong>A Blackmagic DeckLink card for live HDMI.</strong> DeckLink Quad PCIe and Mini Recorder 4K are confirmed; movie playback needs no card.</li>
+          <li><strong>Blackmagic Desktop Video runtime.</strong> Download and install it from Blackmagic's support portal before live use; Unplugged does not bundle it.</li>
+          <li><strong>An unencrypted HDMI signal.</strong> DeckLink inputs do not accept HDCP-encrypted sources, and Unplugged does not decrypt or bypass HDCP.</li>
+          <li><strong>127 MB of disk.</strong> The installer carries the Visual C++ runtime and installs it silently when it is missing.</li>
+        </ul>
+      </div>
+      <div class="list-block">
+        <h3>Stated limits</h3>
+        <ul>
+          <li><strong>Windows for now.</strong></li>
+          <li><strong>HDCP-encrypted HDMI is not supported.</strong> Unplugged does not decrypt or bypass it; use sources you are authorized to capture.</li>
+          <li><strong>No ISO or BDMV folder playback.</strong> Rip to a file first.</li>
+          <li><strong>Dolby Vision in files (profile 5) is not supported</strong> in media player mode. Dolby Vision over HDMI is recognised and handled.</li>
+          <li><strong>Subtitle styling applies to text tracks.</strong> Bitmap subtitles arrive pre-rendered.</li>
+          <li><strong>Very strong stretch can soften small text.</strong> Lower the strength or raise centre protection.</li>
+          <li><strong>A calibration LUT describes one screen.</strong> Moving the PC means measuring the new panel.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="section-head">
+      <p class="eyebrow"><span class="dot"></span> Questions</p>
+      <h2>Short answers.</h2>
+    </div>
+
+    <div class="faq">
+      <details>
+        <summary>Is unplugged really free?</summary>
+        <p>Yes. The application is GPL-3.0, the download is the installer, and there is no account, subscription or licence key. The source for the application, renderer, LAV fork and FFmpeg capture path is public on GitHub.</p>
+      </details>
+      <details>
+        <summary>Do I need a DeckLink card?</summary>
+        <p>Only for live HDMI. Movie playback works without a capture card. Live use needs a Blackmagic DeckLink input, with the PC's graphics output going to your projector or TV.</p>
+      </details>
+      <details>
+        <summary>Can I use it just as a media player?</summary>
+        <p>Yes. Unplugged plays your movie library with the same tone mapping, picture controls and calibration as live HDMI. No capture card is needed for file playback.</p>
+      </details>
+      <details>
+        <summary>Will it work with my projector?</summary>
+        <p>Any display that accepts a standard HDMI signal. The normal pipeline outputs BT.709 SDR â€” set the display target to your measured white, peak and black. HDR passthrough is a debug option, not the default.</p>
+      </details>
+      <details>
+        <summary>Is the picture actually better than madVR?</summary>
+        <p>It depends on the source, display and tuning, so we do not claim a universal win. The difference is the mechanism: Zion predicts a colorist-style correction per scene from 88 features, while a traditional processor applies a fixed curve. Use the passthrough toggles and judge on your own content; the AVS Forum quote above is one user's comparison.</p>
+      </details>
+      <details>
+        <summary>How does it compare to madVR Envy?</summary>
+        <p>Envy is a mature dedicated box. It leads on turnkey setup, dedicated-hardware latency, geometry and lens-memory integration. Unplugged is free, open source, runs on a PC, and adds the learned Zion grade. See the <a href="#compare">comparison table</a>.</p>
+      </details>
+      <details>
+        <summary>Can it handle Dolby Vision?</summary>
+        <p>Dolby Vision over HDMI is recognised as its own case rather than falling back to SDR, and its scene-by-scene metadata feeds the tone curve. Dolby Vision in files (profile 5) is not supported in media player mode.</p>
+      </details>
+      <details>
+        <summary>Which picture setting should I use?</summary>
+        <p>Leave <strong>Unplugged</strong> selected for everything, including Dolby Vision; it is the default per source. Choose <strong>GT7 Adapt</strong> manually for HDR10 or HLG when you want the title's own peak brightness to shape the highlights.</p>
+      </details>
+      <details>
+        <summary>Does it need the internet?</summary>
+        <p>No. The picture pipeline is local. Once a day the app can ask GitHub whether a newer release exists and show a card if one does. It notifies only, and the check can be turned off in System â†’ App.</p>
+      </details>
+      <details>
+        <summary>Can I use my own display calibration?</summary>
+        <p>Yes. Load a DisplayCAL <code>.cube</code> and it is applied as the final pass, separate from the tone mapping. An enable toggle compares it without unloading the file.</p>
+      </details>
+      <details>
+        <summary>Does it work with copy-protected HDMI?</summary>
+        <p>No. Unplugged does not decrypt, strip or bypass HDCP or any other content protection. DeckLink inputs accept unencrypted HDMI only. Commercial disc and streaming content is typically protected and is not supported.</p>
+      </details>
+      <details>
+        <summary>Is unplugged a DRM circumvention tool?</summary>
+        <p>No. It does not decrypt, strip or bypass HDCP or any other content protection, and it includes no keys or bypass features. It works only with unencrypted signals the source already provides, and only with content you are authorized to access. See <a href="content-protection.html">content protection</a>.</p>
+      </details>
+      <details>
+        <summary>Do I need Blackmagic drivers?</summary>
+        <p>Yes for live HDMI. Install the latest Desktop Video runtime from Blackmagic's support portal first. Unplugged does not bundle Blackmagic's proprietary runtime.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="download wrap">
+    <div>
+      <p class="eyebrow"><span class="dot"></span> Download</p>
+      <h2>Ready to watch?</h2>
+      <p class="lede" style="margin-top: 16px;">Version 2.1.0 Â· 127 MB Â· Windows 10/11 x64. Install, plug in, press play. Set your screen once and leave it.</p>
+      <p class="fine" style="margin-top: 10px;">New in 2.1.0: set-and-forget NLS, a more reliable library, and a one-click diagnostics report.</p>
+      <div class="actions" style="margin-top: 26px;">
+        <a class="btn" href="https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe">Download free</a>
+        <a class="btn ghost" href="download.html">Install notes</a>
+      </div>
+      <p class="fine" style="margin-top: 14px;">SHA-256 is listed on the <a href="download.html">download page</a> and in the release notes.</p>
+    </div>
+
+    <table class="spec">
+      <tbody>
+        <tr><th>Version</th><td>2.1.0</td></tr>
+        <tr><th>Released</th><td>4 November 2026</td></tr>
+        <tr><th>Installer</th><td>Unplugged-setup-2.1.0.exe</td></tr>
+        <tr><th>Size</th><td>127,087,675 bytes</td></tr>
+        <tr><th>Platform</th><td>Windows 10/11 x64</td></tr>
+        <tr><th>Licence</th><td>GPL-3.0</td></tr>
+        <tr><th>Price</th><td>Free</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="150" height="22">
+        <p>An open-source home cinema video processor and media player for Windows. Free your nits.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="decklink-capture.html">Live HDMI</a></li>
+          <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+          <li><a href="non-linear-stretch.html">Scope screens</a></li>
+          <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Source</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">unplugged-mpc-hc</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-VideoRenderer">unplugged-VideoRenderer</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-LAVFilters">unplugged-LAVFilters</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-ffmpeg">unplugged-ffmpeg</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Notes</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">Releases</a></li>
+          <li><a href="download.html#release-notes">Release notes</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issues</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/blob/zion-s3-shell/docs/settings-guide.md">Settings guide</a></li>
+          <li><a href="download.html">Install notes</a></li>
+          <li><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></li>
+          <li><a href="download.html#licences">Licences</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <p>Built on MPC-HC, MPC Video Renderer, LAV Filters and FFmpeg. Not affiliated with or endorsed by the MPC-HC, LAV Filters, FFmpeg or Blackmagic Design projects. Unplugged does not decrypt, strip or bypass HDCP or any other content protection.</p>
+      <p>Dolby, Dolby Vision and Gran Turismo 7 are trademarks of their respective owners. HDMI is a trademark of HDMI Licensing Administrator, Inc. Blackmagic, DeckLink and Desktop Video are trademarks of Blackmagic Design. unplugged is not affiliated with Dolby Laboratories, Sony Interactive Entertainment or Polyphony Digital.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>

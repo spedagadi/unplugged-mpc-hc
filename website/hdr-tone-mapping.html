@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dynamic HDR tone mapping for home cinema — unplugged</title>
+<meta name="description" content="Scene-by-scene, ML-driven HDR tone mapping for your projector or TV. Unplugged maps HDR10, HLG and Dolby Vision to your screen's real brightness, with easy picture controls and calibration.">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="unplugged">
+<meta property="og:title" content="Dynamic HDR tone mapping for home cinema">
+<meta property="og:description" content="Scene-by-scene HDR tone mapping for your projector or TV — two looks, easy picture controls and a final calibration pass.">
+<link rel="icon" href="assets/brand/png/unplugged-icon-32.png" sizes="32x32">
+<link rel="icon" href="assets/brand/ico/unplugged.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/brand/png/unplugged-icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap head-in">
+    <a class="brand" href="index.html" aria-label="unplugged home">
+      <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="176" height="26">
+    </a>
+    <nav id="primary-nav" aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="decklink-capture.html">Live HDMI</a></li>
+        <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+        <li><a href="non-linear-stretch.html">Scope screens</a></li>
+        <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+      </ul>
+    </nav>
+    <span class="head-spacer"></span>
+    <a class="btn small head-cta" href="download.html">Download free</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="page-hero wrap">
+    <div class="crumbs"><a href="index.html">unplugged</a><span>/</span><span>HDR picture</span></div>
+    <p class="eyebrow"><span class="dot"></span> Dynamic tone mapping</p>
+    <h1>HDR that looks right in your room.</h1>
+    <p class="lede">Unplugged maps HDR10, HLG and Dolby Vision to your projector or TV, scene by scene, then lets you tune the look without breaking the picture.</p>
+    <div class="actions">
+      <a class="btn" href="download.html">Download free</a>
+      <a class="btn ghost" href="calibration.html">Fine-tune your screen →</a>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="prose">
+      <div class="callout">
+        <strong>The short version:</strong> Unplugged reads the HDR signal, measures each scene, and maps it to the brightness and black level your display can actually show. You choose a look, set your screen once, and the picture stays right.
+      </div>
+
+      <h2>How the picture is built</h2>
+      <p>Every stage runs inside the same app, so there is no separate toolchain to keep in sync.</p>
+      <ol>
+        <li><strong>Input.</strong> Your live HDMI source or movie file comes in.</li>
+        <li><strong>Tone mapping.</strong> HDR is mapped into the brightness range your display can show, using the source's own information where it has it.</li>
+        <li><strong>Picture tuning.</strong> Shadow, mid and highlight are balanced for the scene, then your trims apply on top.</li>
+        <li><strong>Calibration.</strong> Your screen's own correction is applied last.</li>
+      </ol>
+      <p>The status readout shows the peak currently in use, so you can see what the picture is working from.</p>
+
+      <h2>Two looks, one default</h2>
+      <p><strong>Unplugged</strong> is the house curve and the default for every HDR source, Dolby Vision included. It is the safe choice: a Dolby Vision signal carries its own scene-by-scene information, and the curve respects it.</p>
+      <p><strong>GT7 Adapt</strong> is the manual choice for HDR10 and HLG. It uses the title's own peak brightness, together with each scene, to place the highlights. The picture controls work identically on both curves.</p>
+      <table class="spec" style="margin: 22px 0;">
+        <tbody>
+          <tr><th>Unplugged</th><td>Default · every HDR source · Dolby Vision</td></tr>
+          <tr><th>GT7 Adapt</th><td>Manual · HDR10 and HLG · title MaxCLL + scene peak</td></tr>
+          <tr><th>Taste trims</th><td>Exposure · Shadow detail · Contrast · both curves</td></tr>
+        </tbody>
+      </table>
+
+      <h2>What the source tells it</h2>
+      <p>HDR10 can carry static metadata: MaxCLL, MaxFALL and the mastering display. When it is present, the title's MaxCLL sizes the highlight ceiling instead of a generic assumption. Metadata is read from live capture when the card carries it and from files when the container has it.</p>
+      <p>Dolby Vision over HDMI is its own case. The card marks such a signal with BT.2020 colour and no ordinary HDR flag, so the app identifies it by that signature rather than falling back to SDR, and reports it as Dolby Vision in the input dialog and the Info panel.</p>
+      <p>When a source carries no usable metadata, the grade works from a measured scene peak. The peak in use is visible on the status readout, so “why is the picture mapped like this?” has an answer on screen.</p>
+
+      <h2>Set your screen up once</h2>
+      <p>Three numbers describe your screen. Set them once from a calibration report and leave them; changing them to make one film look brighter moves every film.</p>
+      <table class="spec" style="margin: 22px 0;">
+        <thead>
+          <tr><th style="width: 30%;">Control</th><th>What it is</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>SDR display nits</th><td>Where diffuse white sits on your display. A TV in a bright room is typically 100–200; a projector in a dark room 40–80.</td></tr>
+          <tr><th>Static nits (max)</th><td>Your display's measured peak white. This is the destination the curve maps to.</td></tr>
+          <tr><th>Display black</th><td>Your display's measured black level, so shadow detail is not spent on a black the panel cannot show. OLED at true black is 0; a projector measuring 0.3 gets 0.3.</td></tr>
+        </tbody>
+      </table>
+      <p>Declaring SDR white below your measurement makes the picture run bright and the shoulder clips sooner. Declaring it above makes films render dark with headroom unused. If a specific film looks wrong, <strong>Exposure</strong> is the dial for that; the display numbers are not.</p>
+
+      <h2>Easy picture controls</h2>
+      <p>Zero is an exact no-op on every trim, so a look you like is never disturbed by a dial you did not touch.</p>
+      <table class="spec" style="margin: 22px 0;">
+        <tbody>
+          <tr><th>Exposure</th><td>−5…+5 · input gain in thirds of a stop, applied before the curve so the shoulder absorbs it instead of clipping.</td></tr>
+          <tr><th>Shadow detail</th><td>−5…+5 · spreads dark values apart without lifting true black. Detail, not brightness.</td></tr>
+          <tr><th>Contrast</th><td>−5…+5 · a symmetric S-curve about mid grey; black, mid and white stay exactly put.</td></tr>
+          <tr><th>Highlight desat</th><td>0…1 · pulls saturation toward the level's neutral point, hue preserved. Guards the cyan cast HDR masters carry into dusk skies.</td></tr>
+          <tr><th>Gamut capacity</th><td>0.20…1.00 · lands out-of-gamut colour at a fraction of its distance to the display edge. Pale colours stay untouched.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Scene by scene, not shot by shot</h2>
+      <p>A band controller solves shadow, mid and highlight together every frame so the delivered picture lands on fixed house anchors. Exposure is treated as a property of the scene, not the shot: the model updates at scene cuts and never mid-shot, so an approved change lands in one frame rather than drifting through a scene.</p>
+      <p>Above that sit corrections you can reach for when a title needs them: shadow dehaze pulls back the model's own safety lift on dark scenes; highlight shoulder softens or tightens the roll-off; mid-tone target solves the gamma that lands the scene average where you asked; chroma has a skin brake; micro-contrast is texture-gated and halo-limited.</p>
+
+      <h2 id="zion">The Zion Grade</h2>
+      <p>Three real-time machine-learning models read every frame and predict how a colourist would shape the tone curve for that scene: one for shadow, one for mid-tone, one for highlight. Their combined inference drives the Zion Grade, so the picture tracks the scene rather than a single curve set at the start.</p>
+      <p>Auto is the default. Manual freezes the per-scene gamma and puts the sliders in charge. The picture controls above work on top either way, and zero remains an exact no-op.</p>
+      <div class="callout">
+        <strong>In development:</strong> GPU-based sky and skin segmentation, intended to protect faces and complex gradients under aggressive tone curves. It is an open research pipeline, not part of the shipped picture yet.
+      </div>
+
+      <h2>Calibration is the final polish</h2>
+      <p>The tone mapper describes the signal. The calibration LUT describes the panel. Keeping them separate means a new display measurement does not require re-tuning the grade, and a grade you like survives a recalibration.</p>
+      <p>A DisplayCAL <code>.cube</code> loads as the final pass with its own enable toggle, so you can A/B the correction without unloading the file.</p>
+
+      <div class="callout">
+        <strong>What it will not do:</strong> Dolby Vision profile 5 in a file is not supported in Media Player mode. Dolby Vision over HDMI is recognised and handled. ISO and BDMV folder playback are not supported; rip to a file first.
+      </div>
+
+      <div class="page-cta">
+        <div>
+          <h2>Map it to your screen.</h2>
+          <p>Free · GPL-3.0 · Windows 10/11 x64</p>
+        </div>
+        <a class="btn" href="download.html">Download unplugged</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="150" height="22">
+        <p>An open-source HDR video processor and player for the home cinema PC. Free your nits.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="decklink-capture.html">Live HDMI</a></li>
+          <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+          <li><a href="non-linear-stretch.html">Scope screens</a></li>
+          <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Source</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">unplugged-mpc-hc</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-VideoRenderer">unplugged-VideoRenderer</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-LAVFilters">unplugged-LAVFilters</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-ffmpeg">unplugged-ffmpeg</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Notes</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">Releases</a></li>
+          <li><a href="download.html#release-notes">Release notes</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issues</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/blob/zion-s3-shell/docs/settings-guide.md">Settings guide</a></li>
+          <li><a href="download.html">Install notes</a></li>
+          <li><a href="content-protection.html">Content protection</a></li>
+          <li><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></li>
+          <li><a href="download.html#licences">Licences</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <p>Built on MPC-HC, MPC Video Renderer, LAV Filters and FFmpeg. Not affiliated with or endorsed by the MPC-HC, LAV Filters, FFmpeg or Blackmagic Design projects. Unplugged does not decrypt, strip or bypass HDCP or any other content protection.</p>
+      <p>Dolby, Dolby Vision and Gran Turismo 7 are trademarks of their respective owners. HDMI is a trademark of HDMI Licensing Administrator, Inc. Blackmagic, DeckLink and Desktop Video are trademarks of Blackmagic Design. unplugged is not affiliated with Dolby Laboratories, Sony Interactive Entertainment or Polyphony Digital. madVR Envy and Lumagen Radiance Pro are trademarks of their respective owners. unplugged is not affiliated with madVR Labs or Lumagen, Inc.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

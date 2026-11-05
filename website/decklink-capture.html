@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Live HDMI video processor for home cinema — unplugged</title>
+<meta name="description" content="Plug an unencrypted HDMI source into your PC and watch 4K HDR on your projector or TV. Unplugged locks the signal, recognises the format and applies your picture automatically.">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="unplugged">
+<meta property="og:title" content="Live HDMI video processor for home cinema">
+<meta property="og:description" content="An unencrypted HDMI source into your PC — and 4K HDR out to your projector or TV.">
+<link rel="icon" href="assets/brand/png/unplugged-icon-32.png" sizes="32x32">
+<link rel="icon" href="assets/brand/ico/unplugged.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/brand/png/unplugged-icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap head-in">
+    <a class="brand" href="index.html" aria-label="unplugged home">
+      <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="176" height="26">
+    </a>
+    <nav id="primary-nav" aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="decklink-capture.html">Live HDMI</a></li>
+        <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+        <li><a href="non-linear-stretch.html">Scope screens</a></li>
+        <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+      </ul>
+    </nav>
+    <span class="head-spacer"></span>
+    <a class="btn small head-cta" href="download.html">Download free</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="page-hero wrap">
+    <div class="crumbs"><a href="index.html">unplugged</a><span>/</span><span>Live HDMI</span></div>
+    <p class="eyebrow"><span class="dot"></span> Live HDMI</p>
+    <h1>Live HDMI for your home cinema.</h1>
+    <p class="lede">Plug an unencrypted HDMI source into your PC. Unplugged locks the signal, recognises the format and presents it full-screen with your picture applied.</p>
+    <div class="actions">
+      <a class="btn" href="download.html">Download free</a>
+      <a class="btn ghost" href="hdr-tone-mapping.html">What happens to the picture →</a>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <div class="prose">
+      <div class="callout">
+        <strong>The short version:</strong> connect your source to a DeckLink card, choose the input once, and watch. SDR, HDR10, HLG and Dolby Vision are recognised automatically, and a brief dropout reconnects itself.
+      </div>
+
+      <h2>What the setup looks like</h2>
+      <ol>
+        <li><strong>Install Blackmagic's Desktop Video runtime and a DeckLink card.</strong> The runtime comes from Blackmagic's support portal; Unplugged does not bundle it.</li>
+        <li><strong>Connect the source to the card.</strong> A PC, camera, games console or AVR output that is not HDCP-protected.</li>
+        <li><strong>Run Unplugged in Video Processor mode.</strong> It opens the port, identifies the signal and presents it full-screen with your picture applied.</li>
+      </ol>
+      <p>File playback needs no capture card. The card is only for live HDMI.</p>
+      <p><strong>The signal must be unencrypted.</strong> DeckLink inputs do not accept HDCP-encrypted HDMI, and Unplugged does not decrypt or bypass HDCP. Use sources you are authorized to capture.</p>
+
+      <figure class="figure" style="margin: 26px 0;">
+        <svg viewBox="0 0 520 130" role="img" aria-label="Live path: an unencrypted HDMI source, DeckLink capture, Unplugged processing, and the display.">
+          <defs>
+            <marker id="live-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="#E8551F"/>
+            </marker>
+          </defs>
+          <g fill="#141416" stroke="#242428">
+            <rect x="20" y="30" width="100" height="64" rx="4"/>
+            <rect x="140" y="30" width="100" height="64" rx="4"/>
+            <rect x="260" y="30" width="125" height="64" rx="4"/>
+            <rect x="405" y="30" width="95" height="64" rx="4"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1" text-anchor="middle">
+            <text x="70" y="54" fill="#F2F2F2">SOURCE</text>
+            <text x="70" y="72" fill="#8A8A90" font-size="8">unencrypted HDMI</text>
+            <text x="190" y="54" fill="#F2F2F2">DECKLINK</text>
+            <text x="190" y="72" fill="#8A8A90" font-size="8">capture</text>
+            <text x="322.5" y="54" fill="#F2F2F2">UNPLUGGED</text>
+            <text x="322.5" y="72" fill="#8A8A90" font-size="8">tone map + grade</text>
+            <text x="452.5" y="54" fill="#F2F2F2">DISPLAY</text>
+            <text x="452.5" y="72" fill="#8A8A90" font-size="8">projector / TV</text>
+          </g>
+          <g fill="none" stroke="#E8551F" stroke-width="1.5" marker-end="url(#live-arrow)">
+            <path d="M120 62 H140"/>
+            <path d="M240 62 H260"/>
+            <path d="M385 62 H405"/>
+          </g>
+        </svg>
+        <figcaption>The live path: HDMI in, processed on the PC, GPU out to the display.</figcaption>
+      </figure>
+
+      <h2>The signal is recognised automatically</h2>
+      <p>Every port on every card is listed with a live badge: locked with SDR, HDR PQ or HDR HLG, or no signal. Dolby Vision over HDMI is recognised as its own case — profile 7 and profile 8 — rather than being read as plain SDR.</p>
+      <p>HDR10 static metadata (MaxCLL, MaxFALL and the mastering display) is read from the card when the source carries it. The Info panel reports what was found, and the tone curve uses it.</p>
+
+      <div class="ports" style="margin: 26px 0;" aria-label="Example input list">
+        <div class="ports-head"><span>Source</span><span>Signal</span></div>
+        <div class="port">
+          <div><span class="port-name">Camera</span><span class="port-sub">DeckLink Quad PCIe · HDMI</span></div>
+          <span class="badge hdr">Locked · HDR PQ</span>
+        </div>
+        <div class="port">
+          <div><span class="port-name">Games console</span><span class="port-sub">DeckLink Quad PCIe · HDMI</span></div>
+          <span class="badge lock">Locked · SDR</span>
+        </div>
+        <div class="port">
+          <div><span class="port-name">PC output</span><span class="port-sub">DeckLink Quad PCIe · HDMI</span></div>
+          <span class="badge off">No signal</span>
+        </div>
+      </div>
+
+      <h2>It reconnects itself</h2>
+      <p>Capture is automatic. Plug a source in, unplug it, or let it renegotiate from SDR to HDR mid-session, and the picture follows without intervention.</p>
+      <ul>
+        <li><strong>Brief dropouts wait out a grace window.</strong> A source changing format does not bounce you to a spinner.</li>
+        <li><strong>Format changes are followed, not fought.</strong> SDR, HDR10, HLG and Dolby Vision over HDMI each get the right treatment.</li>
+        <li><strong>Ports can be named.</strong> “Camera”, “Console”, “PC” — the name is yours and appears everywhere the port does.</li>
+        <li><strong>Inputs switch live.</strong> Clicking a row restarts capture on the new port; nothing else about the session changes.</li>
+      </ul>
+
+      <h2>Built for live, not files</h2>
+      <p>A file can be buffered ahead. A live source cannot. The capture path is deliberately pull-based:</p>
+      <ul>
+        <li><strong>No read-ahead cache.</strong> A demuxer running ahead is the same as buffering, and it is latency you cannot spend.</li>
+        <li><strong>No long probe before the first frame.</strong> Live input is not seekable; there is nothing to learn by waiting.</li>
+        <li><strong>Late frames are dropped, not queued.</strong> If the consumer falls behind wall clock, the queue does not grow until the picture lags the sound.</li>
+        <li><strong>A capture ring sized for 4K.</strong> The default buffer in a naive path overflows on a 4K HDR signal. Unplugged sizes it for the bitrate.</li>
+      </ul>
+      <p>These are implementation choices inside the FFmpeg DeckLink path, not settings you have to tune. They are listed because the source is public and the reasoning is part of the product.</p>
+
+      <h2>The same picture for live and files</h2>
+      <p>The live path and the file path meet the same video renderer, the same tone curves, the same display target and the same calibration LUT. A console and a film on disk are graded by the same code.</p>
+
+      <div class="callout">
+        <strong>Requirements:</strong> Windows 10/11 x64, Blackmagic's Desktop Video runtime, a Blackmagic DeckLink card for live HDMI (Quad PCIe and Mini Recorder 4K confirmed), and the GPU output connected to your display. The HDMI source must be unencrypted (non-HDCP); Unplugged does not decrypt or bypass HDCP. Dolby Vision in files (profile 5) is not supported in media player mode; Dolby Vision over HDMI is.
+      </div>
+
+      <div class="page-cta">
+        <div>
+          <h2>Put the card to work.</h2>
+          <p>Free · GPL-3.0 · Windows 10/11 x64</p>
+        </div>
+        <a class="btn" href="download.html">Download unplugged</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="150" height="22">
+        <p>An open-source HDR video processor and player for the home cinema PC. Free your nits.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="decklink-capture.html">Live HDMI</a></li>
+          <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+          <li><a href="non-linear-stretch.html">Scope screens</a></li>
+          <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Source</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">unplugged-mpc-hc</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-VideoRenderer">unplugged-VideoRenderer</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-LAVFilters">unplugged-LAVFilters</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-ffmpeg">unplugged-ffmpeg</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Notes</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">Releases</a></li>
+          <li><a href="download.html#release-notes">Release notes</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issues</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/blob/zion-s3-shell/docs/settings-guide.md">Settings guide</a></li>
+          <li><a href="download.html">Install notes</a></li>
+          <li><a href="content-protection.html">Content protection</a></li>
+          <li><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></li>
+          <li><a href="download.html#licences">Licences</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <p>Built on MPC-HC, MPC Video Renderer, LAV Filters and FFmpeg. Not affiliated with or endorsed by the MPC-HC, LAV Filters, FFmpeg or Blackmagic Design projects. Unplugged does not decrypt, strip or bypass HDCP or any other content protection.</p>
+      <p>Dolby, Dolby Vision and Gran Turismo 7 are trademarks of their respective owners. HDMI is a trademark of HDMI Licensing Administrator, Inc. Blackmagic, DeckLink and Desktop Video are trademarks of Blackmagic Design. unplugged is not affiliated with Dolby Laboratories, Sony Interactive Entertainment or Polyphony Digital. madVR Envy and Lumagen Radiance Pro are trademarks of their respective owners. unplugged is not affiliated with madVR Labs or Lumagen, Inc.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

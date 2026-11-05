@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://unplugged.example/</loc><lastmod>2026-11-04</lastmod><priority>1.0</priority></url>
+  <url><loc>https://unplugged.example/download.html</loc><lastmod>2026-11-04</lastmod><priority>0.9</priority></url>
+  <url><loc>https://unplugged.example/hdr-tone-mapping.html</loc><lastmod>2026-11-04</lastmod><priority>0.8</priority></url>
+  <url><loc>https://unplugged.example/decklink-capture.html</loc><lastmod>2026-11-04</lastmod><priority>0.8</priority></url>
+  <url><loc>https://unplugged.example/non-linear-stretch.html</loc><lastmod>2026-11-04</lastmod><priority>0.7</priority></url>
+  <url><loc>https://unplugged.example/calibration.html</loc><lastmod>2026-11-04</lastmod><priority>0.7</priority></url>
+  <url><loc>https://unplugged.example/content-protection.html</loc><lastmod>2026-11-04</lastmod><priority>0.3</priority></url>
+  <url><loc>https://unplugged.example/guide.html</loc><lastmod>2026-11-04</lastmod><priority>0.8</priority></url>
+</urlset>
