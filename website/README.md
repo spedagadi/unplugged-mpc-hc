@@ -15,7 +15,7 @@ Static marketing site for unplugged. No framework, no tracking, no server. The u
 - `styles.css`, `site.js` — shared assets
 - `assets/brand/` — wordmark, mark, icon taken from `src/unplugged-ui/assets/brand/`
 - `assets/screenshots/hero-{960,1440,1920}.webp` — real Media Player capture used in the hero (generated from `Hero.png`, 3840×2160; the 12 MB source is kept local and not committed)
-- `preview.html` — generated, artifact-contract version of the landing page. Do not edit by hand; regenerate (see below).
+- `preview.html` is generated locally for artifact publishing only. It is not committed or deployed; Cloudflare would otherwise serve it as a duplicate of the homepage.
 - `content-protection.html` — HDCP/DRM policy: no decryption or bypass; unencrypted, authorized sources only
 - `guide.html` — generated user guide from `docs/settings-guide.md`
 - `search-index.json` — generated index for the header search
