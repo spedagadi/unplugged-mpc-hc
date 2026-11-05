@@ -49,3 +49,6 @@
 [submodule "src/thirdparty/ResizableLib/ResizableLib"]
 	path = src/thirdparty/ResizableLib/ResizableLib
 	url = https://github.com/adipose/resizablelib
+[submodule "src/thirdparty/imgui"]
+	path = src/thirdparty/imgui
+	url = https://github.com/ocornut/imgui.git
