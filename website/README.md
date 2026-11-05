@@ -2,6 +2,8 @@
 
 Static marketing site for unplugged. No framework, no tracking, no server. The user guide and search index are generated from `docs/settings-guide.md`; everything else is hand-authored HTML.
 
+**Live:** https://unplugged-mpc-hc.pages.dev
+
 ## Files
 
 - `index.html` — landing page
@@ -12,7 +14,7 @@ Static marketing site for unplugged. No framework, no tracking, no server. The u
 - `calibration.html` — display target and LUT explainer (search landing page)
 - `styles.css`, `site.js` — shared assets
 - `assets/brand/` — wordmark, mark, icon taken from `src/unplugged-ui/assets/brand/`
-- `assets/screenshots/library-{960,1440,1920}.webp` — real Media Player capture used in the hero (generated from the v2.1.0 release screenshot, 3840×2160)
+- `assets/screenshots/hero-{960,1440,1920}.webp` — real Media Player capture used in the hero (generated from `Hero.png`, 3840×2160; the 12 MB source is kept local and not committed)
 - `preview.html` — generated, artifact-contract version of the landing page. Do not edit by hand; regenerate (see below).
 - `content-protection.html` — HDCP/DRM policy: no decryption or bypass; unencrypted, authorized sources only
 - `guide.html` — generated user guide from `docs/settings-guide.md`
@@ -28,8 +30,11 @@ Any static host works. The folder has no build step at deploy time; the generate
 ### Cloudflare Pages (recommended)
 
 1. Create a Pages project from the repository.
-2. Build command: none.
-3. Output directory: `website`.
+2. Production branch: `zion-s3-shell`.
+3. Build command: none.
+4. Output directory: `website`.
+
+The site is live at https://unplugged-mpc-hc.pages.dev. Cloudflare redirects `.html` paths to clean URLs (`/guide.html` → `/guide`); canonical and sitemap URLs use the clean form.
 
 The free plan is sufficient: 500 builds/month, 20,000 files, 25 MiB per file and 100 custom domains. A domain is the only cost.
 
@@ -53,8 +58,8 @@ This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js
 
 ## Before going live
 
-1. **Replace `https://unplugged.example`** in `sitemap.xml` and `robots.txt` with the real origin. The `.example` TLD is deliberately reserved so it cannot be mistaken for a live host.
-2. **Add canonical and `og:url` tags** once the origin is known. They are omitted rather than guessed.
+1. **Custom domain:** when you add one, replace `https://unplugged-mpc-hc.pages.dev` in `sitemap.xml`, `robots.txt`, every canonical/`og:url`, and the guide template in `build_guide.py`. Re-run `build_guide.py`.
+2. **Canonical and `og:url`** currently point at the clean `https://unplugged-mpc-hc.pages.dev` URLs. Keep them extensionless to match Cloudflare's redirects.
 3. **Check the download URL and hash** on `download.html` against the GitHub release before publishing. The site currently points at `v2.1.0` and `Unplugged-setup-2.1.0.exe`.
 4. **Add `og:image`** if you want a social card. It must be an absolute URL.
 5. **Decide on analytics.** There is none by default. If you add any, add a privacy page and a consent path where required.
