@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>unplugged — open-source HDR tone mapping software for Windows</title>
-<meta name="description" content="Open-source HDR tone mapping software and HDR to SDR converter for Windows. Scene-by-scene ML grade, free video processor for projector and TV, and a madVR alternative.">
+<title>unplugged — real-time open-source HDR tone mapping for Windows</title>
+<meta name="description" content="Real-time open-source HDR tone mapping software and HDR to SDR converter for Windows. Scene-by-scene ML grade, a free video processor and media player, NLS for scope screens, and a madVR alternative.">
 <link rel="canonical" href="https://www.unpluggedvideo.com/">
 <meta property="og:url" content="https://www.unpluggedvideo.com/">
 <meta name="theme-color" content="#000000">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="unplugged">
-<meta property="og:title" content="unplugged — open-source HDR tone mapping software">
-<meta property="og:description" content="Cinema-grade HDR tone mapping. Open source. Real time. An HDR to SDR converter and free madVR alternative for your HTPC.">
+<meta property="og:title" content="unplugged — real-time open-source HDR tone mapping">
+<meta property="og:description" content="Cinema-grade HDR tone mapping. Open source. Real time. An HDR to SDR converter, media player and free madVR alternative for your HTPC.">
 <link rel="icon" href="assets/brand/png/unplugged-icon-32.png" sizes="32x32">
 <link rel="icon" href="assets/brand/ico/unplugged.ico" sizes="any">
 <link rel="apple-touch-icon" href="assets/brand/png/unplugged-icon-512.png">
@@ -26,7 +26,7 @@
   "name": "unplugged",
   "applicationCategory": "MultimediaApplication",
   "operatingSystem": "Windows 10, Windows 11",
-  "description": "Open-source HDR tone mapping software and a video processor for Windows, with live HDMI capture, ML-driven scene-by-scene grading, wide-screen stretch and display calibration.",
+  "description": "Open-source HDR tone mapping software, video processor and media player for Windows, with live HDMI capture, ML-driven scene-by-scene grading, wide-screen stretch and display calibration.",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe",
@@ -57,12 +57,7 @@
     {
       "@type": "Question",
       "name": "Will it work with my projector?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Any display that accepts a standard HDMI signal. The normal pipeline outputs BT.709 SDR; set the display target to your measured white, peak and black. HDR passthrough is a debug option, not the default." }
-    },
-    {
-      "@type": "Question",
-      "name": "Is the picture actually better than madVR?",
-      "acceptedAnswer": { "@type": "Answer", "text": "It depends on the source, display and tuning, so we do not claim a universal win. The difference is the mechanism: Zion predicts a colorist-style correction per scene from 88 features, while a traditional processor applies a fixed curve. Use the passthrough toggles and judge on your own content." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Any display that accepts a standard HDMI signal. Unplugged tone-maps to SDR and lets you set the output gamut to BT.709 or BT.2020 to match the display. Set the display target to your measured white, peak and black. HDR passthrough is a debug option, not the default." }
     },
     {
       "@type": "Question",
@@ -72,7 +67,7 @@
     {
       "@type": "Question",
       "name": "Can it handle Dolby Vision?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Dolby Vision over HDMI is recognised as its own case rather than falling back to SDR, and its scene-by-scene metadata feeds the tone curve. Dolby Vision in files (profile 5) is not supported in media player mode." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Dolby Vision over HDMI is recognised as its own case rather than falling back to SDR. When the source is Dolby Vision, Unplugged applies the Zion ML grade. Dolby Vision in files (profile 5) is not supported in media player mode." }
     },
     {
       "@type": "Question",
@@ -82,17 +77,12 @@
     {
       "@type": "Question",
       "name": "Does it need the internet?",
-      "acceptedAnswer": { "@type": "Answer", "text": "No. The picture pipeline is local. Once a day the app can ask GitHub whether a newer release exists and show a card if one does. It notifies only, and the check can be turned off." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes, if you want poster art for your library. The picture pipeline is local, so playback, tone mapping and grading work offline. Poster art and ratings are fetched online, and the daily update check is optional and notify-only." }
     },
     {
       "@type": "Question",
       "name": "Does it work with copy-protected HDMI?",
       "acceptedAnswer": { "@type": "Answer", "text": "No. Unplugged does not decrypt, strip or bypass HDCP or any other content protection. DeckLink inputs accept unencrypted HDMI only. Commercial disc and streaming content is typically protected and is not supported." }
-    },
-    {
-      "@type": "Question",
-      "name": "Is unplugged a DRM circumvention tool?",
-      "acceptedAnswer": { "@type": "Answer", "text": "No. It does not decrypt, strip or bypass HDCP or any other content protection, and it includes no keys or bypass features. It works only with unencrypted signals the source already provides, and only with content you are authorized to access." }
     },
     {
       "@type": "Question",
@@ -119,9 +109,10 @@
     <nav id="primary-nav" aria-label="Primary">
       <ul class="nav-links">
         <li><a href="index.html#features">Features</a></li>
+        <li><a href="specs.html">Specs</a></li>
         <li><a href="decklink-capture.html">Live HDMI</a></li>
         <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
-        <li><a href="non-linear-stretch.html">Scope screens</a></li>
+        <li><a href="non-linear-stretch.html">NLS</a></li>
         <li><a href="calibration.html">Calibration</a></li>
         <li><a href="guide.html">Guide</a></li>
       </ul>
@@ -140,7 +131,7 @@
 
   <section class="hero wrap">
     <div class="hero-copy">
-      <p class="eyebrow"><span class="dot"></span> Free · Open source · Home cinema video processor</p>
+      <p class="eyebrow"><span class="dot"></span> Free · Open source · Real-time video processor · Media player</p>
       <h1>Cinema-grade HDR tone mapping. <br>Open source. Real time.</h1>
       <p class="lede">Unplugged bridges the gap — scene-by-scene tone mapping, three ML models, and a picture you can actually tune. Free, open source, runs on your HTPC.</p>
       <div class="actions">
@@ -158,7 +149,7 @@
   <figure class="hero-shot wrap">
     <picture>
       <source type="image/webp" srcset="assets/screenshots/hero-960.webp 960w, assets/screenshots/hero-1440.webp 1440w, assets/screenshots/hero-1920.webp 1920w" sizes="(max-width: 1180px) 100vw, 1180px">
-      <img src="assets/screenshots/hero-1920.webp" alt="Unplugged 2.1.0 media player showing a 4K HDR movie library with HDR10 and Dolby Vision metadata, poster rows and playback controls." width="1920" height="1080" fetchpriority="high" decoding="async">
+      <img src="assets/screenshots/hero-1920.webp" alt="Unplugged 2.1.0 media player showing a 4K HDR movie library with HDR10 and Dolby Vision titles, poster rows and playback controls." width="1920" height="1080" fetchpriority="high" decoding="async">
     </picture>
     <figcaption><span>Unplugged 2.1.0</span><span>Media Player · real screenshot</span></figcaption>
   </figure>
@@ -434,6 +425,18 @@
         <figcaption>Shadow, mid-tone and highlight are judged together, every frame, then the curve maps them to your display.</figcaption>
       </figure>
     </div>
+
+    <figure class="ba" data-ba>
+      <div class="ba-frame">
+        <img class="ba-img" src="assets/screenshots/zion-on.webp" alt="The same frame with the Zion Grade on." width="1920" height="1080" loading="lazy" decoding="async">
+        <img class="ba-img ba-off" src="assets/screenshots/zion-off.webp" alt="The same frame with the Zion Grade off." width="1920" height="1080" loading="lazy" decoding="async">
+        <span class="ba-label ba-label-off">Zion off</span>
+        <span class="ba-label ba-label-on">Zion on</span>
+        <input class="ba-range" type="range" min="0" max="100" value="50" step="1" aria-label="Compare the Zion Grade off and on">
+        <span class="ba-handle" aria-hidden="true"></span>
+      </div>
+      <figcaption>Drag to compare the same frame with the Zion Grade off and on. Real captures from Unplugged 2.1.0.</figcaption>
+    </figure>
   </section>
 
   <section class="section wrap">
@@ -474,9 +477,9 @@
   <section class="section wrap">
     <div class="split">
       <div class="split-copy">
-        <p class="eyebrow"><span class="dot"></span> Scope screens and projectors</p>
-        <h2>No black bars. No cropped picture.</h2>
-        <p class="lede">A 2.39:1 film on your 16:9 screen wastes 25% of the picture area on black. Crop alone loses the edges. Stretch alone distorts faces. Unplugged splits the correction across both axes — the same dual-axis approach found in high-end video processors.</p>
+        <p class="eyebrow"><span class="dot"></span> NLS · Scope screens and projectors</p>
+        <h2>NLS: no black bars. No cropped picture.</h2>
+        <p class="lede">NLS (non-linear stretch) fills a 2.39:1 film on your 16:9 screen without cropping. Crop alone loses the edges. Stretch alone distorts faces. Unplugged splits the correction across both axes — the same dual-axis approach found in high-end video processors.</p>
         <ul class="list-block" style="padding-left: 18px; color: var(--muted); font-size: 15px;">
           <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Choose how much to fill.</strong> 0–100% of the bars gone. Half the bars costs half the distortion.</li>
           <li style="margin-bottom: 8px;"><strong style="color: var(--text); font-weight: 500;">Share the stretch.</strong> Horizontal, vertical or split. At 50/50, a 24% correction becomes about 12% each way.</li>
@@ -484,7 +487,7 @@
           <li><strong style="color: var(--text); font-weight: 500;">See the cost.</strong> The Warp/Crop readout shows what the current settings are doing. <strong style="color: var(--text); font-weight: 500;">N</strong> toggles it for an A/B.</li>
         </ul>
         <div class="actions" style="margin-top: 24px;">
-          <a class="btn ghost" href="non-linear-stretch.html">More about wide screens →</a>
+          <a class="btn ghost" href="non-linear-stretch.html">More about NLS →</a>
         </div>
       </div>
 
@@ -564,7 +567,7 @@
     <div class="section-head">
       <p class="eyebrow"><span class="dot"></span> Built in public</p>
       <h2>The proof is in the repository.</h2>
-      <p class="lede">Unplugged is new, so there is no decade of awards to show. There is source code, a release history and a reference rig you can inspect.</p>
+      <p class="lede">Every release, model file and fix is in the repository. The same source runs on the reference rig, so you can see exactly what produced the picture.</p>
     </div>
 
     <div class="proof-grid">
@@ -630,7 +633,6 @@
           <li><strong>No ISO or BDMV folder playback.</strong> Rip to a file first.</li>
           <li><strong>Dolby Vision in files (profile 5) is not supported</strong> in media player mode. Dolby Vision over HDMI is recognised and handled.</li>
           <li><strong>Subtitle styling applies to text tracks.</strong> Bitmap subtitles arrive pre-rendered.</li>
-          <li><strong>Very strong stretch can soften small text.</strong> Lower the strength or raise centre protection.</li>
           <li><strong>A calibration LUT describes one screen.</strong> Moving the PC means measuring the new panel.</li>
         </ul>
       </div>
@@ -658,11 +660,7 @@
       </details>
       <details>
         <summary>Will it work with my projector?</summary>
-        <p>Any display that accepts a standard HDMI signal. The normal pipeline outputs BT.709 SDR — set the display target to your measured white, peak and black. HDR passthrough is a debug option, not the default.</p>
-      </details>
-      <details>
-        <summary>Is the picture actually better than madVR?</summary>
-        <p>It depends on the source, display and tuning, so we do not claim a universal win. The difference is the mechanism: Zion predicts a colorist-style correction per scene from 88 features, while a traditional processor applies a fixed curve. Use the passthrough toggles and judge on your own content; the AVS Forum quote above is one user's comparison.</p>
+        <p>Any display that accepts a standard HDMI signal. Unplugged tone-maps to SDR and lets you set the output gamut to BT.709 or BT.2020 to match the display. Set the display target to your measured white, peak and black. HDR passthrough is a debug option, not the default.</p>
       </details>
       <details>
         <summary>How does it compare to madVR Envy?</summary>
@@ -670,7 +668,7 @@
       </details>
       <details>
         <summary>Can it handle Dolby Vision?</summary>
-        <p>Dolby Vision over HDMI is recognised as its own case rather than falling back to SDR, and its scene-by-scene metadata feeds the tone curve. Dolby Vision in files (profile 5) is not supported in media player mode.</p>
+        <p>Dolby Vision over HDMI is recognised as its own case rather than falling back to SDR. When the source is Dolby Vision, Unplugged applies the Zion ML grade. Dolby Vision in files (profile 5) is not supported in media player mode.</p>
       </details>
       <details>
         <summary>Which picture setting should I use?</summary>
@@ -678,7 +676,7 @@
       </details>
       <details>
         <summary>Does it need the internet?</summary>
-        <p>No. The picture pipeline is local. Once a day the app can ask GitHub whether a newer release exists and show a card if one does. It notifies only, and the check can be turned off in System → App.</p>
+        <p>Yes, if you want poster art for your library. The picture pipeline is local, so playback, tone mapping and grading work offline. Poster art and ratings are fetched online, and the daily update check is optional and notify-only.</p>
       </details>
       <details>
         <summary>Can I use my own display calibration?</summary>
@@ -687,10 +685,6 @@
       <details>
         <summary>Does it work with copy-protected HDMI?</summary>
         <p>No. Unplugged does not decrypt, strip or bypass HDCP or any other content protection. DeckLink inputs accept unencrypted HDMI only. Commercial disc and streaming content is typically protected and is not supported.</p>
-      </details>
-      <details>
-        <summary>Is unplugged a DRM circumvention tool?</summary>
-        <p>No. It does not decrypt, strip or bypass HDCP or any other content protection, and it includes no keys or bypass features. It works only with unencrypted signals the source already provides, and only with content you are authorized to access. See <a href="content-protection.html">content protection</a>.</p>
       </details>
       <details>
         <summary>Do I need Blackmagic drivers?</summary>
@@ -738,9 +732,10 @@
         <h4>Product</h4>
         <ul>
           <li><a href="index.html#features">Features</a></li>
+        <li><a href="specs.html">Specs</a></li>
           <li><a href="decklink-capture.html">Live HDMI</a></li>
           <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
-          <li><a href="non-linear-stretch.html">Scope screens</a></li>
+          <li><a href="non-linear-stretch.html">NLS</a></li>
           <li><a href="calibration.html">Calibration</a></li>
         <li><a href="guide.html">Guide</a></li>
           <li><a href="download.html">Download</a></li>

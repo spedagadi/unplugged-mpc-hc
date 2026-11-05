@@ -23,6 +23,7 @@ PAGES = [
     "non-linear-stretch.html",
     "calibration.html",
     "content-protection.html",
+    "specs.html",
 ]
 
 

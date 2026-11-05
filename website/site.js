@@ -249,3 +249,17 @@
     });
   });
 })();
+
+/* Before/after comparison sliders. */
+(function () {
+  document.querySelectorAll("[data-ba]").forEach(function (figure) {
+    var input = figure.querySelector(".ba-range");
+    if (!input) return;
+    function update() {
+      figure.style.setProperty("--ba-pos", input.value + "%");
+      input.setAttribute("aria-valuetext", input.value + "% Zion off, " + (100 - input.value) + "% on");
+    }
+    input.addEventListener("input", update);
+    update();
+  });
+})();

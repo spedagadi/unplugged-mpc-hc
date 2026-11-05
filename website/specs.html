@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Specs — real-time HDR video processor — unplugged</title>
+<meta name="description" content="Unplugged specs: real-time HDR tone mapping, live HDMI, media player, Zion ML grade, display calibration and requirements for Windows 10/11.">
+<link rel="canonical" href="https://www.unpluggedvideo.com/specs">
+<meta property="og:url" content="https://www.unpluggedvideo.com/specs">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="unplugged">
+<meta property="og:title" content="Unplugged specs — real-time HDR video processing">
+<meta property="og:description" content="Real-time HDR tone mapping, live HDMI, media player, ML grade and calibration on Windows.">
+<link rel="icon" href="assets/brand/png/unplugged-icon-32.png" sizes="32x32">
+<link rel="icon" href="assets/brand/ico/unplugged.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/brand/png/unplugged-icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap head-in">
+    <a class="brand" href="index.html" aria-label="unplugged home">
+      <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="176" height="26">
+    </a>
+    <nav id="primary-nav" aria-label="Primary">
+      <ul class="nav-links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="specs.html">Specs</a></li>
+        <li><a href="decklink-capture.html">Live HDMI</a></li>
+        <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+        <li><a href="non-linear-stretch.html">NLS</a></li>
+        <li><a href="calibration.html">Calibration</a></li>
+        <li><a href="guide.html">Guide</a></li>
+      </ul>
+    </nav>
+    <span class="head-spacer"></span>
+    <a class="btn small head-cta" href="download.html">Download free</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="page-hero wrap">
+    <div class="crumbs"><a href="index.html">unplugged</a><span>/</span><span>Specs</span></div>
+    <p class="eyebrow"><span class="dot"></span> Specs · real time</p>
+    <h1>Real-time HDR processing.</h1>
+    <p class="lede">A real-time video processor and media player for Windows. Free, open source, and built on the PC you already own.</p>
+    <div class="actions">
+      <a class="btn" href="download.html">Download free</a>
+      <a class="btn ghost" href="#real-time">How real time works</a>
+    </div>
+  </section>
+
+  <section class="section wrap specs-body">
+    <div class="prose">
+      <h2 id="real-time">Real time</h2>
+      <div class="callout">
+        <strong>Every frame is processed as it arrives.</strong> DeckLink capture → GPU tone mapping and grade → display. No re-encoding, no export, no cloud round-trip.
+      </div>
+      <ul>
+        <li><strong>Per-frame processing.</strong> Tone mapping and the Zion grade run on every frame.</li>
+        <li><strong>GPU pipeline.</strong> The renderer draws the graded frame; the ML tree inference runs on the CPU in well under a frame.</li>
+        <li><strong>Pull-based live ingest.</strong> No read-ahead queue; late frames are dropped rather than queued.</li>
+        <li><strong>Live and files.</strong> The same real-time pipeline runs for HDMI capture and local playback.</li>
+      </ul>
+
+      <h2>What it is</h2>
+      <ul>
+        <li>A real-time video processor and media player for Windows 10/11.</li>
+        <li>Free and open source, GPL-3.0.</li>
+        <li>Runs on a PC you already own. A DeckLink card adds live HDMI; file playback needs no capture card.</li>
+      </ul>
+
+      <h2>What it does</h2>
+      <ul>
+        <li>Scene-by-scene HDR tone mapping: Unplugged and GT7 Adapt.</li>
+        <li>Zion ML grade: three models, 1,700 trees, 88 features per frame.</li>
+        <li>Sky and person segmentation for highlight and skin protection.</li>
+        <li>NLS (non-linear stretch): dual-axis, split and centre protection for scope screens.</li>
+        <li>Measured display target and DisplayCAL <code>.cube</code> calibration.</li>
+        <li>Deband and adaptive sharpen.</li>
+        <li>Media player with subtitle and audio-track switching.</li>
+        <li>Presets, passthrough A/B and frame logs.</li>
+      </ul>
+
+      <h2>What it supports</h2>
+      <table class="spec">
+        <tbody>
+          <tr><th>Live input</th><td>4K HDR10 / HLG / Dolby Vision over HDMI, unencrypted</td></tr>
+          <tr><th>Media player</th><td>MKV and MP4; HEVC and AVC; TrueHD/Atmos, DTS-HD and AC-3</td></tr>
+          <tr><th>Subtitles</th><td>SRT, ASS, SSA, PGS and VobSub</td></tr>
+          <tr><th>Output</th><td>Tone-mapped SDR; output gamut BT.709 or BT.2020, selectable for the display</td></tr>
+          <tr><th>NLS</th><td>Dual-axis non-linear stretch; split axis, centre protection, live on paused frames</td></tr>
+          <tr><th>Hardware</th><td>Windows 10/11 x64; DeckLink Quad PCIe or Mini Recorder 4K for live; RTX 4070 tested</td></tr>
+          <tr><th>Calibration</th><td>DisplayCAL <code>.cube</code>, applied as the final pass</td></tr>
+        </tbody>
+      </table>
+
+      <h2>How it is controlled</h2>
+      <ul>
+        <li>Native Windows app, keyboard shortcuts and the settings rail.</li>
+        <li>Presets, passthrough A/B and frame logs.</li>
+      </ul>
+
+      <h2>On the roadmap</h2>
+      <ul>
+        <li><strong>Osiris</strong> — a standalone ARM board with HDMI input.</li>
+        <li><strong>COM wrapper</strong> — for third-party DirectX players.</li>
+      </ul>
+      <p class="fine">Roadmap items are future work, not shipped features.</p>
+
+      <h2>Availability and price</h2>
+      <ul>
+        <li>Free, GPL-3.0, downloadable now for Windows 10/11 x64.</li>
+        <li>No subscription, account or licence key.</li>
+      </ul>
+
+      <h2>Get involved</h2>
+      <ul>
+        <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">Source and releases on GitHub</a>.</li>
+        <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issue tracker</a> for questions and bug reports.</li>
+      </ul>
+
+      <p class="fine" style="margin-top: 40px;">Requirements and known limitations are on the <a href="download.html#requirements">download page</a>.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="assets/brand/wordmark/unplugged-wordmark.png" alt="unplugged" width="150" height="22">
+        <p>An open-source home cinema video processor and media player for Windows. Free your nits.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="specs.html">Specs</a></li>
+          <li><a href="decklink-capture.html">Live HDMI</a></li>
+          <li><a href="hdr-tone-mapping.html">HDR picture</a></li>
+          <li><a href="non-linear-stretch.html">NLS</a></li>
+          <li><a href="calibration.html">Calibration</a></li>
+          <li><a href="guide.html">Guide</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Source</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc">unplugged-mpc-hc</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-VideoRenderer">unplugged-VideoRenderer</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-LAVFilters">unplugged-LAVFilters</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-ffmpeg">unplugged-ffmpeg</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Notes</h4>
+        <ul>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/releases">Releases</a></li>
+          <li><a href="download.html#release-notes">Release notes</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/issues">Issues</a></li>
+          <li><a href="https://github.com/spedagadi/unplugged-mpc-hc/blob/zion-s3-shell/docs/settings-guide.md">Settings guide</a></li>
+          <li><a href="download.html">Install notes</a></li>
+          <li><a href="content-protection.html">Content protection</a></li>
+          <li><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></li>
+          <li><a href="download.html#licences">Licences</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <p>Built on MPC-HC, MPC Video Renderer, LAV Filters and FFmpeg. Not affiliated with or endorsed by the MPC-HC, LAV Filters, FFmpeg or Blackmagic Design projects. Unplugged does not decrypt, strip or bypass HDCP or any other content protection.</p>
+      <p>Dolby, Dolby Vision and Gran Turismo 7 are trademarks of their respective owners. HDMI is a trademark of HDMI Licensing Administrator, Inc. Blackmagic, DeckLink and Desktop Video are trademarks of Blackmagic Design. unplugged is not affiliated with Dolby Laboratories, Sony Interactive Entertainment or Polyphony Digital. madVR Envy and Lumagen Radiance Pro are trademarks of their respective owners. unplugged is not affiliated with madVR Labs or Lumagen, Inc.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
