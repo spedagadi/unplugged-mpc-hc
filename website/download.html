@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Download unplugged 2.1.0 — home cinema video processor</title>
-<meta name="description" content="Download unplugged 2.1.0 for Windows 10/11 x64. Free and open source: live HDMI, ML-driven HDR tone mapping, media player and calibration in one app. 127 MB.">
+<title>Download unplugged 2.2.0 — home cinema video processor</title>
+<meta name="description" content="Download unplugged 2.2.0 for Windows 10/11 x64. Free and open source: live HDMI, ML-driven HDR tone mapping, media player and calibration in one app. 127 MB.">
 <link rel="canonical" href="https://www.unpluggedvideo.com/download">
 <meta property="og:url" content="https://www.unpluggedvideo.com/download">
 <meta name="theme-color" content="#000000">
@@ -53,11 +53,11 @@
 
   <section class="page-hero wrap">
     <div class="crumbs"><a href="index.html">unplugged</a><span>/</span><span>Download</span></div>
-    <p class="eyebrow"><span class="dot"></span> Release 2.1.0</p>
+    <p class="eyebrow"><span class="dot"></span> Release <span data-release-version>2.2.0</span></p>
     <h1>Download unplugged</h1>
     <p class="lede">One download. One install. Then it's picture time. Free, with no account and no subscription.</p>
     <div class="actions">
-      <a class="btn" href="https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe">Download free</a>
+      <a class="btn" href="https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.2.0/Unplugged-setup-2.2.0.exe" data-release-download>Download free</a>
       <a class="btn ghost" href="https://github.com/spedagadi/unplugged-mpc-hc/releases">All releases</a>
     </div>
   </section>
@@ -68,18 +68,18 @@
         <h2 style="margin-bottom: 18px;">The file, checked.</h2>
         <p class="lede">Every release lists its hash. Compare it after downloading if you want to know the file is the one that was published.</p>
         <div class="copy-row" style="margin-top: 22px;">
-          <button class="btn ghost small" type="button" data-copy="A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF">Copy SHA-256</button>
+          <button class="btn ghost small" type="button" data-copy="F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3" data-release-sha-copy>Copy SHA-256</button>
           <span class="copy-status" role="status" aria-live="polite"></span>
         </div>
       </div>
 
       <table class="spec">
         <tbody>
-          <tr><th>Version</th><td>2.1.0</td></tr>
-          <tr><th>Released</th><td>4 November 2026</td></tr>
-          <tr><th>Installer</th><td>Unplugged-setup-2.1.0.exe</td></tr>
-          <tr><th>Size</th><td>127,087,675 bytes</td></tr>
-          <tr><th>SHA-256</th><td class="hash">A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF</td></tr>
+          <tr><th>Version</th><td data-release-version>2.2.0</td></tr>
+          <tr><th>Released</th><td data-release-date>10 November 2026</td></tr>
+          <tr><th>Installer</th><td data-release-installer>Unplugged-setup-2.2.0.exe</td></tr>
+          <tr><th>Size</th><td data-release-size>127,094,355 bytes</td></tr>
+          <tr><th>SHA-256</th><td class="hash" data-release-sha>F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3</td></tr>
           <tr><th>Platform</th><td>Windows 10/11 x64</td></tr>
           <tr><th>Licence</th><td>GPL-3.0</td></tr>
         </tbody>
@@ -89,18 +89,20 @@
 
   <section class="section wrap">
     <div class="prose">
-      <h2 id="release-notes">What's new in 2.1.0</h2>
+      <h2 id="release-notes">What's new in 2.2.0</h2>
       <ul>
-        <li><strong>NLS is set-and-forget.</strong> Auto handles clean 16:9 and scope content as well as letterboxed sources. Bars removed controls every fill mode, and Max distortion caps the warp.</li>
-        <li><strong>Post-NLS X and Y crop.</strong> Trim each axis after stretching — the whole frame, including bars, in real time.</li>
-        <li><strong>Clean scope-to-IMAX transitions.</strong> Bands are tracked per frame instead of a stale crop. One IMAX frame can still use aspect-ratio NLS during a transition.</li>
-        <li><strong>A reliable library.</strong> Season, episode and movie rows with posters, plot, facts and IMDb chips; ratings always shown; all episode thumbnails; a Wikipedia fallback and a 900-a-day OMDb budget.</li>
-        <li><strong>One-click diagnostics.</strong> Report a problem now bundles a diagnostics zip.</li>
-        <li><strong>Upgrade in place.</strong> 2.1.0 installs over 2.0.0 and keeps your library, presets and calibration.</li>
+        <li><strong>Display transfer.</strong> Encode the finished SDR picture for Follow source, Gamma 2.2, Gamma 2.4, BT.1886, sRGB or Gamma 2.0. Follow source keeps the 2.1.0 pass-through.</li>
+        <li><strong>DCI-P3 (D65) output gamut.</strong> Available alongside Follow source, BT.709 and BT.2020. The HDR tone map converts 2020→P3; the SDR pass converts 709/2020→P3.</li>
+        <li><strong>DBLE compensation.</strong> In dark pictures the renderer rolls the top of the range down so a projector's dynamic laser dimming does not push highlights into clipping. The trigger is measured from the finished picture and works with the ML grade off.</li>
+        <li><strong>DBLE views and OSD.</strong> Clipping test (green = fixable, red = already clipped, blue = actually lowered) and Split screen, plus an on-screen overlay and shortcuts for the six DBLE settings.</li>
+        <li><strong>Standalone renderer updated.</strong> The MPC-HC/MPC-BE package exposes Display transfer, DBLE, View and OSD, and persists the new values in the renderer registry.</li>
+        <li><strong>Fixes.</strong> Video Processor survives a fresh install; no more “No signal” after the display sleeps; the grade no longer pumps on bright backgrounds within a shot; Prime Video episode transitions no longer reload the graph; Ctrl+S capture works from an installed app.</li>
+        <li><strong>Upgrade in place.</strong> 2.2.0 installs over 2.1.0 and keeps your library, presets and calibration. <a href="https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v2.2.0" data-release-notes>Read the full release notes on GitHub →</a></li>
       </ul>
 
       <h2>Release history</h2>
       <ul>
+        <li><strong>2.2.0</strong> — 10 November 2026 — display transfer, DCI-P3 output, DBLE compensation and fixes.</li>
         <li><strong>2.1.0</strong> — 4 November 2026 — set-and-forget NLS, library reliability, one-click diagnostics.</li>
         <li><strong>2.0.0</strong> — 1 November 2026 — native MFC application, first NLS, self-saving presets, update check, Dolby Vision reporting over HDMI.</li>
         <li><strong>1.2.0</strong> — 22 October 2026 — poster library, simpler settings panel, Super Resolution switch.</li>
@@ -169,9 +171,9 @@
       <div class="page-cta">
         <div>
           <h2>Ready for the install?</h2>
-          <p>Version 2.1.0 · 127 MB · Windows 10/11 x64</p>
+          <p>Version <span data-release-version>2.2.0</span> · <span data-release-size-mb>127 MB</span> · Windows 10/11 x64</p>
         </div>
-        <a class="btn" href="https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe">Download free</a>
+        <a class="btn" href="https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.2.0/Unplugged-setup-2.2.0.exe" data-release-download>Download free</a>
       </div>
     </div>
   </section>

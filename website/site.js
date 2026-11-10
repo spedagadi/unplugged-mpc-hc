@@ -250,6 +250,97 @@
   });
 })();
 
+/* Release data: update version, file details and GitHub totals from release.json. */
+(function () {
+  var targets = document.querySelectorAll("[data-release-version], [data-release-downloads], [data-release-download]");
+  if (!targets.length) return;
+
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  function each(selector, callback) {
+    document.querySelectorAll(selector).forEach(callback);
+  }
+
+  function formatNumber(value) {
+    return String(Math.round(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function formatDate(iso) {
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) return "";
+    return date.getUTCDate() + " " + MONTHS[date.getUTCMonth()] + " " + date.getUTCFullYear();
+  }
+
+  function setText(selector, value) {
+    if (value === undefined || value === null || value === "") return;
+    each(selector, function (element) { element.textContent = value; });
+  }
+
+  function setHref(selector, value) {
+    if (!value) return;
+    each(selector, function (element) { element.setAttribute("href", value); });
+  }
+
+  function apply(data) {
+    var latest = data.latest || {};
+    var totals = data.totals || {};
+
+    setText("[data-release-version]", latest.version);
+    setText("[data-release-tag]", latest.tag);
+    setText("[data-release-date]", formatDate(latest.publishedAt));
+    setText("[data-release-installer]", latest.assetName);
+    if (latest.assetSize) setText("[data-release-size]", formatNumber(latest.assetSize) + " bytes");
+    if (latest.sizeMB) setText("[data-release-size-mb]", latest.sizeMB + " MB");
+    setText("[data-release-downloads]", formatNumber(totals.downloads));
+    setText("[data-release-count]", totals.releases);
+    setText("[data-release-since]", totals.firstReleaseDate ? "since " + formatDate(totals.firstReleaseDate) : "");
+    setText("[data-release-updated]", formatDate(data.generatedAt));
+
+    setHref("[data-release-download]", latest.downloadUrl);
+    setHref("[data-release-notes]", latest.releaseUrl);
+
+    if (latest.sha256) {
+      setText("[data-release-sha]", latest.sha256);
+      each("[data-release-sha-copy]", function (button) {
+        button.setAttribute("data-copy", latest.sha256);
+        button.hidden = false;
+        button.style.display = "";
+      });
+    } else {
+      setText("[data-release-sha]", "See the release notes");
+      each("[data-release-sha-copy]", function (button) {
+        button.hidden = true;
+        button.style.display = "none";
+      });
+    }
+
+    each('script[type="application/ld+json"]', function (script) {
+      try {
+        var schema = JSON.parse(script.textContent);
+        if (schema["@type"] === "SoftwareApplication") {
+          schema.softwareVersion = latest.version;
+          schema.downloadUrl = latest.downloadUrl;
+          script.textContent = JSON.stringify(schema);
+        }
+      } catch (error) {
+        /* Leave malformed or unrelated structured data alone. */
+      }
+    });
+  }
+
+  fetch("/release.json", { cache: "no-cache" })
+    .then(function (response) {
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    })
+    .then(function (data) {
+      if (data && data.latest) apply(data);
+    })
+    .catch(function () {
+      /* The values in the HTML are the fallback. */
+    });
+})();
+
 /* Before/after comparison sliders. */
 (function () {
   document.querySelectorAll("[data-ba]").forEach(function (figure) {

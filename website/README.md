@@ -19,20 +19,33 @@ Static marketing site for unplugged. No framework, no tracking, no server. The u
 - `content-protection.html` — HDCP/DRM policy: no decryption or bypass; unencrypted, authorized sources only
 - `guide.html` — generated user guide from `docs/settings-guide.md`
 - `search-index.json` — generated index for the header search
+- `release.json` — latest release, installer details, SHA-256 and GitHub totals; read by `site.js`
 - `build_guide.py` — generator for `guide.html` and `search-index.json`
+- `update_release.py` — generator for `release.json` from the GitHub releases API
 - The AVSForum announcement is kept outside the deploy folder (locally at `docs/website-brief.txt`) so it is not published.
 - `robots.txt`, `sitemap.xml`, `404.html`
 
 ## Deploy
 
-Any static host works. The folder has no build step at deploy time; the generated files are committed.
+Any static host works. The generated files are committed, so the folder can also be uploaded as-is. On Cloudflare, run the two generators first so the release data and guide are current.
 
 ### Cloudflare Pages (recommended)
 
 1. Create a Pages project from the repository.
 2. Production branch: `zion-s3-shell`.
-3. Build command: none.
+3. Build command:
+
+   ```sh
+   python3 -I website/update_release.py && python3 -I website/build_guide.py
+   ```
+
+   On Windows, use `python` instead of `python3`.
+
 4. Output directory: `website`.
+
+Add a fine-grained read-only `GITHUB_TOKEN` environment variable to the Pages project. The build passes it to `update_release.py`; it raises the GitHub API limit and is never sent to the browser. The script fails soft: if GitHub is unavailable or rate-limited, the committed `release.json` is deployed unchanged and the build still succeeds.
+
+`site.js` reads `/release.json` and updates the version, installer name, size, SHA-256, download links, release date, total downloads and release count. The values in the HTML are the no-JavaScript and crawler fallback, so keep them roughly current when cutting a release.
 
 The site is live at https://www.unpluggedvideo.com. Cloudflare redirects `.html` paths to clean URLs (`/guide.html` → `/guide`); canonical and sitemap URLs use the clean form.
 
@@ -54,14 +67,30 @@ The guide is not hand-edited. After changing `docs/settings-guide.md`, from the 
 python -I build_guide.py
 ```
 
-This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js`; it fetches the index on first open and works on every page.
+This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js`; it fetches the index on first open and works on every page. The guide reads the version from `release.json` when it is generated.
+
+## Regenerating release data
+
+From the repository root:
+
+```powershell
+python -I website/update_release.py
+```
+
+This reads the public GitHub releases API and rewrites `website/release.json`: latest version, release date, installer name, size, asset SHA-256, download URL, per-release download counts, total downloads and release count. Commit the result when it changes.
+
+Do not fetch `api.github.com` from the browser. Unauthenticated requests are limited to 60 per hour per IP, and every visitor would contact GitHub. The site fetches its own `/release.json` instead. The Cloudflare build command runs the generator with an optional `GITHUB_TOKEN`; a manual release-time run works too.
+
+### Refresh the site when a release is published
+
+A Cloudflare build only runs when the repository changes. To refresh `release.json` on a GitHub release without a code push, create a Deploy Hook for the Pages project (Settings → Builds & deployments → Deploy hooks) and add it as a GitHub webhook (repository Settings → Webhooks) for **release** events only. The hook triggers the same build command, which fetches the new release and redeploys. Treat the Deploy Hook URL as a secret: anyone who has it can start a build.
 
 ## Before going live
 
 1. **Custom domain:** the site is live at `https://www.unpluggedvideo.com`. If the domain changes, replace it in `sitemap.xml`, `robots.txt`, every canonical/`og:url`, and the guide template in `build_guide.py`, then re-run `build_guide.py`.
 2. **Canonical and `og:url`** point at the clean `https://www.unpluggedvideo.com` URLs. Keep them extensionless to match Cloudflare's redirects.
 3. **Apex forwarding:** set `unpluggedvideo.com` (without www) to forward to `https://www.unpluggedvideo.com` at GoDaddy, so the bare domain does not show a parked page.
-4. **Check the download URL and hash** on `download.html` against the GitHub release before publishing. The site currently points at `v2.1.0` and `Unplugged-setup-2.1.0.exe`.
+4. **Check release data.** Run `python -I website/update_release.py`, then confirm the download link, version and hash in `release.json`. The visible fallback values in `index.html` and `download.html` should match the current release so a browser without JavaScript still gets the right file.
 5. **Add `og:image`** if you want a social card. It must be an absolute URL.
 6. **Decide on analytics.** There is none by default. If you add any, add a privacy page and a consent path where required.
 

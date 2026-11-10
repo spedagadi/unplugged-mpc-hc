@@ -1,0 +1,123 @@
+{
+  "generatedAt": "2026-11-10T17:42:23Z",
+  "source": "https://github.com/spedagadi/unplugged-mpc-hc/releases",
+  "latest": {
+    "tag": "v2.2.0",
+    "version": "2.2.0",
+    "name": "v2.2.0",
+    "publishedAt": "2026-11-10T17:18:48Z",
+    "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v2.2.0",
+    "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.2.0/Unplugged-setup-2.2.0.exe",
+    "assetName": "Unplugged-setup-2.2.0.exe",
+    "assetSize": 127094355,
+    "sizeMB": 127,
+    "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
+    "downloads": 1,
+    "prerelease": false
+  },
+  "releases": [
+    {
+      "tag": "v2.2.0",
+      "version": "2.2.0",
+      "name": "v2.2.0",
+      "publishedAt": "2026-11-10T17:18:48Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v2.2.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.2.0/Unplugged-setup-2.2.0.exe",
+      "assetName": "Unplugged-setup-2.2.0.exe",
+      "assetSize": 127094355,
+      "sizeMB": 127,
+      "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
+      "downloads": 1,
+      "prerelease": false
+    },
+    {
+      "tag": "v2.1.0",
+      "version": "2.1.0",
+      "name": "v2.1.0",
+      "publishedAt": "2026-11-04T14:39:59Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v2.1.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe",
+      "assetName": "Unplugged-setup-2.1.0.exe",
+      "assetSize": 127087675,
+      "sizeMB": 127,
+      "sha256": "A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF",
+      "downloads": 27,
+      "prerelease": false
+    },
+    {
+      "tag": "v2.0.0",
+      "version": "2.0.0",
+      "name": "v2.0.0",
+      "publishedAt": "2026-11-01T11:41:13Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v2.0.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.0.0/Unplugged-setup-2.0.0.exe",
+      "assetName": "Unplugged-setup-2.0.0.exe",
+      "assetSize": 127017620,
+      "sizeMB": 127,
+      "sha256": "666AA55491E39B764AC2D5980876D9072653350D5E1690896426C361EF26BAED",
+      "downloads": 8,
+      "prerelease": false
+    },
+    {
+      "tag": "v1.2.0",
+      "version": "1.2.0",
+      "name": "v1.2.0",
+      "publishedAt": "2026-10-22T11:08:36Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v1.2.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v1.2.0/Unplugged-setup-1.2.0.exe",
+      "assetName": "Unplugged-setup-1.2.0.exe",
+      "assetSize": 185974630,
+      "sizeMB": 186,
+      "sha256": "65600E1A01637F142E6D709AF95ABF5147BB30993A44353771DA770FEB65F7D3",
+      "downloads": 16,
+      "prerelease": false
+    },
+    {
+      "tag": "v1.1.1",
+      "version": "1.1.1",
+      "name": "v1.1.1",
+      "publishedAt": "2026-10-21T14:27:30Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v1.1.1",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v1.1.1/Unplugged-setup-1.1.1.exe",
+      "assetName": "Unplugged-setup-1.1.1.exe",
+      "assetSize": 184911048,
+      "sizeMB": 185,
+      "sha256": "D388D6689A046D2D6FD6788526FE4467B91B2BF5C1DACEF5E23DC2FF545A9C0E",
+      "downloads": 6,
+      "prerelease": false
+    },
+    {
+      "tag": "v1.1.0",
+      "version": "1.1.0",
+      "name": "v1.1.0",
+      "publishedAt": "2026-10-19T14:51:44Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v1.1.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v1.1.0/Unplugged-setup-1.1.0.exe",
+      "assetName": "Unplugged-setup-1.1.0.exe",
+      "assetSize": 184869185,
+      "sizeMB": 185,
+      "sha256": "E02FEC503BA4559E05963CC168142EDA81C3DCD200CE5FD4B36DD853031E1BE9",
+      "downloads": 16,
+      "prerelease": false
+    },
+    {
+      "tag": "v1.0.0",
+      "version": "1.0.0",
+      "name": "v1.0.0",
+      "publishedAt": "2026-10-17T14:00:19Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/tag/v1.0.0",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v1.0.0/Unplugged-setup-1.0.0.exe",
+      "assetName": "Unplugged-setup-1.0.0.exe",
+      "assetSize": 184760167,
+      "sizeMB": 185,
+      "sha256": "ACAB7D11FA4128BE5E0026925C012D0C0515F15F07AF6CFE07E4237CB1624DD1",
+      "downloads": 29,
+      "prerelease": false
+    }
+  ],
+  "totals": {
+    "downloads": 103,
+    "releases": 7,
+    "firstReleaseDate": "2026-10-17T14:00:19Z"
+  }
+}
