@@ -14,6 +14,20 @@ const char* IngestController::IntentName(Intent i)
     }
 }
 
+// The wire format as the decider compares it. Dimensions and rate are included
+// when the monitor has them; resolution-only changes remain the source
+// filter's to report through the engine's own check. The point of this key is
+// the opposite case: a short unlock that settles back onto the SAME format.
+static std::string FormatKey(const DeckLinkMonitor::SignalFact& f)
+{
+    const auto& s = f.sig;
+    char k[96];
+    snprintf(k, sizeof(k), "%d|%d|%d|%d|%d|%d|%d",
+             s.colorspace, s.dynamic_range, s.width, s.height,
+             s.frame_rate_num, s.frame_rate_den, s.interlace);
+    return k;
+}
+
 IngestController::~IngestController()
 {
     Stop();
@@ -85,6 +99,7 @@ void IngestController::Loop()
         // meaning to intent. No threshold lives here.
         if (!s.locked) {
             // Sustained loss — the monitor confirmed it past its own grace.
+            lastKey_.clear();
             if (ingestActive_) Emit(Intent::Stop, f, "signal lost");
             else               Log("[INGEST] signal lost while not ingesting — nothing to do");
             continue;
@@ -98,8 +113,20 @@ void IngestController::Loop()
             continue;
         }
 
+        const std::string key = FormatKey(f);
+        if (ingestActive_ && key == lastKey_) {
+            // Same settled format, still ingesting: this is the re-lock after a
+            // short HDMI unlock, not a format change. Rebuilding here is what
+            // turned an episode transition into a second teardown.
+            Log("[INGEST] re-lock, same format (cs=%d dr=%d %dx%d %d/%d) — no reload",
+                s.colorspace, s.dynamic_range, s.width, s.height,
+                s.frame_rate_num, s.frame_rate_den);
+            continue;
+        }
+
         Emit(ingestActive_ ? Intent::Reload : Intent::Launch, f,
              ingestActive_ ? "settled format changed" : "first settled lock");
+        lastKey_ = key;
     }
     Log("[INGEST] decider loop exiting");
 }

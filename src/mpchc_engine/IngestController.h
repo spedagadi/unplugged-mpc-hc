@@ -87,6 +87,13 @@ private:
     bool                    haveFact_ = false;
     DeckLinkMonitor::SignalFact fact_{};
 
+    // The format of the last Launch/Reload this decider emitted. A brief
+    // unlock that settles back onto the SAME wire format is a re-lock, not a
+    // reason to tear the graph down again; the monitor publishes it as a new
+    // settled fact, so the comparison has to live here. Cleared by Stop so a
+    // genuine re-acquire after teardown still Launchs.
+    std::string             lastKey_;
+
     DecisionSink sink_;
     LogSink      log_;
 };

@@ -2932,6 +2932,19 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.iHdrDisplayMaxNits = h.displayMaxNits;
     s.fHdrDisplayMinNits = h.displayMinNits;
     s.iOutputGamut = h.outputGamut;
+    s.iDisplayTransfer = h.displayTransfer;
+    s.bDbleEnabled = h.dbleEnabled;
+    s.fDbleStrength = h.dbleStrength;
+    s.fDbleTriggerPct = h.dbleTriggerPct;
+    s.fDbleKnee = h.dbleKnee;
+    s.iDbleView = h.dbleView;
+    s.bDbleOsd = h.dbleOsd;
+    s.bDbleOsdPinned = h.dbleOsdPinned;
+    s.iDbleOsdSelected = h.dbleOsdSelected;
+    s.iDbleOsdX = h.dbleOsdX;
+    s.iDbleOsdY = h.dbleOsdY;
+    s.iDbleOsdW = h.dbleOsdW;
+    s.iDbleOsdH = h.dbleOsdH;
     s.fHdrTitlePeakNits = h.titlePeakNits;
     s.fHdrHableKnee = h.hableKnee;
     s.fSoftKnee      = h.softKnee;
@@ -2980,6 +2993,19 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.displayMaxNits = s.iHdrDisplayMaxNits;
     h.displayMinNits = s.fHdrDisplayMinNits;
     h.outputGamut = s.iOutputGamut;
+    h.displayTransfer = s.iDisplayTransfer;
+    h.dbleEnabled = s.bDbleEnabled;
+    h.dbleStrength = s.fDbleStrength;
+    h.dbleTriggerPct = s.fDbleTriggerPct;
+    h.dbleKnee = s.fDbleKnee;
+    h.dbleView = s.iDbleView;
+    h.dbleOsd = s.bDbleOsd;
+    h.dbleOsdPinned = s.bDbleOsdPinned;
+    h.dbleOsdSelected = s.iDbleOsdSelected;
+    h.dbleOsdX = s.iDbleOsdX;
+    h.dbleOsdY = s.iDbleOsdY;
+    h.dbleOsdW = s.iDbleOsdW;
+    h.dbleOsdH = s.iDbleOsdH;
     h.titlePeakNits = s.fHdrTitlePeakNits;
     h.hableKnee = s.fHdrHableKnee;
     h.softKnee      = s.fSoftKnee;
@@ -3839,6 +3865,18 @@ void MpcPlayer::CheckSourceFormatChange(const DeckLinkSourceStats& dl)
     constexpr int kSettleTicks = 2;      // two consecutive seconds
     const bool valid = dl.width > 0 && dl.height > 0 && dl.fpsNum > 0 && dl.fpsDen > 0;
     if (!valid) { m_srcChangeTicks = 0; return; }
+
+    // A fresh graph's first measured format is the baseline, not a change. The
+    // decider has already requested this rebuild for the transition; letting
+    // this check fire again turns one episode change into two teardowns.
+    if (m_srcRebaseline.exchange(false)) {
+        m_srcCommittedW = dl.width; m_srcCommittedH = dl.height;
+        m_srcCommittedN = dl.fpsNum;  m_srcCommittedD = dl.fpsDen;
+        m_srcChangeTicks = 0;
+        Log("[DECKLINK][engine] source format baseline after rebuild: %dx%d@%d/%d",
+            (int)dl.width, (int)dl.height, (int)dl.fpsNum, (int)dl.fpsDen);
+        return;
+    }
 
     const bool firstSeen = (m_srcCommittedW == 0 && m_srcCommittedH == 0);
     if (firstSeen) {                       // baseline, never fire on the first
@@ -4748,7 +4786,20 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "sdrNits")    hdr.sdrDisplayNits = (int)vd(v);
             else if (name == "dispNits")   hdr.displayMaxNits = (int)vd(v);
             else if (name == "blackNits")  hdr.displayMinNits = (float)vd(v);
-            else if (name == "gamut")      hdr.outputGamut = (int)vd(v);
+            else if (name == "gamut")      hdr.outputGamut = std::clamp((int)vd(v), 0, 3);
+            else if (name == "transfer")   hdr.displayTransfer = std::clamp((int)vd(v), 0, 5);
+            else if (name == "dble")         hdr.dbleEnabled = vb(v);
+            else if (name == "dbleStrength") hdr.dbleStrength = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "dbleTrigger")  hdr.dbleTriggerPct = std::clamp((float)vd(v), 0.5f, 30.0f);
+            else if (name == "dbleKnee")     hdr.dbleKnee = std::clamp((float)vd(v), 0.20f, 0.95f);
+            else if (name == "dbleView")     hdr.dbleView = std::clamp((int)vd(v), 0, 2);
+            else if (name == "dbleOsd")      hdr.dbleOsd = vb(v);
+            else if (name == "dbleOsdPin")   hdr.dbleOsdPinned = vb(v);
+            else if (name == "dbleOsdSel")   hdr.dbleOsdSelected = std::clamp((int)vd(v), 0, 5);
+            else if (name == "dbleOsdX")     hdr.dbleOsdX = (int)vd(v);
+            else if (name == "dbleOsdY")     hdr.dbleOsdY = (int)vd(v);
+            else if (name == "dbleOsdW")     hdr.dbleOsdW = std::clamp((int)vd(v), 0, 100000);
+            else if (name == "dbleOsdH")     hdr.dbleOsdH = std::clamp((int)vd(v), 0, 100000);
             else if (name == "titlePeak")  hdr.titlePeakNits = (float)vd(v);
             else if (name == "hableKnee")  hdr.hableKnee = (float)vd(v);
             else if (name == "softKnee")      hdr.softKnee      = (float)vd(v);
@@ -5118,6 +5169,10 @@ void MpcPlayer::RunDecklinkRebuild()
         Log("[DECKLINK][engine] EXECUTOR: calling Open(url) — enter");
         const HRESULT hrO = Open(url);
         Log("[DECKLINK][engine] EXECUTOR: Open returned hr=0x%08X — calling Play", (unsigned)hrO);
+        // The rebuilt graph is the new reference. Baseline its first measured
+        // format before CheckSourceFormatChange can mistake it for a change and
+        // fire a second reload for the transition that just caused this rebuild.
+        if (SUCCEEDED(hrO)) m_srcRebaseline.store(true);
         const HRESULT hrP = Play();
         Log("[DECKLINK][engine] EXECUTOR: rebuild done: Open hr=0x%08X Play hr=0x%08X",
             (unsigned)hrO, (unsigned)hrP);

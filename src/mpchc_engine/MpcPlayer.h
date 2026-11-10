@@ -193,8 +193,30 @@ public:
         // behaviour. Float because sub-1-nit blacks are the norm.
         float displayMinNits = 0.0f;
         // Tone-mapped SDR output gamut: 0 = BT.709 (standard), 1 = keep BT.2020
-        // for a display whose gamut exceeds Rec.709.
+        // for a display whose gamut exceeds Rec.709, 2 = DCI-P3 (D65),
+        // 3 = follow the source primaries.
         int  outputGamut = 0;
+        // Display transfer at the final display-referred stage:
+        // 0=2.2, 1=2.4, 2=BT.1886, 3=sRGB, 4=2.0, 5=follow source (default).
+        // Follow source keeps SDR pass-through and the HDR->SDR 2.2 reference.
+        int  displayTransfer = 5;
+        // DBLE compensation: dark-scene highlight roll-off for projectors with
+        // dynamic laser dimming. Independent of the ML grade; SDR output only.
+        bool  dbleEnabled = false;
+        float dbleStrength = 1.0f;      // 0..1; 1.0 puts peak white at 50 %
+        // Picture brightness measured on the finished SDR picture, percent of
+        // SDR white. The fix starts below this, full effect at a quarter of it.
+        // This is the contributed DBLEFix trigger; no ML dependency.
+        float dbleTriggerPct = 5.0f;    // 0.5 .. 30.0
+        float dbleKnee = 0.30f;         // target-code level where the roll-off starts
+        // Diagnostic view: 0 normal, 1 clipping test, 2 split screen.
+        int   dbleView = 0;
+        bool  dbleOsd = false;          // draw the contributed DBLE overlay
+        bool  dbleOsdPinned = true;     // Overlay = Always instead of Auto-hide
+        int   dbleOsdSelected = 2;      // selected overlay row 0..5
+        // The overlay's safe area in window pixels: the part of the picture the
+        // app's chrome does not cover. Zero size = whole window. Set by Layout().
+        int   dbleOsdX = 0, dbleOsdY = 0, dbleOsdW = 0, dbleOsdH = 0;
         // The CONTENT's peak luminance, nits — the top of the range the tone curves
         // map FROM. Distinct from displayMaxNits, which is the DISPLAY's peak.
         //
@@ -941,6 +963,11 @@ private:
     // and differing from the committed format → the decider asks for a Reload.
     int m_srcCommittedW = 0, m_srcCommittedH = 0, m_srcCommittedN = 0, m_srcCommittedD = 0;
     int m_srcChangeTicks = 0;
+    // Set whenever a capture graph has just been (re)built. The first valid
+    // source stats after it are the new baseline, not a change: without this,
+    // the decider's Reload and this check both fire for one transition and the
+    // graph is torn down twice (observed 2026-11-10 at 09:54:17 and 09:54:19).
+    std::atomic<bool> m_srcRebaseline{true};
     // Serializes every graph-mutating call (Open/Stop/Play/Seek + the restart
     // worker) so no two threads touch the graph — the minimal-threading rule.
     // Recursive: the restart worker calls the public API under the same lock.

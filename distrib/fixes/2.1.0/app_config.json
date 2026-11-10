@@ -1,0 +1,10 @@
+{
+  "app_mode": "video_processor",
+  "first_run": true,
+  "active_input_url": "",
+  "input_labels_json": "{}",
+  "media_folder": "",
+  "last_played": "",
+  "library_tab": "movies",
+  "omdb_api_key": null
+}

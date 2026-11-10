@@ -80,10 +80,10 @@ static int g_dpi=96;
 // THE release identity, in one place: the title strip draws it and measures it.
 // The version resource (Unplugged.rc) and the installer carry the same number;
 // the strip's literal used to say 1.3.1 while those said 2.0.0.
-static const wchar_t* kAppTitle = L"Unplugged 2.1.0";
+static const wchar_t* kAppTitle = L"Unplugged 2.2.0";
 // The bare version, for the update check. Keep the two in step (and with
 // Unplugged.rc + the installer): the check compares against this string.
-static const wchar_t* kAppVersion = L"2.1.0";
+static const wchar_t* kAppVersion = L"2.2.0";
 // What the signal is (SDR / PQ / HLG / Dolby Vision). Defined with the input
 // dialog; declared here because the status rail labels the signal too.
 static int DrClassify(int locked,int cs,int dr,int eotf,double tf,double hdrMeta,double dovi);
@@ -192,6 +192,18 @@ static void LogF(const char* f,...){ static FILE* lg=OpenLogOnce();
   fprintf(lg,"%02u:%02u:%02u.%03d t=%lu ",st.wHour,st.wMinute,st.wSecond,st.wMilliseconds,
           (unsigned long)(GetTickCount()-g_t0));
   va_list a; va_start(a,f); vfprintf(lg,f,a); va_end(a); fputc('\n',lg); fflush(lg); }
+
+// Hold the display and the system awake for the whole app run. This is an
+// HTPC player: there is nobody at the keyboard to wake the output, and a
+// powered-down GPU makes the projector report "no signal" even though capture
+// and rendering are still running (measured 2026-11-06). The request belongs
+// to this thread and is continuous until the matching ES_CONTINUOUS call.
+// Clearing it returns control to the user's power plan, which is the correct
+// restore: Windows exposes no API to read the previous per-app state.
+static void KeepDisplayAwake(bool on){
+  ::SetThreadExecutionState(ES_CONTINUOUS |
+      (on ? (ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED) : 0));
+  LogF("display awake request %s", on ? "on" : "off"); }
 static std::string Narrow(const std::wstring& w){ int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);
   std::string s(n,0); WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);
   while(!s.empty()&&s.back()==0)s.pop_back(); return s; }
@@ -632,8 +644,12 @@ struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
 };
 static const wchar_t* kHd[]={L"Bitstream",L"PCM"}; static const int kHdV[]={1,0};
 static const wchar_t* kCurve[]={L"Unplugged",L"GT7 Adapt"}; static const int kCurveV[]={7,10};
-static const wchar_t* kGamut[]={L"BT.709 (standard)",L"BT.2020 (wide)"}; static const int kGamutV[]={0,1};
+static const wchar_t* kGamut[]={L"Follow source",L"BT.709 (standard)",L"BT.2020 (wide)",L"DCI-P3 (D65)"}; static const int kGamutV[]={3,0,1,2};
 static const wchar_t* kWinHdr[]={L"Do not change",L"On (fullscreen)",L"On",L"On/off (fullscreen)",L"On/off"};
+static const wchar_t* kDisplayTransfer[]={L"Follow source",L"Gamma 2.2",L"Gamma 2.4",L"BT.1886",L"sRGB",L"Gamma 2.0"};
+static const int kDisplayTransferV[]={5,0,1,2,3,4};
+static const wchar_t* kDbleView[]={L"Normal",L"Clipping test",L"Split screen"};
+static const int kDbleViewV[]={0,1,2};
 static const wchar_t* kGt7Dbg[]={L"Off",L"Chroma scale",L"Fade ratio",L"Knee crossing",L"Ceiling crossing"};
 static const wchar_t* kMlMode[]={L"Auto",L"Manual",L"Off"}; static const int kMlModeV[]={2,1,0};
 static const wchar_t* kChromaMode[]={L"Default",L"Manual",L"Off"};
@@ -693,7 +709,7 @@ static Row g_rows[]={
  {2,1,L"TONE MAPPING",L"Exposure","hdr.exposureTrim",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Shadow detail","hdr.shadowLift",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Contrast","hdr.punch",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {2,2,L"TONE MAPPING",L"Output gamut","hdr.outputGamut",0,0,0,0,false,0,kGamut,2,kGamutV,{},0,0,0,0},
+ {2,2,L"TONE MAPPING",L"Output gamut","hdr.outputGamut",0,0,0,0,false,0,kGamut,4,kGamutV,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Gamut capacity (709)","hdr.gamutCap",0.2,1.0,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Highlight desat","hdr.hiDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  // ── CURVE SETTINGS — rows hide themselves unless the selected Tone curve reads
@@ -715,8 +731,18 @@ static Row g_rows[]={
  {2,1,L"CURVE SETTINGS",L"GT7 desaturation","hdr.gtDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,CM_GT7BOTH},
  {2,1,L"CURVE SETTINGS",L"Spline contrast","hdr.tmContrast",0,1.5,0.01,0.5,false,0,nullptr,0,nullptr,{},0,0,0,CM_SPLINE},
  {2,1,L"CURVE SETTINGS",L"Spline shadow pivot","hdr.tmPivot",0,1,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,CM_SPLINE},
+ // ── DBLE COMPENSATION — dark-scene highlight roll-off for laser dimming.
+ // Independent of the ML grade (scene statistics are always computed); SDR
+ // output only. Defaults are the submitted tuning, off until enabled.
+ {2,0,L"DBLE COMPENSATION",L"Enable DBLE","hdr.dble",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"DBLE COMPENSATION",L"Strength","hdr.dbleStrength",0,1,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"DBLE COMPENSATION",L"Trigger (picture %)","hdr.dbleTrigger",0.5,30,0.5,5.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,1,L"DBLE COMPENSATION",L"Highlight start","hdr.dbleKnee",0.20,0.95,0.01,0.30,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,2,L"DBLE COMPENSATION",L"View","hdr.dbleView",0,0,0,0,false,0,kDbleView,3,kDbleViewV,{},0,0,0,0},
+ {2,0,L"DBLE COMPENSATION",L"OSD","hdr.dbleOsd",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  // ── DISPLAY TARGET ──
  {2,2,L"DISPLAY TARGET",L"Windows HDR","hdr.toggleDisplay",0,0,0,0,false,0,kWinHdr,5,nullptr,{},0,0,0,0},
+ {2,2,L"DISPLAY TARGET",L"Display transfer","hdr.transfer",0,0,0,0,false,0,kDisplayTransfer,6,kDisplayTransferV,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Static nits (max)","hdr.maxNits",10,1000,5,1000,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Display black (nits)","hdr.blackNits",0,2,0.001,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Subtitle/OSD brightness","hdr.osdBright",0,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -1243,6 +1269,10 @@ static void LoadSettingsIni(){
   SeedIni();
 }
 
+// The DBLE overlay's safe area, in renderer/window pixels. Layout() updates it
+// whenever the chrome changes; PushAll re-sends it on every graph generation so
+// a fresh renderer instance does not start with the overlay under a panel.
+static std::string g_dbleSafeSet;
 static void PushAll(){
   std::string s; char b[96]; int n=0;
   for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
@@ -1263,6 +1293,7 @@ static void PushAll(){
     }
     else snprintf(b,sizeof(b),"%s=%d",ek,r.optvals?r.optvals[r.opt]:r.opt);
     if(!s.empty()) s+=';'; s+=b; ++n; }
+  if(!g_dbleSafeSet.empty()){ if(!s.empty()) s+=';'; s+=g_dbleSafeSet; ++n; }
   if(!s.empty()){
     std::string j=std::string("{\"a\":\"set\",\"sets\":\"")+s+"\"}";
     int rc=Cmd(j.c_str()); LogF("PUSHALL %d keys rc=%d",n,rc); }
@@ -1325,6 +1356,50 @@ static void PushRow(const Row& r){ char b[192];
   int rc=Cmd(b); LogF("CMD %s (%s) rc=%d",b,ek,rc);
 }
 
+// ---- DBLE overlay state and shortcuts ---------------------------------------
+// The contributed DBLEFix drives its overlay from Ctrl+Alt shortcuts. In the
+// integrated app the settings remain one source of truth: the shortcuts edit
+// the same rows the settings rail edits, then push them. Only the selected
+// row and the Always/Auto-hide choice are overlay state, sent separately.
+static int       g_dbleSel = 2;                 // Trigger, as in the contributor's overlay
+static bool      g_dblePinned = true;
+static ULONGLONG g_dbleLastKey = 0;
+static const UINT TID_DBLE_OSD = 15;
+static const UINT HK_DBLE_SHOW = 200, HK_DBLE_FIX = 201,
+                  HK_DBLE_UP = 202, HK_DBLE_DOWN = 203,
+                  HK_DBLE_LEFT = 204, HK_DBLE_RIGHT = 205;
+static void DblePushOsdState(){
+  char b[128];
+  snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"hdr.dbleOsdSel=%d;hdr.dbleOsdPin=%s\"}",
+           g_dbleSel,g_dblePinned?"true":"false");
+  int rc=Cmd(b); LogF("CMD %s (dble osd state) rc=%d",b,rc); }
+static void DbleTouch(){
+  g_dbleLastKey=GetTickCount64();
+  if(AfxGetMainWnd()){
+    if(g_dblePinned) AfxGetMainWnd()->KillTimer(TID_DBLE_OSD);
+    else             AfxGetMainWnd()->SetTimer(TID_DBLE_OSD,8000,nullptr); } }
+static void DbleShowOsd(bool show){
+  Row* osd=FindRow("hdr.dbleOsd"); if(!osd) return;
+  if(osd->on!=show){ osd->on=show; PushRow(*osd); }
+  if(show) DbleTouch();
+  else if(AfxGetMainWnd()) AfxGetMainWnd()->KillTimer(TID_DBLE_OSD);
+  DblePushOsdState(); }
+static void DbleStep(int dir){
+  Row* r=nullptr;
+  switch(g_dbleSel){
+  case 0: r=FindRow("hdr.dble"); if(r){ r->on=!r->on; PushRow(*r); } break;
+  case 1: r=FindRow("hdr.dbleStrength");
+          if(r){ r->val=std::clamp(std::round(r->val+0.05*dir),0.0,1.0); PushRow(*r); } break;
+  case 2: r=FindRow("hdr.dbleTrigger");
+          if(r){ r->val=std::clamp(std::round((r->val+0.5*dir)*10.0)/10.0,0.5,30.0); PushRow(*r); } break;
+  case 3: r=FindRow("hdr.dbleKnee");
+          if(r){ r->val=std::clamp(std::round((r->val+0.05*dir)*100.0)/100.0,0.20,0.95); PushRow(*r); } break;
+  case 4: r=FindRow("hdr.dbleView");
+          if(r&&r->nopts>0){ r->opt=(r->opt+(dir>0?1:r->nopts-1))%r->nopts; PushRow(*r); } break;
+  case 5: g_dblePinned=!g_dblePinned; DblePushOsdState(); break;
+  }
+  DbleTouch(); LogF("DBLE shortcut row=%d dir=%d",g_dbleSel,dir); }
+
 // ---- presets ---------------------------------------------------------------
 static std::wstring PresetDir(){
   wchar_t base[MAX_PATH]; DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
@@ -1337,14 +1412,19 @@ static std::wstring PresetDir(){
   return d;
 }
 // DEVICE rows describe the display, not a look: SDR nits, static max nits, the
-// black level, convert-to-SDR and the output gamut. They live once in the INI,
-// are never written into a preset (so a preset can be shared without carrying
-// someone else's screen along), and never mark a preset dirty.
+// black level, convert-to-SDR, the output gamut, the display transfer and the
+// DBLE compensation (the projector's dynamic dimming is part of the display).
+// They live once in the INI, are never written into a preset (so a preset can
+// be shared without carrying someone else's screen along), and never mark a
+// preset dirty.
 static bool PresetDeviceRow(const Row& r){
   if(!r.key) return false;
   return !strcmp(r.key,"hdr.sdrNits") || !strcmp(r.key,"hdr.maxNits") ||
          !strcmp(r.key,"hdr.blackNits") || !strcmp(r.key,"hdr.convertToSdr") ||
-         !strcmp(r.key,"hdr.outputGamut"); }
+         !strcmp(r.key,"hdr.outputGamut") || !strcmp(r.key,"hdr.transfer") ||
+         !strcmp(r.key,"hdr.dble") || !strcmp(r.key,"hdr.dbleStrength") ||
+         !strcmp(r.key,"hdr.dbleTrigger") || !strcmp(r.key,"hdr.dbleKnee") ||
+         !strcmp(r.key,"hdr.dbleView") || !strcmp(r.key,"hdr.dbleOsd"); }
 static bool PresetEligible(const Row& r){
   // Playback (0) and Source (1) are SESSION settings: which audio track/mode and
   // which input the machine is on. They belong to the box, not to a look, so a
@@ -1756,7 +1836,7 @@ public:
       case 7:  tfl=L"sRGB"; break;        case 8:  tfl=L"Gamma 2.8"; break;
       case 13: tfl=L"BT.2020"; break;     case 15: tfl=L"PQ (HDR10)"; break;
       case 16: tfl=L"HLG"; break; }
-    A(L"TRANSFER (EOTF)", tfl);
+    A(L"SOURCE TRANSFER (EOTF)", tfl);
     AF(L"SOURCE FPS",L"%.3f fps",fps);
     A(L"HDR FORMAT", sigClass==3?L"Dolby Vision": sigClass==2?L"HLG":
                      ((sigClass==1)?L"HDR10 / PQ":L"SDR"));
@@ -9222,10 +9302,93 @@ public:
       if(!i.label.empty()) v.push_back(i); }
     return v;
   }
+  // A fresh profile has no app_config.json, and WriteConfigValue only replaces
+  // keys that are already there. Seed the full key set before the first read,
+  // so the first-run wizard's mode and input survive the restart it triggers.
+  // Also fills keys introduced by later builds. A file with no JSON object (or
+  // no closing brace) is treated as absent and kept as .bak: a config that
+  // cannot be parsed is worse than no config.
+  void EnsureConfigFile(){
+    if(m_cfgPath.empty()) return;
+    std::string j=ReadTextFile(m_cfgPath);
+    const bool absent=j.empty();
+    const bool corrupt=!absent && (j.find('{')==std::string::npos || j.find('}')==std::string::npos);
+    if(absent||corrupt){
+      if(corrupt){
+        const std::wstring bak=m_cfgPath+L".bak";
+        ::MoveFileExW(m_cfgPath.c_str(),bak.c_str(),MOVEFILE_REPLACE_EXISTING);
+        LogF("config: unreadable, moved to app_config.json.bak and reseeding");
+      } else {
+        LogF("config: absent, seeding default app_config.json");
+      }
+      static const char kSeed[] =
+        "{\n"
+        "  \"app_mode\": \"media_player\",\n"
+        "  \"first_run\": true,\n"
+        "  \"active_input_url\": \"\",\n"
+        "  \"input_labels_json\": \"{}\",\n"
+        "  \"media_folder\": \"\",\n"
+        "  \"last_played\": \"\",\n"
+        "  \"library_tab\": \"movies\",\n"
+        "  \"omdb_api_key\": null\n"
+        "}\n";
+      FILE* f=_wfopen(m_cfgPath.c_str(),L"wb");
+      if(f){ fwrite(kSeed,1,sizeof(kSeed)-1,f); fclose(f); }
+      else LogF("config: seed write FAILED");
+      return;
+    }
+    struct Def{ const char* key; const char* raw; };
+    // first_run=false here: an existing profile is not a fresh install, and a
+    // missing key must not send it back through the setup wizard.
+    static const Def defs[]={
+      {"app_mode","\"media_player\""},
+      {"first_run","false"},
+      {"active_input_url","\"\""},
+      {"input_labels_json","\"{}\""},
+      {"media_folder","\"\""},
+      {"last_played","\"\""},
+      {"library_tab","\"movies\""},
+      {"omdb_api_key","null"}
+    };
+    bool changed=false;
+    for(const auto& d:defs){
+      const std::string pat=std::string("\"")+d.key+"\"";
+      if(j.find(pat)!=std::string::npos) continue;
+      const size_t close=j.find_last_of('}');
+      if(close==std::string::npos) break;
+      size_t last=close; while(last>0&&isspace((unsigned char)j[last-1]))--last;
+      std::string add;
+      if(last>0&&j[last-1]!='{') add=",";
+      add+=pat+": "+d.raw;
+      j.insert(close,add);
+      changed=true;
+      LogF("config: added missing key '%s'",d.key);
+    }
+    if(changed){
+      FILE* f=_wfopen(m_cfgPath.c_str(),L"wb");
+      if(f){ fwrite(j.data(),1,j.size(),f); fclose(f); }
+      else LogF("config: default-key write FAILED");
+    }
+  }
   void WriteConfigValue(const char* key,const std::string& value,bool quoted){
     if(m_cfgPath.empty()) return;
     std::string j=ReadTextFile(m_cfgPath),pat=std::string("\"")+key+"\"";
-    size_t p=j.find(pat); if(p==std::string::npos){ LogF("config write: key '%s' absent",key); return; }
+    size_t p=j.find(pat);
+    if(p==std::string::npos){
+      // Defensive: EnsureConfigFile covers startup, but a key deleted or a
+      // profile edited by hand must not make the next write a silent no-op.
+      const size_t close=j.find_last_of('}');
+      if(close==std::string::npos){ LogF("config write: key '%s' absent and no JSON object",key); return; }
+      size_t last=close; while(last>0&&isspace((unsigned char)j[last-1]))--last;
+      std::string add;
+      if(last>0&&j[last-1]!='{') add=",";
+      add+=pat+": "+(quoted?std::string("\"")+JsonEscape(value)+"\"":value);
+      j.insert(close,add);
+      FILE* f=_wfopen(m_cfgPath.c_str(),L"wb");
+      if(f){ fwrite(j.data(),1,j.size(),f); fclose(f); LogF("config inserted %s",key); }
+      else LogF("config write FAILED %s",key);
+      return;
+    }
     size_t q=j.find(':',p+pat.size()); if(q==std::string::npos) return; ++q;
     while(q<j.size()&&isspace((unsigned char)j[q]))++q;
     size_t e=q;
@@ -9429,6 +9592,7 @@ public:
       if(GetEnvironmentVariableW(L"USERPROFILE",up,MAX_PATH))
         cfg=std::wstring(up)+L"\\.unplugged\\app_config.json";
       m_cfgPath=cfg;
+      EnsureConfigFile();
       std::string j=ReadTextFile(cfg);
       m_inputUrl=JStr(j,"active_input_url"); m_inputLabel=InputLabel(m_inputUrl);
       m_labels=ParseInputLabels(Narrow(JStrNested(j,"input_labels_json")));
@@ -9454,7 +9618,8 @@ public:
     // replaced the sampler with this one-shot and then killed it, which took the
     // bottom-edge reveal and the cursor rules down with it, four seconds after
     // every launch.
-    SetTimer(TID_POINTER,POINTER_MS,nullptr); }
+    SetTimer(TID_POINTER,POINTER_MS,nullptr);
+    KeepDisplayAwake(true); }
   // Everything visible lives inside the monitor: the frame is 2px bigger on each
   // side so DWM's ring is off-screen.
   CRect WorkR(){ CRect rc; GetClientRect(rc); rc.DeflateRect(Px(EDGE_BLEED),Px(EDGE_BLEED)); return rc; }
@@ -9503,6 +9668,21 @@ public:
     if(info) vid.left+=statW+Px(8);
     if(sett) vid.right-=railW+Px(8);
     if(vid.Width()<Px(64)||vid.Height()<Px(64)) vid=rc;   // never squeeze the picture out
+    // The DBLE overlay's safe area. The renderer draws its overlay at the
+    // bottom-left of this rect, so opening the status rail (left), the settings
+    // rail (right) or the transport bar moves the text out from under it in one
+    // frame instead of leaving it hidden. Host-client coordinates, the same
+    // space the renderer's back buffer uses.
+    {
+      const int sx=vid.left-rc.left, sy=vid.top-rc.top, sw=vid.Width(), sh=vid.Height();
+      char sb[192];
+      snprintf(sb,sizeof(sb),"hdr.dbleOsdX=%d;hdr.dbleOsdY=%d;hdr.dbleOsdW=%d;hdr.dbleOsdH=%d",
+               sx,sy,sw,sh);
+      if(g_dbleSafeSet!=sb){
+        g_dbleSafeSet=sb;
+        std::string j=std::string("{\"a\":\"set\",\"sets\":\"")+sb+"\"}";
+        int rc0=Cmd(j.c_str());
+        LogF("dble safe area %d,%d %dx%d rc=%d",sx,sy,sw,sh,rc0); } }
     // THE HOST IS CLIPPED TO THE VIDEO RECT, which is mpc-hc's rule (its controls
     // are docked bars, never under the view) expressed as a window region so it
     // costs nothing and never touches a swap chain.
@@ -10050,7 +10230,7 @@ public:
 // Ctrl+S quick capture (which does not).
   bool GrabFrameToPng(const std::wstring& out){
     wchar_t temp[MAX_PATH]; GetTempPathW(MAX_PATH,temp);
-    wchar_t bmp[MAX_PATH]; swprintf_s(bmp,L"%Sunplugged_frame_%lu.bmp",temp,(unsigned long)GetTickCount());
+    wchar_t bmp[MAX_PATH]; swprintf_s(bmp,L"%sunplugged_frame_%lu.bmp",temp,(unsigned long)GetTickCount());
     std::string cmd=std::string("{\"a\":\"grab\",\"file\":\"")+JsonEscape(Narrow(bmp))+"\"}";
     const int rc=Cmd(cmd.c_str());
     if(rc!=0){ LogF("frame grab failed rc=0x%08X",(unsigned)rc); DeleteFileW(bmp); return false; }
@@ -10099,7 +10279,7 @@ public:
     } else ShowToast(L"Frame capture failed",2200); }
   void SaveFramePng(){
     wchar_t home[MAX_PATH]; GetEnvironmentVariableW(L"USERPROFILE",home,MAX_PATH);
-    wchar_t path[MAX_PATH]; swprintf_s(path,L"%S\\unplugged_frame.png",home);
+    wchar_t path[MAX_PATH]; swprintf_s(path,L"%s\\unplugged_frame.png",home);
     OPENFILENAMEW ofn={}; ofn.lStructSize=sizeof(ofn); ofn.hwndOwner=m_hWnd;
     ofn.lpstrFile=path; ofn.nMaxFile=MAX_PATH; ofn.lpstrDefExt=L"png";
     ofn.lpstrFilter=L"PNG images (*.png)\0*.png\0\0"; ofn.lpstrTitle=L"Save frame as PNG";
@@ -10107,7 +10287,7 @@ public:
     if(!GetSaveFileNameW(&ofn)){ LogF("frame save cancelled"); return; }
     std::wstring out=path;
     if(out.size()<4||_wcsicmp(out.c_str()+out.size()-4,L".png")!=0) out+=L".png";
-    if(GrabFrameToPng(out)){ wchar_t msg[512]; swprintf_s(msg,L"Frame saved to:\n%S",out.c_str());
+    if(GrabFrameToPng(out)){ wchar_t msg[512]; swprintf_s(msg,L"Frame saved to:\n%s",out.c_str());
       MessageBoxW(msg,L"Save frame as PNG",MB_OK|MB_ICONINFORMATION);
       LogF("frame saved -> %S",out.c_str());
     } else MessageBoxW(L"Could not save the renderer frame as PNG.",L"Save frame as PNG",MB_OK|MB_ICONERROR);
@@ -10192,7 +10372,7 @@ public:
     if(m_graphRan&&!m_vpAcq&&!wcscmp(m_top.state,L"PLAYING")){
       m_pendingInputUrl=url;
       if(m_appMode==L"video_processor"){
-        wchar_t msg[320]; swprintf_s(msg,L"Switching the input to \x201C%S\x201D.\n\nUnplugged restarts to make the change.\nThe current source will stop.",LabelFor(url).c_str());
+        wchar_t msg[320]; swprintf_s(msg,L"Switching the input to \x201C%s\x201D.\n\nUnplugged restarts to make the change.\nThe current source will stop.",LabelFor(url).c_str());
         m_confirm.ShowInputSwitch(L"Change input?",msg);
       } else {
         m_confirm.ShowInputSwitch(L"Switch Mode?",L"Unplugged restarts to switch to Video Processor.\nThe current playback will stop.");
@@ -10236,6 +10416,10 @@ public:
     // sent messages while it waits (see docs/ISSUE-mpcaudiorenderer-silence.md),
     // but a destroyed frame cannot be serviced at all.
     if(!m_shutdown){ m_shutdown=true; LogF("s3_shutdown begin"); s3_shutdown(); LogF("s3_shutdown returned"); }
+    // The process is about to die (which would release the request anyway);
+    // clear it explicitly so the power plan is back in charge before the
+    // window is gone. There is no previous per-app state to restore.
+    KeepDisplayAwake(false);
     PostMessageW(WM_CLOSE); return 0; }
 protected:
   int OnCreate(LPCREATESTRUCT cs){ if(CFrameWnd::OnCreate(cs)<0)return -1;
@@ -10251,6 +10435,17 @@ protected:
     COLORREF noborder=0xFFFFFFFE;                        // DWMWA_COLOR_NONE
     HRESULT bh=DwmSetWindowAttribute(m_hWnd,34 /*DWMWA_BORDER_COLOR*/,&noborder,sizeof(noborder));
     LogF("corner hr=0x%08X border hr=0x%08X",dh,bh);
+    // DBLE overlay shortcuts, as in the contributed DBLEFix: Ctrl+Alt+arrows
+    // adjust, Ctrl+Alt+0 (or O) hides/shows. Registered app-wide so they work
+    // over the video child, where key focus cannot reach the frame.
+    struct { UINT id; UINT vk; } hk[] = {
+      {HK_DBLE_SHOW,'0'}, {HK_DBLE_FIX,'D'},
+      {HK_DBLE_UP,VK_UP}, {HK_DBLE_DOWN,VK_DOWN},
+      {HK_DBLE_LEFT,VK_LEFT}, {HK_DBLE_RIGHT,VK_RIGHT} };
+    for(auto&h:hk){
+      if(!::RegisterHotKey(m_hWnd,h.id,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,h.vk))
+        LogF("DBLE hotkey id=%u vk=0x%02X registration failed (%lu)",
+             h.id,h.vk,(unsigned long)::GetLastError()); }
     Create2(); return 0; }
   // The white border at startup was the frame's CLASS background brush: MFC registers
   // the popup frame class with COLOR_WINDOW (white), so Windows paints the whole
@@ -10357,6 +10552,11 @@ protected:
     if(id==8){ KillTimer(8); m_toast.Hide(); }
     if(id==10){ KillTimer(10); m_titlePanel.Hide(); }
     if(id==12){ KillTimer(12); PresetFlushPending(); }
+    // DBLE overlay auto-hide: the contributor hides it 8 s after the last
+    // shortcut unless Overlay says Always. Only armed while unpinned.
+    if(id==TID_DBLE_OSD){
+      if(g_dblePinned){ KillTimer(TID_DBLE_OSD); }
+      else if(GetTickCount64()-g_dbleLastKey>=8000){ KillTimer(TID_DBLE_OSD); DbleShowOsd(false); } }
     if(id==14){ KillTimer(14);
       // One check a day, only when the user has left the switch on. The stamp is
       // written when the check COMPLETES (success or failure), so an offline box
@@ -10422,10 +10622,33 @@ protected:
            (int)(pid==::GetCurrentProcessId()),(void*)::GetForegroundWindow(),(void*)m_hWnd,(int)m_uiUp); }
     return CFrameWnd::PreTranslateMessage(m); }
   void OnClose(){ LogF("WM_CLOSE");
+    for(UINT id=HK_DBLE_SHOW; id<=HK_DBLE_RIGHT; ++id) ::UnregisterHotKey(m_hWnd,id);
     PresetFlushPending();
     if(!m_mediaPath.empty()&&m_pos>0) m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
     if(!m_shutdown){ m_shutdown=true; LogF("s3_shutdown begin (window close)"); s3_shutdown(); LogF("s3_shutdown returned"); }
     CFrameWnd::OnClose(); }
+  // Ctrl+Alt shortcuts for the contributed DBLE overlay. They edit the same
+  // rows the settings rail edits, so the rail and the overlay can never
+  // disagree. Plain arrows are deliberately NOT taken: they belong to seeking.
+  afx_msg void OnHotKey(UINT id, UINT, UINT){
+    Row* osd=FindRow("hdr.dbleOsd");
+    const bool vis=osd&&osd->on;
+    if(id==HK_DBLE_SHOW){
+      DbleShowOsd(!vis);
+    } else if(id==HK_DBLE_FIX){
+      Row* r=FindRow("hdr.dble");
+      if(r){ r->on=!r->on; PushRow(*r); }
+      DbleShowOsd(true);
+    } else if(id==HK_DBLE_UP||id==HK_DBLE_DOWN){
+      if(vis){ g_dbleSel=(g_dbleSel+((id==HK_DBLE_UP)?5:1))%6; DblePushOsdState(); }
+      else DbleShowOsd(true);
+      DbleTouch();
+    } else if(id==HK_DBLE_LEFT||id==HK_DBLE_RIGHT){
+      if(vis) DbleStep((id==HK_DBLE_RIGHT)?1:-1);
+      else DbleShowOsd(true);
+    }
+    if(m_settings.IsWindowVisible()) m_settings.Invalidate(FALSE);
+    LogF("DBLE hotkey id=%u visible=%d sel=%d",id,(int)(FindRow("hdr.dbleOsd")?FindRow("hdr.dbleOsd")->on:0),g_dbleSel); }
   // ---- playback keys (media player) ------------------------------------------
   bool InFilePlayback(){ return m_appMode==L"media_player"&&!m_mediaPath.empty(); }
   void ShowTitlePanel(){
@@ -10631,6 +10854,7 @@ protected:
 };
 BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_WM_CREATE() ON_WM_SIZE() ON_WM_TIMER() ON_WM_KEYDOWN() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDBLCLK()
+  ON_WM_HOTKEY()
   ON_WM_LBUTTONDOWN()
   ON_WM_DISPLAYCHANGE()
   ON_WM_ERASEBKGND() ON_WM_PAINT() ON_WM_CLOSE() ON_WM_SYSKEYDOWN() ON_WM_ACTIVATE()

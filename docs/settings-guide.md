@@ -1,6 +1,6 @@
 # Unplugged Settings Guide
 
-For **Unplugged 2.1.0**. Covers every control visible in the settings panel:
+For **Unplugged 2.2.0**. Covers every control visible in the settings panel:
 what it does, its full range, and what the picture does when you move it.
 
 ## Playback keys
@@ -133,11 +133,11 @@ setups against the same paused frame.
   machine and the session, not of a look — so it stays available on `Default`,
   and a preset never drags the input along with it.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
-  **Display black (nits)**, **Convert to SDR** and **Output gamut** describe the
-  screen you calibrated, not a look, so they are never part of a preset. They
-  can be changed at any time — on `Default` or on any preset — the change
-  applies to every preset, and it neither marks the preset dirty nor shows the
-  popup.
+  **Display black (nits)**, **Convert to SDR**, **Output gamut**,
+  **Display transfer** and the **DBLE compensation** rows describe the screen
+  you calibrated, not a look, so they are never part of a preset. They can be
+  changed at any time — on `Default` or on any preset — the change applies to
+  every preset, and it neither marks the preset dirty nor shows the popup.
 - **Any preset of your own is live.** There is no Save button: as soon as you
   change a row, the preset file is rewritten (about a third of a second later,
   so a slider drag lands once). The `*` next to the name only means a write is
@@ -147,12 +147,13 @@ setups against the same paused frame.
 
 ### What a preset does *not* contain
 
-Five rows describe the **display you calibrated, not your taste**, so they stay
-with the machine and switching presets never changes them — and, as above, they
-are always editable, even on `Default`:
+Twelve rows describe the **display you calibrated, not your taste**, so they
+stay with the machine and switching presets never changes them — and, as above,
+they are always editable, even on `Default`:
 
 > **SDR display nits · Static nits (max) · Display black (nits) ·
-> Convert to SDR · Output gamut**
+> Convert to SDR · Output gamut · Display transfer · Enable DBLE ·
+> Strength · Trigger (picture %) · Highlight start · View · OSD**
 
 Also not part of a preset: the **Playback** and **Source** tabs (audio mode,
 input device, setup), the two UI-only rows on the System tab (context banner,
@@ -219,8 +220,8 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 | **Exposure** | −5…+5 | 0 | A brightness dial that works **before** the tone curve, in thirds of a stop: ±1 = ±⅓ stop, ±3 = ±1 stop. Because it's pre-curve, the shoulder absorbs it — brightness without spending your highlights. The safest lever when a specific film looks dark or washed. |
 | **Shadow detail** | −5…+5 | 0 | How much texture survives in the dark end. **Positive** spreads dark values apart — you see fabric weave, night-scene layout, object edges — while true black stays black (it is *detail*, not a brightness lift). **Negative** compresses blacks together, for a denser, more "filmic" shadow that hides crushed masters. Never greys the image. |
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
-| **Output gamut** | `BT.709 (standard)` / `BT.2020 (wide)` | `BT.709 (standard)` | The colour space delivered. 709 is what SDR (and effectively every TV's SDR mode) expects. BT.2020 keeps wide colour *only* for a display actually in HDR/wide-gamut mode — on a normal SDR pipeline it makes colours wrong. Leave on 709 unless you know exactly why you changed it. |
-| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
+| **Output gamut** | `Follow source` / `BT.709 (standard)` / `BT.2020 (wide)` / `DCI-P3 (D65)` | `BT.709 (standard)` | The colour space delivered. **BT.709** is what SDR (and effectively every TV's SDR mode) expects. **BT.2020** keeps wide colour for a display actually in HDR/wide-gamut mode. **DCI-P3 (D65)** is the consumer projector's P3 mode: HDR is mapped from BT.2020 into P3 in the tone map, and SDR 709 content is converted in the final pass. **Follow source** passes SDR primaries through and keeps BT.2020 for HDR→SDR. The display must be set to the same gamut; a mismatch reads as over- or under-saturation. |
+| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709; inert for BT.2020, DCI-P3 and Follow source, because the curve was fitted to the 709 triangle. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
 | **Highlight desat** | 0…1 | 0 | A companion to the row above for **the Unplugged curve**: at higher brightness levels, pull saturation toward the level's own neutral point (hue preserved). Measured against reference renderers, 0.50 matches; 0 is off. Note: it runs inside the grade, so it needs *Enable ML grade* (Zion tab) on. |
 
 **Exposure**, **Shadow detail** and **Contrast** are taste trims — they work
@@ -243,6 +244,44 @@ adjustment surface, and no Curve Settings section appears at all.
 | **GT7 shoulder reach** | 0.02…0.90 | 0.25 | Highlight headroom: **lower = longer shoulder**, more brightness band survives before detail merges to white; higher punches mid-highs but clips sooner. The first dial to turn down if explosions clip. |
 | **GT7 debug view** | `Off` + 4 greyscale modes | Off | Diagnostic overlays of the curve's internals. Leave Off for watching. |
 
+### DBLE Compensation
+
+For projectors with **dynamic black / laser dimming (DBLE)**. The projector
+decides its own brightness from the scene; in a dark scene it dims the laser,
+and the brightest highlights are pushed into clipping. These rows roll the top
+of the range down **in dark scenes only**, in the display code you selected
+under **Display transfer**, so the projector's gain has somewhere to go. The
+trigger is measured from the finished picture, so the feature is independent of
+the ML grade: it works with the grade Off, Auto or Manual.
+
+| Setting | Range | Default | What it does |
+| --- | --- | --- | --- |
+| **Enable DBLE** | On / Off | Off | Turn compensation on only when the projector's dynamic dimming is on. With it off the picture is identical to before this feature. SDR output only; HDR passthrough is untouched. |
+| **Strength** | 0…1 | 1.0 | How far the highlights are pulled. 1.0 puts peak white at 50%; start at 0.5 if 1.0 looks dull on your projector. |
+| **Trigger (picture %)** | 0.5…30 | 5.0 | The **measured brightness of the finished picture**, in percent of SDR white, below which the fix acts. Full effect below a quarter of this value; none at the trigger. This is the contributed DBLEFix trigger: it is measured from the picture itself, so no scene estimate or model is involved. Raise it if DBLE clips scenes that are not very dark; lower it if ordinary dim scenes lose their highlights. |
+| **Highlight start** | 0.20…0.95 | 0.30 | The display-code level where the pull begins; below it the picture is untouched. It is a code value in the selected **Display transfer**, so it follows Gamma 2.2, Gamma 2.4, BT.1886, sRGB or Gamma 2.0. |
+| **View** | `Normal` / `Clipping test` / `Split screen` | Normal | Diagnostic views of the fix. **Clipping test** tints pixels: green = above the knee and fixable, red = already clipped in the video, blue = actually lowered by the fix. **Split screen** puts the unfixed picture on the left and the fixed picture on the right with a divider. They apply only while DBLE is active, so a saved test view cannot tint the picture when the fix is off. Use them to see what the fix does; the test views change the picture, so do not judge the final look from them. |
+| **OSD** | On / Off | Off | Draws the contributed DBLEFix overlay over the picture: the six setting rows (Fix, Strength, Trigger, Highlight start, View, Overlay), the measured status line (`Picture … Fix … White … Scene …`), and the Clipping-test legend. It is drawn after the picture, so the fix never measures it. Leave it Off for normal viewing. |
+
+The overlay's shortcuts work over the video, without changing focus:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+Alt+0` | Show / hide the overlay |
+| `Ctrl+Alt+D` | Fix On / Off |
+| `Ctrl+Alt+↑` / `Ctrl+Alt+↓` | Select the overlay row (the `>` marker) |
+| `Ctrl+Alt+←` / `Ctrl+Alt+→` | Change the selected row |
+
+They edit the same settings as the rows above, so the panel and the overlay
+always agree. The overlay hides 8 seconds after the last shortcut unless its
+**Overlay** row is set to `Always`; when it is shown from the OSD row here, it
+starts as `Always`.
+
+The amount is smoothed within a shot and snapped when the measured picture
+brightness jumps by 2× or more (a scene cut), so it does not pump. It runs after
+the display transfer and before the calibration LUT, so a 3D LUT still corrects
+the rolled-off signal.
+
 ### Display Target
 
 These describe **your TV/projector**, not the content. Set once per display.
@@ -250,6 +289,7 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
+| **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
 | **Subtitle/OSD brightness** | 0…100 | 0 | How bright subtitle and on-screen text renders against the finished picture. 0 = normal. Raise if text gets lost in bright content — it lifts the text layer only, never the film. |
@@ -496,9 +536,20 @@ and let SR do the work.
 
 **New projector/TV?** Measure it (or use published numbers): **SDR display
 nits** from your white patch, **Static nits (max)** with the wheel, **Display
-black (nits)** from the black patch, load a calibration **LUT** if you have one
-— then leave everything else at defaults for a week before tuning taste
-controls.
+black (nits)** from the black patch, **Display transfer** to the projector's
+calibrated transfer, load a calibration **LUT** if you have one — then leave
+everything else at defaults for a week before tuning taste controls.
+
+**Projector with P3 mode or a 2.4 calibration?** Set **Output gamut** to
+`DCI-P3 (D65)` only if the projector is actually in its P3 mode, and
+**Display transfer** to `Gamma 2.4` or `BT.1886` if it is calibrated there.
+Otherwise leave both on their defaults (BT.709 / Follow source) and let the
+projector's own 709/2.2 mode do the work.
+
+**Highlights clip only in dark scenes (laser dimming).** Enable **DBLE**, keep
+**Trigger** at 5.0 % and start at **Strength** 0.5; raise Trigger only if
+scenes that are not dark also clip. Turn on **OSD** while tuning so you can see
+the measured picture brightness and the applied fix. It works with the grade Off.
 
 ---
 
@@ -507,7 +558,16 @@ controls.
 - **Playback → Delay** (audio lip-sync) saves but does nothing yet.
 - **Zion → Chroma → Mode** saves but does nothing yet; the Default behaviour
   always runs.
-- **System → Report a problem** saves a log line only; no report is sent.
+- **System → Report a problem** creates a diagnostics zip on the Desktop;
+  attach it yourself — the app never uploads anything.
+- **DCI-P3 output has no capacity curve yet.** **Gamut capacity (709)** is
+  deliberately 709-only; out-of-P3 colours clip at the P3 triangle.
+- **Display transfer** applies to SDR as well as HDR→SDR. A calibration LUT is
+  only valid for the transfer it was authored at; re-fit it if you change the
+  transfer.
+- **DBLE compensation** is an SDR-output feature; HDR passthrough is untouched.
+- P3-tagged SDR files are not detectable as P3 by Windows; the source gamut
+  shown is BT.601, BT.709 or BT.2020.
 - Super Resolution is not available for HDR or 10-bit sources; it is a
   SDR-path feature.
 - With strong non-linear stretch, fine text can look slightly soft — both axes
