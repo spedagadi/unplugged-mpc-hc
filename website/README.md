@@ -19,15 +19,16 @@ Static marketing site for unplugged. No framework, no tracking, no server. The u
 - `content-protection.html` — HDCP/DRM policy: no decryption or bypass; unencrypted, authorized sources only
 - `guide.html` — generated user guide from `docs/settings-guide.md`
 - `search-index.json` — generated index for the header search
-- `release.json` — latest release, installer details, SHA-256 and GitHub totals; read by `site.js`
+- `release.json` — committed fallback for the latest release, installer details, SHA-256 and GitHub totals; read by `site.js`
 - `build_guide.py` — generator for `guide.html` and `search-index.json`
-- `update_release.py` — generator for `release.json` from the GitHub releases API
+- `update_release.py` — generator for the committed `release.json` from the GitHub releases API
+- `../functions/release.json.js` — Cloudflare Pages Function that serves live release data at `/release.json`, ahead of the static file
 - The AVSForum announcement is kept outside the deploy folder (locally at `docs/website-brief.txt`) so it is not published.
 - `robots.txt`, `sitemap.xml`, `404.html`
 
 ## Deploy
 
-Any static host works. The generated files are committed, so the folder can also be uploaded as-is. On Cloudflare, run the two generators first so the release data and guide are current.
+Any static host works. The generated files are committed, so the folder can also be uploaded as-is. On Cloudflare, the `functions/release.json.js` Function serves live release data even when no build runs; the generators below keep the committed fallback and the guide current.
 
 ### Cloudflare Pages (recommended)
 
@@ -43,9 +44,11 @@ Any static host works. The generated files are committed, so the folder can also
 
 4. Output directory: `website`.
 
-Add a fine-grained read-only `GITHUB_TOKEN` environment variable to the Pages project. The build passes it to `update_release.py`; it raises the GitHub API limit and is never sent to the browser. The script fails soft: if GitHub is unavailable or rate-limited, the committed `release.json` is deployed unchanged and the build still succeeds.
+The `functions` directory must stay at the repository root, not inside `website`. Cloudflare Pages deploys it automatically.
 
-`site.js` reads `/release.json` and updates the version, installer name, size, SHA-256, download links, release date, total downloads and release count. The values in the HTML are the no-JavaScript and crawler fallback, so keep them roughly current when cutting a release.
+Add a fine-grained read-only `GITHUB_TOKEN` environment variable to the Pages project. Both the Function and `update_release.py` use it; it raises the GitHub API limit and is never sent to the browser. The Function caches the response at the edge for five minutes. If GitHub is unavailable or rate-limited, it serves the committed `website/release.json` fallback; the build script likewise leaves the last good file in place.
+
+`site.js` reads `/release.json` and updates the version, installer name, size, SHA-256, download links, release date, total downloads and release count. On Cloudflare that URL is the Function, so the counts refresh without a new build. The values in the HTML are the no-JavaScript and crawler fallback, so keep them roughly current when cutting a release.
 
 The site is live at https://www.unpluggedvideo.com. Cloudflare redirects `.html` paths to clean URLs (`/guide.html` → `/guide`); canonical and sitemap URLs use the clean form.
 
@@ -69,21 +72,23 @@ python -I build_guide.py
 
 This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js`; it fetches the index on first open and works on every page. The guide reads the version from `release.json` when it is generated.
 
-## Regenerating release data
+## How release data is served
 
-From the repository root:
+On Cloudflare, `/release.json` is `functions/release.json.js`, not the static file. The Function calls the GitHub releases API server-side, caches the result at the edge for five minutes, and returns the live totals. It needs no rebuild and no code push when a release is published. Set `GITHUB_TOKEN` in the Pages project so the function does not run into GitHub's unauthenticated rate limit.
+
+The committed `website/release.json` is the fallback for local development, non-Cloudflare hosts, and GitHub API failures. Regenerate it from the repository root when cutting a release:
 
 ```powershell
 python -I website/update_release.py
 ```
 
-This reads the public GitHub releases API and rewrites `website/release.json`: latest version, release date, installer name, size, asset SHA-256, download URL, per-release download counts, total downloads and release count. Commit the result when it changes.
+This rewrites `website/release.json`: latest version, release date, installer name, size, asset SHA-256, download URL, per-release download counts, total downloads and release count. Commit the result when it changes. The Cloudflare build command can also run this generator, keeping the fallback current.
 
-Do not fetch `api.github.com` from the browser. Unauthenticated requests are limited to 60 per hour per IP, and every visitor would contact GitHub. The site fetches its own `/release.json` instead. The Cloudflare build command runs the generator with an optional `GITHUB_TOKEN`; a manual release-time run works too.
+Do not fetch `api.github.com` from the browser. Unauthenticated requests are limited to 60 per hour per IP, and every visitor would contact GitHub. The site fetches its own `/release.json`; on Cloudflare the Function makes the single upstream request.
 
-### Refresh the site when a release is published
+### Refresh the committed fallback and guide on release
 
-A Cloudflare build only runs when the repository changes. To refresh `release.json` on a GitHub release without a code push, create a Deploy Hook for the Pages project (Settings → Builds & deployments → Deploy hooks) and add it as a GitHub webhook (repository Settings → Webhooks) for **release** events only. The hook triggers the same build command, which fetches the new release and redeploys. Treat the Deploy Hook URL as a secret: anyone who has it can start a build.
+A Cloudflare build only runs when the repository changes. If you want the static fallback and guide refreshed automatically on a GitHub release, create a Deploy Hook for the Pages project (Settings → Builds & deployments → Deploy hooks) and add it as a GitHub webhook (repository Settings → Webhooks) for **release** events only. The hook runs the build command and redeploys. The live download counts do not depend on this; the Function already refreshes them. Treat the Deploy Hook URL as a secret: anyone who has it can start a build.
 
 ## Before going live
 

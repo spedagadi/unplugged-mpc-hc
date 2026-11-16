@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-10T17:42:23Z",
+  "generatedAt": "2026-11-16T09:43:56Z",
   "source": "https://github.com/spedagadi/unplugged-mpc-hc/releases",
   "latest": {
     "tag": "v2.2.0",
@@ -12,7 +12,7 @@
     "assetSize": 127094355,
     "sizeMB": 127,
     "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
-    "downloads": 1,
+    "downloads": 43,
     "prerelease": false
   },
   "releases": [
@@ -27,7 +27,7 @@
       "assetSize": 127094355,
       "sizeMB": 127,
       "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
-      "downloads": 1,
+      "downloads": 43,
       "prerelease": false
     },
     {
@@ -41,7 +41,7 @@
       "assetSize": 127087675,
       "sizeMB": 127,
       "sha256": "A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF",
-      "downloads": 27,
+      "downloads": 34,
       "prerelease": false
     },
     {
@@ -97,7 +97,7 @@
       "assetSize": 184869185,
       "sizeMB": 185,
       "sha256": "E02FEC503BA4559E05963CC168142EDA81C3DCD200CE5FD4B36DD853031E1BE9",
-      "downloads": 16,
+      "downloads": 17,
       "prerelease": false
     },
     {
@@ -111,12 +111,12 @@
       "assetSize": 184760167,
       "sizeMB": 185,
       "sha256": "ACAB7D11FA4128BE5E0026925C012D0C0515F15F07AF6CFE07E4237CB1624DD1",
-      "downloads": 29,
+      "downloads": 30,
       "prerelease": false
     }
   ],
   "totals": {
-    "downloads": 103,
+    "downloads": 154,
     "releases": 7,
     "firstReleaseDate": "2026-10-17T14:00:19Z"
   }
