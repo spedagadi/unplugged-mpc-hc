@@ -24,10 +24,13 @@ from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, "release.json")
-API = "https://api.github.com/repos/spedagadi/unplugged-mpc-hc/releases?per_page=100"
+APP_REPO = "spedagadi/unplugged-mpc-hc"
+RENDERER_REPO = "spedagadi/unplugged-VideoRenderer"
+REPOS = (APP_REPO, RENDERER_REPO)
+API = "https://api.github.com/repos/%s/releases?per_page=100"
 
 
-def fetch_releases():
+def fetch_releases(repo):
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "unplugged-website",
@@ -36,11 +39,11 @@ def fetch_releases():
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(API, headers=headers)
+    request = urllib.request.Request(API % repo, headers=headers)
     with urllib.request.urlopen(request, timeout=25) as response:
         data = json.load(response)
     if not isinstance(data, list) or not data:
-        raise ValueError("GitHub returned no releases")
+        raise ValueError("GitHub returned no releases for " + repo)
     return data
 
 
@@ -75,13 +78,14 @@ def pick_asset(release):
     return assets[0] if assets else {}
 
 
-def release_record(release):
+def release_record(release, repo):
     tag = str(release.get("tag_name") or "")
     version = version_of(tag)
     asset = pick_asset(release)
     size = int(asset.get("size") or 0)
     downloads = sum(int(item.get("download_count") or 0) for item in (release.get("assets") or []))
     return {
+        "repo": repo,
         "tag": tag,
         "version": version,
         "name": release.get("name") or tag,
@@ -97,37 +101,65 @@ def release_record(release):
     }
 
 
-def build_payload(releases):
-    records = [
-        release_record(release)
-        for release in releases
-        if not release.get("draft") and release.get("published_at")
-    ]
-    if not records:
+def build_payload(releases_by_repo):
+    by_repo = {}
+    all_records = []
+    for repo, releases in releases_by_repo.items():
+        records = [
+            release_record(release, repo)
+            for release in releases
+            if not release.get("draft") and release.get("published_at")
+        ]
+        by_repo[repo] = records
+        all_records.extend(records)
+
+    app_records = by_repo.get(APP_REPO) or []
+    if not app_records:
+        raise ValueError("No published releases found for " + APP_REPO)
+    if not all_records:
         raise ValueError("No published releases found")
 
-    records.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
-    stable = [item for item in records if not item.get("prerelease")]
-    latest = stable[0] if stable else records[0]
-    first = min(records, key=lambda item: item.get("publishedAt") or "")
-    total_downloads = sum(item.get("downloads", 0) for item in records)
+    app_records.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
+    stable = [item for item in app_records if not item.get("prerelease")]
+    latest = stable[0] if stable else app_records[0]
+
+    all_records.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
+    first = min(all_records, key=lambda item: item.get("publishedAt") or "")
+    total_downloads = sum(item.get("downloads", 0) for item in all_records)
 
     return {
         "generatedAt": iso_now(),
-        "source": "https://github.com/spedagadi/unplugged-mpc-hc/releases",
+        "source": "https://github.com/%s/releases" % APP_REPO,
+        "sources": ["https://github.com/%s/releases" % repo for repo in REPOS],
         "latest": latest,
-        "releases": records,
+        "releases": all_records,
         "totals": {
             "downloads": total_downloads,
-            "releases": len(records),
+            "releases": len(all_records),
             "firstReleaseDate": first.get("publishedAt"),
+            "byRepo": {
+                repo: {
+                    "downloads": sum(item.get("downloads", 0) for item in records),
+                    "releases": len(records),
+                }
+                for repo, records in by_repo.items()
+            },
         },
     }
 
 
 def main():
     try:
-        payload = build_payload(fetch_releases())
+        releases_by_repo = {}
+        for repo in REPOS:
+            try:
+                releases_by_repo[repo] = fetch_releases(repo)
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as error:
+                if repo == APP_REPO:
+                    raise
+                print("release data: skipping %s (%s)" % (repo, error))
+                releases_by_repo[repo] = []
+        payload = build_payload(releases_by_repo)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as error:
         print("release data: keeping the existing release.json (%s)" % error)
         return 0
