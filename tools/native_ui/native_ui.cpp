@@ -717,6 +717,7 @@ struct Row;
 static void PresetInitFromIni();
 static bool WritePresetFile(const std::wstring& name,bool announce=true);
 static void PresetNoteRowChanged(const Row& r);
+static void SaveRowIni(const Row& r);
 static std::string IniValue(const Row& r);
 static void PushRow(const Row& r);
 // Set while the app itself changes a row (SDR ML auto-disable / restore). The row
@@ -982,6 +983,11 @@ static Row g_rows[]={
  {4,1,L"NON-LINEAR STRETCH",L"Native max aspect","geo.nlsAspectNativeMax",1.50,2.10,0.01,1.90,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Scope min aspect","geo.nlsAspectScopeMin",2.00,2.60,0.01,2.15,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {4,1,L"NON-LINEAR STRETCH",L"Small-bar removal","geo.nlsAspectWideBars",0,100,1,100,false,0,nullptr,0,nullptr,{},0,1,0,0},
+ // Scope content has its own removal value. It must not be inferred from the
+ // live Bars row: the rule overwrites that row for native (0) and small-bars
+ // (100), and a snapshot taken while an override was in force made NLS do
+ // nothing on 2.39 titles. Default 100 = the pre-aspect-rule behaviour.
+ {4,1,L"NON-LINEAR STRETCH",L"Scope bar removal","geo.nlsAspectScopeBars",0,100,1,100,false,0,nullptr,0,nullptr,{},0,1,0,0},
  {4,2,L"OUTPUT",L"Swap effect","out.swapEffect",0,0,0,0,false,1,kSwap,2,nullptr,{},0,0,1,0},
  {4,0,L"OUTPUT",L"Exclusive fullscreen","out.exclusiveFS",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
  {4,0,L"OUTPUT",L"Wait for VBlank","out.vBlank",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
@@ -1091,7 +1097,10 @@ static void NlsAspectApply(int win){
     g_nlsAspectForced=true; }
   double bars=0,cx=0,cy=0;
   if(win==1){ Row* w=FindRow("geo.nlsAspectWideBars"); bars=w?w->val:100.0; }
-  else if(win==2){ bars=g_nlsScopeBars<0?0:g_nlsScopeBars; cx=g_nlsScopeCropX; cy=g_nlsScopeCropY; }
+  else if(win==2){
+    const Row* sb=FindRow("geo.nlsAspectScopeBars");
+    bars = sb ? sb->val : (g_nlsScopeBars<0?0:g_nlsScopeBars);
+    cx=g_nlsScopeCropX; cy=g_nlsScopeCropY; }
   g_rowNoSave=true;
   NlsAspectSetRow("geo.nlsBars",bars);
   NlsAspectSetRow("geo.nlsCropX",cx);
@@ -1105,11 +1114,18 @@ static void NlsAspectApply(int win){
        win==0?"native":win==1?"small-bars":"scope",bars,cx,cy); }
 static void NlsAspectRelease(){
   if(!g_nlsAspectForced){ g_nlsAspectWin=-1; return; }
+  // Turning the rule off leaves NLS behaving as it did before the rule: the
+  // Scope row is the value the user wants on scope content.
+  const Row* sb=FindRow("geo.nlsAspectScopeBars");
+  const double bars=sb?sb->val:(g_nlsScopeBars>=0?g_nlsScopeBars:0);
   g_rowNoSave=true;
-  if(g_nlsScopeBars>=0) NlsAspectSetRow("geo.nlsBars",g_nlsScopeBars);
+  NlsAspectSetRow("geo.nlsBars",bars);
   NlsAspectSetRow("geo.nlsCropX",g_nlsScopeCropX);
   NlsAspectSetRow("geo.nlsCropY",g_nlsScopeCropY);
   g_rowNoSave=false;
+  // Leave the persisted Bars value equal to the scope value, so NLS with the
+  // rule off behaves the same on the next launch instead of restoring a stale 0.
+  if(Row* b=FindRow("geo.nlsBars")){ SaveRowIni(*b); PresetNoteRowChanged(*b); }
   g_nlsAspectForced=false; g_nlsAspectWin=-1; g_nlsAspectCand=-1; g_nlsAspectStable=0;
   LogF("nlsaspect: released - user values restored"); }
 static void NlsAspectPoll(){
@@ -1565,6 +1581,25 @@ static void PushAll(){
   PushLut();   // LUT is a command, re-applied on every graph generation like 1.3.0
 }
 static void PushRow(const Row& r){ char b[192];
+  // Aspect-rule scope tuning (UR-0007). Every user edit of the live Bars/crop
+  // rows and of the dedicated Scope row lands here; forced pushes carry
+  // g_rowNoSave and must not touch the tuning. This lives in PushRow, not in
+  // the click handler: sliders push from OnMouseMove, so a click-only capture
+  // never saw a drag. When another window is in force, re-impose it so an edit
+  // cannot zoom a native/IMAX picture.
+  if(g_nlsAspectForced&&!g_rowNoSave){
+    bool tune=false;
+    if(!strcmp(r.key,"geo.nlsBars")){
+      g_nlsScopeBars=(float)r.val;
+      if(Row* sb=FindRow("geo.nlsAspectScopeBars")) sb->val=r.val;
+      tune=true; }
+    else if(!strcmp(r.key,"geo.nlsAspectScopeBars")){ g_nlsScopeBars=(float)r.val; tune=true; }
+    else if(!strcmp(r.key,"geo.nlsCropX")){ g_nlsScopeCropX=(float)r.val; tune=true; }
+    else if(!strcmp(r.key,"geo.nlsCropY")){ g_nlsScopeCropY=(float)r.val; tune=true; }
+    if(tune){
+      if(g_nlsAspectWin!=2) NlsAspectApply(g_nlsAspectWin);
+      else if(!strcmp(r.key,"geo.nlsAspectScopeBars")){
+        g_rowNoSave=true; NlsAspectSetRow("geo.nlsBars",r.val); g_rowNoSave=false; } } }
   if(!g_rowNoSave){
     SaveRowIni(r);   // 1.3.0 SettingsIni.set(): persist on every user change
     PresetNoteRowChanged(r); }   // Default is read-only: mark dirty + warn once
@@ -1841,6 +1876,20 @@ static bool WritePresetFile(const std::wstring& name,bool announce){
   for(const Row& r:g_rows){
     if(!PresetEligible(r)) continue;
     wchar_t val[4096]={0};
+    // While the aspect rule is forcing a window, the live Bars/crop rows hold
+    // the override (0 for native, the small-bar value for 1.90). Saving those
+    // would overwrite the user's scope tuning; save the tuning instead.
+    if(g_nlsAspectForced){
+      double tune=-1.0;
+      if(!strcmp(r.key,"geo.nlsBars")){
+        const Row* sb=FindRow("geo.nlsAspectScopeBars");
+        tune=sb?sb->val:g_nlsScopeBars; }
+      else if(!strcmp(r.key,"geo.nlsCropX")) tune=g_nlsScopeCropX;
+      else if(!strcmp(r.key,"geo.nlsCropY")) tune=g_nlsScopeCropY;
+      if(tune>=0.0){
+        swprintf_s(val,L"%.6g",tune);
+        WritePrivateProfileStringW(L"values",Widen(r.key).c_str(),val,path.c_str());
+        continue; } }
     if(r.kind==0) wcscpy_s(val,r.on?L"1":L"0");
     else if(r.kind==1) swprintf_s(val,L"%.6g",r.val);
     else if(r.kind==2) swprintf_s(val,L"%d",r.optvals?r.optvals[r.opt]:r.opt);
@@ -3178,16 +3227,9 @@ protected:
       if(!strcmp(r.key,"out.sdrBt2020")){
         LogF("bt2020: user setting=%s",r.on?"ON":"OFF");
         TenBitBegin(); }
-      // Aspect rule (UR-0007): Off releases the overrides at once. While the
-      // rule is active and the SCOPE window is in force, an edit to Bars/crops
-      // IS the user's scope tuning, so remember it rather than restoring stale.
       if(!strcmp(r.key,"geo.nlsAspectRule")){
         LogF("nlsaspect: user setting=%s",r.on?"ON":"OFF");
         if(!r.on) NlsAspectRelease(); }
-      if(g_nlsAspectForced&&g_nlsAspectWin==2){
-        if(!strcmp(r.key,"geo.nlsBars")) g_nlsScopeBars=(float)r.val;
-        else if(!strcmp(r.key,"geo.nlsCropX")) g_nlsScopeCropX=(float)r.val;
-        else if(!strcmp(r.key,"geo.nlsCropY")) g_nlsScopeCropY=(float)r.val; }
       // The user touched the ML grade while an SDR title is playing: that IS the
       // opt-in/opt-out for SDR and survives the next title and the next launch.
       if(!strcmp(r.key,"zion.enabled")&&g_sdrContentNow){
