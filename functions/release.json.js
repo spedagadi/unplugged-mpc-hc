@@ -3,14 +3,19 @@
  *
  * Cloudflare Pages serves this Function at /release.json, ahead of the
  * committed static file. The Function asks the GitHub releases API for the
- * current asset download counts, caches the answer at the edge for five
- * minutes, and returns the same shape that website/update_release.py writes.
+ * app and standalone-renderer repositories, sums their asset download counts,
+ * caches the answer at the edge for five minutes, and returns the same shape
+ * that website/update_release.py writes.
  * Keeping the GitHub call server-side avoids the browser's 60-requests-per-
  * hour unauthenticated API limit and keeps the token out of the page.
  */
 
-const API = "https://api.github.com/repos/spedagadi/unplugged-mpc-hc/releases?per_page=100";
+const APP_REPO = "spedagadi/unplugged-mpc-hc";
+const RENDERER_REPO = "spedagadi/unplugged-VideoRenderer";
+const REPOS = [APP_REPO, RENDERER_REPO];
+const API = "https://api.github.com/repos/%s/releases?per_page=100";
 const CACHE_SECONDS = 300;
+const CACHE_KEY = "/__unplugged_release_cache_v2";
 
 function versionOf(tag) {
   return tag.indexOf("v") === 0 ? tag.slice(1) : tag;
@@ -34,12 +39,13 @@ function pickAsset(release) {
   );
 }
 
-function releaseRecord(release) {
+function releaseRecord(release, repo) {
   const tag = String(release.tag_name || "");
   const asset = pickAsset(release);
   const size = Number(asset.size) || 0;
   const assets = Array.isArray(release.assets) ? release.assets : [];
   return {
+    repo: repo,
     tag: tag,
     version: versionOf(tag),
     name: release.name || tag,
@@ -55,29 +61,53 @@ function releaseRecord(release) {
   };
 }
 
-function payloadFrom(releases) {
-  let records = releases
-    .filter((release) => !release.draft && release.published_at)
-    .map(releaseRecord);
-  if (!records.length) throw new Error("No published releases");
+function payloadFrom(releasesByRepo) {
+  const byRepo = {};
+  const allRecords = [];
 
-  records.sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt)));
-  const stable = records.filter((item) => !item.prerelease);
-  const latest = stable[0] || records[0];
-  const first = records.reduce(
+  REPOS.forEach((repo) => {
+    const releases = Array.isArray(releasesByRepo[repo]) ? releasesByRepo[repo] : [];
+    const records = releases
+      .filter((release) => !release.draft && release.published_at)
+      .map((release) => releaseRecord(release, repo));
+    byRepo[repo] = records;
+    allRecords.push.apply(allRecords, records);
+  });
+
+  const appRecords = byRepo[APP_REPO] || [];
+  if (!appRecords.length) throw new Error("No published releases for " + APP_REPO);
+  if (!allRecords.length) throw new Error("No published releases");
+
+  appRecords.sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const stable = appRecords.filter((item) => !item.prerelease);
+  const latest = stable[0] || appRecords[0];
+
+  allRecords.sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const first = allRecords.reduce(
     (oldest, item) => (!oldest || item.publishedAt < oldest.publishedAt ? item : oldest),
     null
   );
 
-  return {
-    generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    source: "https://github.com/spedagadi/unplugged-mpc-hc/releases",
-    latest: latest,
-    releases: records,
-    totals: {
+  const byRepoTotals = {};
+  REPOS.forEach((repo) => {
+    const records = byRepo[repo] || [];
+    byRepoTotals[repo] = {
       downloads: records.reduce((sum, item) => sum + item.downloads, 0),
       releases: records.length,
+    };
+  });
+
+  return {
+    generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    source: "https://github.com/" + APP_REPO + "/releases",
+    sources: REPOS.map((repo) => "https://github.com/" + repo + "/releases"),
+    latest: latest,
+    releases: allRecords,
+    totals: {
+      downloads: allRecords.reduce((sum, item) => sum + item.downloads, 0),
+      releases: allRecords.length,
       firstReleaseDate: first ? first.publishedAt : null,
+      byRepo: byRepoTotals,
     },
   };
 }
@@ -101,7 +131,7 @@ async function staticFallback(context) {
 
 export async function onRequestGet(context) {
   const cache = typeof caches !== "undefined" ? caches.default : null;
-  const cacheKey = new Request(new URL("/__unplugged_release_cache", context.request.url), { method: "GET" });
+  const cacheKey = new Request(new URL(CACHE_KEY, context.request.url), { method: "GET" });
 
   const cached = cache ? await cache.match(cacheKey) : null;
   if (cached) return cached;
@@ -116,14 +146,25 @@ export async function onRequestGet(context) {
       headers.Authorization = "Bearer " + context.env.GITHUB_TOKEN;
     }
 
-    const response = await fetch(API, {
-      headers: headers,
-      cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true },
-    });
-    if (!response.ok) throw new Error("GitHub HTTP " + response.status);
+    const results = await Promise.all(
+      REPOS.map(async (repo) => {
+        try {
+          const response = await fetch(API.replace("%s", repo), {
+            headers: headers,
+            cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true },
+          });
+          if (!response.ok) throw new Error(repo + " HTTP " + response.status);
+          return { repo: repo, releases: await response.json() };
+        } catch (error) {
+          console.error("release.json: " + error.message);
+          return { repo: repo, releases: [] };
+        }
+      })
+    );
 
-    const releases = await response.json();
-    const output = new Response(JSON.stringify(payloadFrom(releases)), {
+    const releasesByRepo = {};
+    results.forEach((result) => { releasesByRepo[result.repo] = result.releases; });
+    const output = new Response(JSON.stringify(payloadFrom(releasesByRepo)), {
       status: 200,
       headers: {
         "Content-Type": "application/json; charset=utf-8",

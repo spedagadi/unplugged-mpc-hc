@@ -1,7 +1,12 @@
 {
-  "generatedAt": "2026-11-16T09:43:56Z",
+  "generatedAt": "2026-11-19T16:21:12Z",
   "source": "https://github.com/spedagadi/unplugged-mpc-hc/releases",
+  "sources": [
+    "https://github.com/spedagadi/unplugged-mpc-hc/releases",
+    "https://github.com/spedagadi/unplugged-VideoRenderer/releases"
+  ],
   "latest": {
+    "repo": "spedagadi/unplugged-mpc-hc",
     "tag": "v2.2.0",
     "version": "2.2.0",
     "name": "v2.2.0",
@@ -12,11 +17,27 @@
     "assetSize": 127094355,
     "sizeMB": 127,
     "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
-    "downloads": 43,
+    "downloads": 53,
     "prerelease": false
   },
   "releases": [
     {
+      "repo": "spedagadi/unplugged-VideoRenderer",
+      "tag": "v2.2.1",
+      "version": "2.2.1",
+      "name": "v2.2.1",
+      "publishedAt": "2026-11-18T11:38:09Z",
+      "releaseUrl": "https://github.com/spedagadi/unplugged-VideoRenderer/releases/tag/v2.2.1",
+      "downloadUrl": "https://github.com/spedagadi/unplugged-VideoRenderer/releases/download/v2.2.1/UnpluggedRenderer-setup-2.2.1.exe",
+      "assetName": "UnpluggedRenderer-setup-2.2.1.exe",
+      "assetSize": 41772632,
+      "sizeMB": 42,
+      "sha256": "7A3A30791923835FCC811038602A0A3D92BA439B9732EA501A2BD8022348EDFE",
+      "downloads": 8,
+      "prerelease": false
+    },
+    {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v2.2.0",
       "version": "2.2.0",
       "name": "v2.2.0",
@@ -27,10 +48,11 @@
       "assetSize": 127094355,
       "sizeMB": 127,
       "sha256": "F48ED045872DB6E93801F82D9D2BDD1C040351E4BCF0AAF344210EB6BFA53FB3",
-      "downloads": 43,
+      "downloads": 53,
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v2.1.0",
       "version": "2.1.0",
       "name": "v2.1.0",
@@ -41,10 +63,11 @@
       "assetSize": 127087675,
       "sizeMB": 127,
       "sha256": "A6CEAF1D3F848C269DDF539A1598180BC76C9C250F951724F0DE58692A1A41EF",
-      "downloads": 34,
+      "downloads": 40,
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v2.0.0",
       "version": "2.0.0",
       "name": "v2.0.0",
@@ -59,6 +82,7 @@
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v1.2.0",
       "version": "1.2.0",
       "name": "v1.2.0",
@@ -73,6 +97,7 @@
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v1.1.1",
       "version": "1.1.1",
       "name": "v1.1.1",
@@ -87,6 +112,7 @@
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v1.1.0",
       "version": "1.1.0",
       "name": "v1.1.0",
@@ -97,10 +123,11 @@
       "assetSize": 184869185,
       "sizeMB": 185,
       "sha256": "E02FEC503BA4559E05963CC168142EDA81C3DCD200CE5FD4B36DD853031E1BE9",
-      "downloads": 17,
+      "downloads": 18,
       "prerelease": false
     },
     {
+      "repo": "spedagadi/unplugged-mpc-hc",
       "tag": "v1.0.0",
       "version": "1.0.0",
       "name": "v1.0.0",
@@ -111,13 +138,23 @@
       "assetSize": 184760167,
       "sizeMB": 185,
       "sha256": "ACAB7D11FA4128BE5E0026925C012D0C0515F15F07AF6CFE07E4237CB1624DD1",
-      "downloads": 30,
+      "downloads": 32,
       "prerelease": false
     }
   ],
   "totals": {
-    "downloads": 154,
-    "releases": 7,
-    "firstReleaseDate": "2026-10-17T14:00:19Z"
+    "downloads": 181,
+    "releases": 8,
+    "firstReleaseDate": "2026-10-17T14:00:19Z",
+    "byRepo": {
+      "spedagadi/unplugged-mpc-hc": {
+        "downloads": 173,
+        "releases": 7
+      },
+      "spedagadi/unplugged-VideoRenderer": {
+        "downloads": 8,
+        "releases": 1
+      }
+    }
   }
 }

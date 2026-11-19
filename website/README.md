@@ -19,9 +19,9 @@ Static marketing site for unplugged. No framework, no tracking, no server. The u
 - `content-protection.html` — HDCP/DRM policy: no decryption or bypass; unencrypted, authorized sources only
 - `guide.html` — generated user guide from `docs/settings-guide.md`
 - `search-index.json` — generated index for the header search
-- `release.json` — committed fallback for the latest release, installer details, SHA-256 and GitHub totals; read by `site.js`
+- `release.json` — committed fallback for the latest app release, installer details, SHA-256 and combined GitHub totals for the app and standalone renderer; read by `site.js`
 - `build_guide.py` — generator for `guide.html` and `search-index.json`
-- `update_release.py` — generator for the committed `release.json` from the GitHub releases API
+- `update_release.py` — generator for the committed `release.json` from both GitHub releases APIs
 - `../functions/release.json.js` — Cloudflare Pages Function that serves live release data at `/release.json`, ahead of the static file
 - The AVSForum announcement is kept outside the deploy folder (locally at `docs/website-brief.txt`) so it is not published.
 - `robots.txt`, `sitemap.xml`, `404.html`
@@ -74,7 +74,7 @@ This rewrites `guide.html` and `search-index.json`. The search UI is in `site.js
 
 ## How release data is served
 
-On Cloudflare, `/release.json` is `functions/release.json.js`, not the static file. The Function calls the GitHub releases API server-side, caches the result at the edge for five minutes, and returns the live totals. It needs no rebuild and no code push when a release is published. Set `GITHUB_TOKEN` in the Pages project so the function does not run into GitHub's unauthenticated rate limit.
+On Cloudflare, `/release.json` is `functions/release.json.js`, not the static file. The Function calls the GitHub releases APIs for `unplugged-mpc-hc` and `unplugged-VideoRenderer` server-side, sums their download counts, caches the result at the edge for five minutes, and returns the live totals. The promoted `latest` release still comes from the app repository. It needs no rebuild and no code push when either repository publishes a release. Set `GITHUB_TOKEN` in the Pages project so the function does not run into GitHub's unauthenticated rate limit.
 
 The committed `website/release.json` is the fallback for local development, non-Cloudflare hosts, and GitHub API failures. Regenerate it from the repository root when cutting a release:
 
@@ -82,9 +82,9 @@ The committed `website/release.json` is the fallback for local development, non-
 python -I website/update_release.py
 ```
 
-This rewrites `website/release.json`: latest version, release date, installer name, size, asset SHA-256, download URL, per-release download counts, total downloads and release count. Commit the result when it changes. The Cloudflare build command can also run this generator, keeping the fallback current.
+This rewrites `website/release.json`: latest app version, release date, installer name, size, asset SHA-256, download URL, per-release counts, and combined totals for the app and standalone renderer. `totals.byRepo` keeps the two repositories separate. Commit the result when it changes. The Cloudflare build command can also run this generator, keeping the fallback current.
 
-Do not fetch `api.github.com` from the browser. Unauthenticated requests are limited to 60 per hour per IP, and every visitor would contact GitHub. The site fetches its own `/release.json`; on Cloudflare the Function makes the single upstream request.
+Do not fetch `api.github.com` from the browser. Unauthenticated requests are limited to 60 per hour per IP, and every visitor would contact GitHub. The site fetches its own `/release.json`; on Cloudflare the Function makes the two upstream requests.
 
 ### Refresh the committed fallback and guide on release
 
