@@ -42,12 +42,10 @@ public:
     STDMETHODIMP_(bool)           IsAnimated(POSITION pos);
     STDMETHODIMP                  Render(SubPicDesc& spd, REFERENCE_TIME rt, double fps, RECT& bbox);
     STDMETHODIMP                  GetTextureSize(POSITION pos, SIZE& MaxTextureSize, SIZE& VirtualSize, POINT& VirtualTopLeft);
-    STDMETHODIMP                  GetRelativeTo(POSITION pos, RelativeTo& relativeTo);
 
     virtual HRESULT ParseSample(REFERENCE_TIME rtStart, REFERENCE_TIME rtStop, BYTE* pData, size_t nLen);
     virtual void    EndOfStream() { /* Nothing to do */ };
     virtual void    Reset();
-    HRESULT GetPresentationSegmentTextureSize(REFERENCE_TIME rt, CSize& size);
 
 protected:
     HRESULT Render(SubPicDesc& spd, REFERENCE_TIME rt, RECT& bbox, bool bRemoveOldSegments);
@@ -96,16 +94,16 @@ private:
     };
 
     struct HDMV_PRESENTATION_SEGMENT {
-        REFERENCE_TIME rtStart = 0;
-        REFERENCE_TIME rtStop = 0;
+        REFERENCE_TIME rtStart;
+        REFERENCE_TIME rtStop;
 
         VIDEO_DESCRIPTOR video_descriptor;
         COMPOSITION_DESCRIPTOR composition_descriptor;
 
-        byte palette_update_flag = 0;
+        byte palette_update_flag;
         HDMV_CLUT CLUT;
 
-        int objectCount = 0;
+        int objectCount;
 
         std::list<std::unique_ptr<CompositionObject>> objects;
     };
@@ -148,14 +146,12 @@ public:
     STDMETHODIMP Render(SubPicDesc& spd, REFERENCE_TIME rt, double fps, RECT& bbox);
 
     bool Open(CString fn, CString name = _T(""), CString videoName = _T(""));
-    CString GetPath();
 
 private:
     static const WORD PGS_SYNC_CODE = 'PG';
 
     bool m_bStopParsing;
     std::thread m_parsingThread;
-    CString m_path;
 
     void ParseFile(CString fn);
 };

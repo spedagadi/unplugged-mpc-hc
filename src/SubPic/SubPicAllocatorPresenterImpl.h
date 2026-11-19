@@ -41,6 +41,11 @@ private:
 protected:
     HWND m_hWnd;
     REFERENCE_TIME m_rtSubtitleDelay;
+    // Subtitle scale in percent, applied to the destination rect at blit time.
+    // 100 leaves the file's own size untouched; the player's size control only
+    // grows/shrinks what is already rendered, so ASS styles and PGS/VobSub images
+    // keep their authored look (UR-0006).
+    int m_subScale = 65;
 
     CSize m_maxSubtitleTextureSize;
     CSize m_curSubtitleTextureSize;
@@ -97,6 +102,7 @@ public:
     STDMETHODIMP_(void) SetTime(REFERENCE_TIME rtNow);
     STDMETHODIMP_(void) SetSubtitleDelay(int delayMs);
     STDMETHODIMP_(int) GetSubtitleDelay() const;
+    void SetSubtitleScale(int percent){ m_subScale = percent < 25 ? 25 : (percent > 300 ? 300 : percent); }
     STDMETHODIMP_(double) GetFPS() const;
     STDMETHODIMP_(void) SetSubPicProvider(ISubPicProvider* pSubPicProvider);
     STDMETHODIMP_(void) Invalidate(REFERENCE_TIME rtInvalidate = -1);

@@ -75,7 +75,7 @@ public:
 
     void Invalidate() { nLang = nIdx = SIZE_T_ERROR; }
 
-    bool GetPacketInfo(const BYTE* lpData, size_t packetSize, size_t dataSize, int t = INT_MAX);
+    void GetPacketInfo(const BYTE* lpData, size_t packetSize, size_t dataSize, int t = INT_MAX);
     bool Decode(BYTE* lpData, size_t packetSize, size_t dataSize, int t,
                 bool bCustomPal,
                 int tridx,

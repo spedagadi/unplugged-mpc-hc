@@ -63,5 +63,5 @@ protected:
     LCID            m_lcid;
     Subtitle::HearingImpairedType m_eHearingImpaired;
 
-    ColorConvTable::YuvMatrixType m_eSourceMatrix = ColorConvTable::AUTO;
+    ColorConvTable::YuvMatrixType m_eSourceMatrix = ColorConvTable::NONE;
 };

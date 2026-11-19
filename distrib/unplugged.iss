@@ -51,7 +51,7 @@
 ; ---------------------------------------------------------------------------
 
 #define MyAppName    "Unplugged"
-#define MyAppVersion "2.2.0"
+#define MyAppVersion "2.3.0"
 #define MyAppPublisher "unplugged"
 #define MyAppExeName "Unplugged.exe"
 // The renderer's staging folder, named for this product since the filter became
@@ -60,10 +60,10 @@
 // build_unplugged_setup.ps1 is what catches it: it verifies every Source path exists
 // before ISCC runs, so the failure is a refused build, not an installer shipping
 // without a video renderer.
-#define FiltersSrc   "..\..\unplugged-VideoRenderer\_bin\UnpluggedRenderer-0.10.9.2637"
+#define FiltersSrc   "..\..\unplugged-VideoRenderer\_bin\UnpluggedRenderer-0.11.0.2637"
 #define LavSrc       "..\..\LAVFilters\bin_x64"
 #define DlSrc        "..\src\thirdparty\DeckLinkSource\bin\Filters_x64"
-#define AppSrc       "..\dist\Unplugged-2.2.0"
+#define AppSrc       "..\dist\Unplugged-2.3.0"
 
 [Setup]
 ; A NEW AppId, not MPC-HC's: this is a different product and must not upgrade

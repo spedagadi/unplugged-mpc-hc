@@ -34,8 +34,8 @@ public:
         ANSI
     };
 
-protected:
-    enc m_encoding, m_defaultencoding, m_fallbackencoding;
+private:
+    enc m_encoding, m_defaultencoding;
     int m_offset;
     ULONGLONG m_posInFile;
     CAutoVectorPtr<char> m_buffer;
@@ -43,15 +43,12 @@ protected:
     LONGLONG m_posInBuffer, m_nInBuffer;
 
 public:
-    using CFile::Flush;
-    using CFile::Close;
     CTextFile(enc e = DEFAULT_ENCODING);
 
     virtual bool Open(LPCTSTR lpszFileName);
     virtual bool Save(LPCTSTR lpszFileName, enc e /*= DEFAULT_ENCODING*/);
 
     void SetEncoding(enc e);
-    void SetFallbackEncoding(enc e);
     enc GetEncoding();
     bool IsUnicode();
 
@@ -82,10 +79,9 @@ class CWebTextFile : public CTextFile
     CString m_tempfn;
 
 public:
-    CWebTextFile(CTextFile::enc e = DEFAULT_ENCODING, LONGLONG llMaxSize = 64 * 1024 * 1024);
+    CWebTextFile(CTextFile::enc e = DEFAULT_ENCODING, LONGLONG llMaxSize = 1024 * 1024);
 
     bool Open(LPCTSTR lpszFileName);
-    bool Open(LPCTSTR lpszFileName, DWORD& dwError);
     bool Save(LPCTSTR lpszFileName, enc e /*= DEFAULT_ENCODING*/);
     void Close();
 };

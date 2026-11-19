@@ -301,8 +301,8 @@ bool CUSFSubtitles::ConvertToSTS(CSimpleTextSubtitle& sts)
 {
     sts.m_name = metadata.language.text;
     sts.m_encoding = CTextFile::UTF8;
-    sts.m_playRes = CSize(640, 480);
-    sts.m_scaledBAS = sts.m_scaledBAS2 = 0;
+    sts.m_dstScreenSize = CSize(640, 480);
+    sts.m_fScaledBAS = true;
     sts.m_defaultWrapStyle = 1;
 
     // TODO: map metadata.language.code to charset num (windows doesn't have such a function...)
@@ -325,10 +325,10 @@ bool CUSFSubtitles::ConvertToSTS(CSimpleTextSubtitle& sts)
         }
 
         if (!s->pal.horizontal_margin.IsEmpty()) {
-            stss->marginRect.left = stss->marginRect.right = TranslateMargin(s->pal.horizontal_margin, sts.m_playRes.cx);
+            stss->marginRect.left = stss->marginRect.right = TranslateMargin(s->pal.horizontal_margin, sts.m_dstScreenSize.cx);
         }
         if (!s->pal.vertical_margin.IsEmpty()) {
-            stss->marginRect.top = stss->marginRect.bottom = TranslateMargin(s->pal.vertical_margin, sts.m_playRes.cy);
+            stss->marginRect.top = stss->marginRect.bottom = TranslateMargin(s->pal.vertical_margin, sts.m_dstScreenSize.cy);
         }
 
         stss->scrAlignment = TranslateAlignment(s->pal.alignment);
@@ -406,10 +406,10 @@ bool CUSFSubtitles::ConvertToSTS(CSimpleTextSubtitle& sts)
         marginRect.SetRectEmpty();
 
         if (!t->pal.horizontal_margin.IsEmpty()) {
-            marginRect.left = marginRect.right = TranslateMargin(t->pal.horizontal_margin, sts.m_storageRes.cx);
+            marginRect.left = marginRect.right = TranslateMargin(t->pal.horizontal_margin, sts.m_dstScreenSize.cx);
         }
         if (!t->pal.vertical_margin.IsEmpty()) {
-            marginRect.top = marginRect.bottom = TranslateMargin(t->pal.vertical_margin, sts.m_storageRes.cy);
+            marginRect.top = marginRect.bottom = TranslateMargin(t->pal.vertical_margin, sts.m_dstScreenSize.cy);
         }
 
         WCHAR rtags[3][8] = {L"{\\rz%d}", L"{\\rx%d}", L"{\\ry%d}"};

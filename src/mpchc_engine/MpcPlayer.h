@@ -200,23 +200,27 @@ public:
         // 0=2.2, 1=2.4, 2=BT.1886, 3=sRGB, 4=2.0, 5=follow source (default).
         // Follow source keeps SDR pass-through and the HDR->SDR 2.2 reference.
         int  displayTransfer = 5;
-        // DBLE compensation: dark-scene highlight roll-off for projectors with
-        // dynamic laser dimming. Independent of the ML grade; SDR output only.
-        bool  dbleEnabled = false;
-        float dbleStrength = 1.0f;      // 0..1; 1.0 puts peak white at 50 %
-        // Picture brightness measured on the finished SDR picture, percent of
-        // SDR white. The fix starts below this, full effect at a quarter of it.
-        // This is the contributed DBLEFix trigger; no ML dependency.
-        float dbleTriggerPct = 5.0f;    // 0.5 .. 30.0
-        float dbleKnee = 0.30f;         // target-code level where the roll-off starts
-        // Diagnostic view: 0 normal, 1 clipping test, 2 split screen.
-        int   dbleView = 0;
-        bool  dbleOsd = false;          // draw the contributed DBLE overlay
-        bool  dbleOsdPinned = true;     // Overlay = Always instead of Auto-hide
-        int   dbleOsdSelected = 2;      // selected overlay row 0..5
-        // The overlay's safe area in window pixels: the part of the picture the
-        // app's chrome does not cover. Zero size = whole window. Set by Layout().
-        int   dbleOsdX = 0, dbleOsdY = 0, dbleOsdW = 0, dbleOsdH = 0;
+        // ClipGuard: projector highlight compensation. The projector feature is
+        // opt-in; these are the contributor's tuned defaults when it is enabled.
+        bool  cgEnabled = false;
+        float cgStrength = 0.35f;
+        int   cgShape = 1;              // 0 Normal, 1 Anchor
+        float cgFixStart = 10.0f;       // picture % where the fix begins
+        float cgFull = 3.0f;            // picture % at full effect
+        float cgKnee = 0.40f;
+        float cgColor = 0.90f;
+        float cgText = 25.0f;
+        float cgHot = 0.60f;
+        float cgHotBelow = 3.0f;
+        float cgGraded = 0.50f;
+        int   cgGrid = 1;               // 0 normal, 1 fine
+        int   cgLookAhead = 0;          // forced 0 in live capture
+        int   cgView = 0;               // 0 normal, 1 fix areas, 2 split, 3 side by side
+        bool  cgOsd = false;
+        bool  cgOsdPinned = true;
+        int   cgOsdSelected = 0;
+        int   cgOsdX = 0, cgOsdY = 0, cgOsdW = 0, cgOsdH = 0;
+        unsigned cgLog = 0;             // one-shot F11 log request
         // The CONTENT's peak luminance, nits — the top of the range the tone curves
         // map FROM. Distinct from displayMaxNits, which is the DISPLAY's peak.
         //
@@ -428,6 +432,10 @@ public:
         bool adjustPresent = true;
         bool reinitDisplay = false;
         bool showStats = false;
+        // TEST (2026-11-19): declare the SDR swap chain as BT.2020 SDR so the
+        // display may auto-switch to its wide-gamut mode. Requires Output gamut
+        // = BT.2020 (the image must actually be BT.2020) and WCG enabled.
+        bool sdrBt2020 = false;
         bool trayIcon = true;
     };
 
@@ -505,6 +513,9 @@ public:
     HRESULT GetTracks(std::vector<TrackInfo>&) const;
     HRESULT SetAudioTrack(int posIndex);
     HRESULT SetSubtitleTrack(int posIndex);
+    // Live subtitle size, percent (100 = as authored). Applied at blit time by the
+    // presenter; it scales text and bitmap subtitles without touching their styles.
+    HRESULT SetSubtitleScale(int percent);
     HRESULT SetSubtitlesEnabled(bool);
     HRESULT GetSubtitlesEnabled(bool&) const;
 
@@ -891,6 +902,7 @@ private:
     };
     std::vector<SubEntry> subs_;
     int curSub_ = -1;                    // index into subs_, -1 = off
+    int subScale_ = 65;                  // subtitle size, percent (presenter blit scale)
     int pendingSubTrack_ = -1;           // applied at connect, like pendingAudioTrack_
     bool subsOn_ = true;
     void ApplySubtitleProvider();        // (re)hands the current provider to subAP_
@@ -996,6 +1008,19 @@ private:
     // decoder's promotion — while the real EOTF is IPTPQc2 reshaped by the RPU.
     // The panel labels the signal "Dolby Vision" from this flag, not from tf.
     int m_liveDovi = 0;
+    // The renderer has described its pipeline for THIS graph (the "pipeline:"
+    // field of the ML stats readout exists). Reset in Open(). The app's SDR
+    // policy uses it as the "the renderer has seen this stream" gate: only
+    // then can a source be declared SDR by the RENDERER's own reading, which
+    // is the one piece of knowledge that can rule DV out (2026-11-18).
+    bool m_livePiping = false;
+    // When the renderer first reported a received frame for THIS graph. The
+    // content class may only be declared SDR after the renderer has actually
+    // presented content for a while: a DV P8 title's pin says tf=0 and the
+    // renderer's FIRST pipeline read says tf=5/dovi=0 — the DV signal appears
+    // ~1.3 s later, with the first processed samples (measured 2026-11-18).
+    // Until then the app must stay silent (see GetUiStatusJson's contentClass).
+    ULONGLONG m_clsFirstFrameAt = 0;
     // The file's own ST 2086 (MaxCLL/MaxFALL / mastering max/min) as the
     // RENDERER read it from the decoded sample side data (its m_lastHdr10.hdr10)
     // — parsed from the pipeline dump's cll=/fall=/mmax=/mmin= tokens in

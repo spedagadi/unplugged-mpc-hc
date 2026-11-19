@@ -13,7 +13,8 @@
 // real state and move next to it.
 #include "MpcPlayer.h"
 #include "../filters/renderer/VideoRenderers/RenderersSettings.h"
-#include "../Subtitles/SubRendererSettings.h"
+// The subtitle stack is MPC-HC's reference version (no SubRendererSettings type);
+// it uses CSimpleTextSubtitle's own defaults. Nothing here needs the fork header.
 
 bool g_bExternalSubtitleTime = false;
 bool g_bExternalSubtitle = false;
@@ -36,10 +37,6 @@ CRenderersSettings& GetRenderersSettings()
     return s;
 }
 
-SubRendererSettings GetSubRendererSettings()
-{
-    return SubRendererSettings();
-}
 
 namespace VersionInfo
 {

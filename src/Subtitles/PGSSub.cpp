@@ -232,20 +232,6 @@ void CPGSSub::AllocSegment(size_t nSize)
     m_nSegSize = nSize;
 }
 
-HRESULT CPGSSub::GetPresentationSegmentTextureSize(REFERENCE_TIME rt, CSize& size) {
-    POSITION posPresentationSegment = FindPresentationSegment(rt);
-
-    if (posPresentationSegment) {
-        const auto& pPresentationSegment = m_pPresentationSegments.GetAt(posPresentationSegment);
-        if (pPresentationSegment->video_descriptor.nVideoWidth > 0) {
-            size.cx = pPresentationSegment->video_descriptor.nVideoWidth;
-            size.cy = pPresentationSegment->video_descriptor.nVideoHeight;
-            return S_OK;
-        }
-    }
-    return E_FAIL;
-}
-
 HRESULT CPGSSub::Render(SubPicDesc& spd, REFERENCE_TIME rt, RECT& bbox, bool bRemoveOldSegments)
 {
     CAutoLock cAutoLock(&m_csCritSec);
@@ -261,9 +247,7 @@ HRESULT CPGSSub::Render(SubPicDesc& spd, REFERENCE_TIME rt, RECT& bbox, bool bRe
     if (posPresentationSegment) {
         const auto& pPresentationSegment = m_pPresentationSegments.GetAt(posPresentationSegment);
 
-        if (m_eSourceMatrix == ColorConvTable::AUTO) {
-            m_eSourceMatrix = (pPresentationSegment->video_descriptor.nVideoWidth > 720) ? ColorConvTable::BT709 : ColorConvTable::BT601;
-        }
+        m_eSourceMatrix = ColorConvTable::NONE ? (pPresentationSegment->video_descriptor.nVideoWidth > 720) ? ColorConvTable::BT709 : ColorConvTable::BT601 : m_eSourceMatrix;
 
         TRACE_PGSSUB(_T("CPGSSub:Render Presentation segment %d --> %s - %s\n"), pPresentationSegment->composition_descriptor.nNumber,
                      ReftimeToString(pPresentationSegment->rtStart),
@@ -301,11 +285,6 @@ HRESULT CPGSSub::Render(SubPicDesc& spd, REFERENCE_TIME rt, RECT& bbox, bool bRe
 
 int CPGSSub::ParsePresentationSegment(REFERENCE_TIME rt, CGolombBuffer* pGBuffer)
 {
-    if (pGBuffer->RemainingSize() < 11) {
-        ASSERT(FALSE);
-        return 0;
-    }
-
     m_pCurrentPresentationSegment.Free();
     m_pCurrentPresentationSegment.Attach(DEBUG_NEW HDMV_PRESENTATION_SEGMENT());
 
@@ -320,11 +299,6 @@ int CPGSSub::ParsePresentationSegment(REFERENCE_TIME rt, CGolombBuffer* pGBuffer
 
     TRACE_PGSSUB(_T("CPGSSub::ParsePresentationSegment Size = %d, state = %#x, nObjectNumber = %d\n"), pGBuffer->GetSize(),
                  m_pCurrentPresentationSegment->composition_descriptor.bState, m_pCurrentPresentationSegment->objectCount);
-
-    if (pGBuffer->RemainingSize() < (m_pCurrentPresentationSegment->objectCount * 8)) {
-        ASSERT(FALSE);
-        return 0;
-    }
 
     for (int i = 0; i < m_pCurrentPresentationSegment->objectCount; i++) {
         std::unique_ptr<CompositionObject> pCompositionObject(DEBUG_NEW CompositionObject());
@@ -383,17 +357,13 @@ void CPGSSub::UpdateTimeStamp(REFERENCE_TIME rtStop)
 
 void CPGSSub::ParsePalette(CGolombBuffer* pGBuffer, size_t nSize)  // #497
 {
-    if ((nSize - 2) % sizeof(HDMV_PALETTE) != 0) {
-        ASSERT(FALSE);
-        return;
-    }
-
     BYTE palette_id = pGBuffer->ReadByte();
     HDMV_CLUT& CLUT = m_CLUTs[palette_id];
 
     CLUT.id = palette_id;
     CLUT.version_number = pGBuffer->ReadByte();
 
+    ASSERT((nSize - 2) % sizeof(HDMV_PALETTE) == 0);
     CLUT.size = WORD((nSize - 2) / sizeof(HDMV_PALETTE));
 
     for (WORD i = 0; i < CLUT.size; i++) {
@@ -408,9 +378,6 @@ void CPGSSub::ParsePalette(CGolombBuffer* pGBuffer, size_t nSize)  // #497
 
 void CPGSSub::ParseObject(CGolombBuffer* pGBuffer, size_t nUnitSize)   // #498
 {
-    if (nUnitSize <= 4) {
-        return;
-    }
     short object_id = pGBuffer->ReadShort();
     if (object_id < 0 || size_t(object_id) >= m_compositionObjects.size()) {
         ASSERT(FALSE); // This is not supposed to happen
@@ -423,10 +390,6 @@ void CPGSSub::ParseObject(CGolombBuffer* pGBuffer, size_t nUnitSize)   // #498
     BYTE m_sequence_desc = pGBuffer->ReadByte();
 
     if (m_sequence_desc & 0x80) {
-        if (nUnitSize <= 8) {
-            return;
-        }
-
         int object_data_length = (int)pGBuffer->BitRead(24);
 
         pObject.m_width = pGBuffer->ReadShort();
@@ -456,20 +419,7 @@ bool CPGSSub::ParseCompositionObject(CGolombBuffer* pGBuffer, const std::unique_
     pCompositionObject->m_horizontal_position = pGBuffer->ReadShort();
     pCompositionObject->m_vertical_position = pGBuffer->ReadShort();
 
-    if (pCompositionObject->m_horizontal_position < 0) {
-        TRACE(_T("PGS - negative horizontal position.\n"));
-        pCompositionObject->m_horizontal_position = 0;
-    }
-    if (pCompositionObject->m_vertical_position < 0) {
-        TRACE(_T("PGS - negative vertical position.\n"));
-        pCompositionObject->m_vertical_position = 0;
-    }
-
     if (pCompositionObject->m_object_cropped_flag) {
-        if (pGBuffer->RemainingSize() < 8) {
-            ASSERT(FALSE);
-            return false;
-        }
         pCompositionObject->m_cropping_horizontal_position = pGBuffer->ReadShort();
         pCompositionObject->m_cropping_vertical_position = pGBuffer->ReadShort();
         pCompositionObject->m_cropping_width = pGBuffer->ReadShort();
@@ -523,12 +473,6 @@ void CPGSSub::RemoveOldSegments(REFERENCE_TIME rt)
     }
 }
 
-STDMETHODIMP CPGSSub::GetRelativeTo(POSITION pos, RelativeTo& relativeTo)
-{
-    relativeTo = RelativeTo::BEST_FIT;
-    return S_OK;
-}
-
 CPGSSubFile::CPGSSubFile(CCritSec* pLock)
     : CPGSSub(pLock, _T("PGS External Subtitle"), 0)
     , m_bStopParsing(false)
@@ -552,35 +496,25 @@ bool CPGSSubFile::Open(CString fn, CString name /*= _T("")*/, CString videoName 
 {
     bool bOpened = false;
 
-    CString tmp;
-    CString guessed = Subtitle::GuessSubtitleName(fn, videoName, m_lcid, tmp, m_eHearingImpaired);
+    CString guessed = Subtitle::GuessSubtitleName(fn, videoName, m_lcid, m_eHearingImpaired);
     if (name.IsEmpty()) {
         m_name = guessed;
     } else {
         m_name = name;
     }
 
-    m_path = fn;
-
-    try {
-        CFile f;
-        if (f.Open(fn, CFile::modeRead | CFile::shareDenyWrite)) {
-            WORD wSyncCode = 0;
-            f.Read(&wSyncCode, sizeof(wSyncCode));
-            wSyncCode = _byteswap_ushort(wSyncCode);
-            if (wSyncCode == PGS_SYNC_CODE) {
-                m_parsingThread = std::thread([this, fn] { ParseFile(fn); });
-                bOpened = true;
-            }
+    CFile f;
+    if (f.Open(fn, CFile::modeRead | CFile::shareDenyWrite)) {
+        WORD wSyncCode = 0;
+        f.Read(&wSyncCode, sizeof(wSyncCode));
+        wSyncCode = _byteswap_ushort(wSyncCode);
+        if (wSyncCode == PGS_SYNC_CODE) {
+            m_parsingThread = std::thread([this, fn] { ParseFile(fn); });
+            bOpened = true;
         }
-    } catch (CFileException*) {
     }
 
     return bOpened;
-}
-
-CString CPGSSubFile::GetPath() {
-    return m_path;
 }
 
 void CPGSSubFile::ParseFile(CString fn)

@@ -74,18 +74,6 @@
     <ClCompile Include="ColorConvTable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="LibassContext.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="OpenTypeLangTags.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="FreeTypePathTools.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SubRendererSettings.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CCDecoder.h">
@@ -155,21 +143,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ColorConvTable.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="LibassContext.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="OpenTypeLangTags.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SubRendererSettings.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FreeTypePathTools.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="STSStyle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

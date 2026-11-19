@@ -23,13 +23,10 @@
 
 #include <afx.h>
 #include <atlcoll.h>
-#include <regex>
 
 #define MS2RT(t)        (10000i64 * (t))
 #define RT2MS(t)        ((t) / 10000)
 #define UNITS_FLOAT     (10000000.0)
-
-#define RT2SEC(x) (double(x) / 10000000.0)
 
 namespace Subtitle
 {
@@ -45,8 +42,7 @@ namespace Subtitle
         XSS,
         TXT,
         RT,
-        SUP,
-        VTT
+        SUP
     };
 
     enum HearingImpairedType {
@@ -68,7 +64,5 @@ namespace Subtitle
 
     void GetSubFileNames(CString fn, const CAtlArray<CString>& paths, CAtlArray<SubFile>& ret);
 
-    void GetLCIDAndLangName(CStringW subName, LCID& lcid, CString& langname, HearingImpairedType& hi, std::wregex re);
-
-    CString GuessSubtitleName(const CString& fn, CString videoName, LCID& lcid, CString& langname, HearingImpairedType& hi);
+    CString GuessSubtitleName(const CString& fn, CString videoName, LCID& lcid, HearingImpairedType& hi);
 };

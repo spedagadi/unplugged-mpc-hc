@@ -712,6 +712,11 @@ __declspec(dllexport) int s3_cmd(const char* jsonUtf8)
         const std::string on = JsonField(s, "on");
         return (int)g_player()->SetSubtitlesEnabled(on.empty() ? 1 : atoi(on.c_str()) != 0);
     }
+    if (a == "subscale") {
+        // {"a":"subscale","percent":N} - live subtitle size (100 = as authored).
+        const std::string pct = JsonField(s, "percent");
+        return (int)g_player()->SetSubtitleScale(pct.empty() ? 65 : atoi(pct.c_str()));
+    }
     if (a == "subtrack") {
         // {"a":"subtrack","index":N} — select the Nth subtitle stream, or -1 to clear.
         // Same shape as "track": the engine enables it on the splitter AND hands the

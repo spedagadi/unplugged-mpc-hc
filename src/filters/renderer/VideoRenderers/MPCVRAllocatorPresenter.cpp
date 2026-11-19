@@ -164,6 +164,14 @@ HRESULT CMPCVRAllocatorPresenter::RenderEx3(REFERENCE_TIME rtStart,
 {
 	CheckPointer(m_pSubPicQueue, E_UNEXPECTED);
 
+	// Mirror MPC-HC's madVR/DXR presenters: they call __super::SetPosition with the
+	// exact rects the renderer hands them. This engine has no MPC-HC frame, so the
+	// player never calls SetPosition; the subtitle allocator's video rect stayed
+	// empty and CRenderedTextSubtitle::Render bailed on !spd.vidrect.right, so every
+	// text track produced an empty subpicture (drew=0, 2026-11-18, UR-0005). These
+	// rects are not a guess: they are what this callback was called with.
+	__super::SetPosition(CRect(viewportRect), CRect(croppedVideoRect));
+
 	if (!g_bExternalSubtitleTime) {
 		if (g_bExternalSubtitle && g_dRate != 0.0) {
 			const REFERENCE_TIME sampleTime = rtStart - g_tSegmentStart;
@@ -187,11 +195,44 @@ HRESULT CMPCVRAllocatorPresenter::RenderEx3(REFERENCE_TIME rtStart,
 		++DSObjects::g_subRender11Drew;
 	}
 	DSObjects::g_subLastDrawHr = (long long)hrDraw;
-	// Queue-leg sample, every 50th callback (~2 s of video): what does the queue
-	// hold, around which time? depth=0 with an ACTIVE provider event means the
-	// worker caches nothing; a [rtStart..rtStop] window far from rtNow means a
-	// clock/time-base mismatch; a window covering rtNow with the draw still
-	// failing means the blit itself. One line, three hypotheses separated.
+	// Per-call branch witness. This MUST run at the same m_rtNow as the
+	// AlphaBltSubPic above: the old 50th-callback-only replay printed hit/geoHr
+	// from a callback up to ~2 s older than the lastHr beside it, which made
+	// "hit=0 while the provider says ACTIVE" look like a queue fault when it was
+	// only a sampling artefact (measured 2026-11-18, UR-0005).
+	{
+		CComPtr<ISubPic> probe;
+		const bool hit = m_pSubPicQueue->LookupSubPic(m_rtNow, false, probe);
+		DSObjects::g_subLookupHit = hit ? 1 : 0;
+		DSObjects::g_subGeoHr = 0x4005;   // E_FAIL sentinel: lookup missed, geo not reached
+		DSObjects::g_subPicW = DSObjects::g_subPicH = 0;
+		DSObjects::g_subDirtyW = DSObjects::g_subDirtyH = 0;
+		int branch = hit ? 1 : 0;
+		if (hit) {
+			SubPicDesc spd = {};
+			probe->GetDesc(spd);
+			RECT dr = {};
+			probe->GetDirtyRect(&dr);
+			DSObjects::g_subPicW     = spd.w;
+			DSObjects::g_subPicH     = spd.h;
+			DSObjects::g_subDirtyW   = dr.right - dr.left;
+			DSObjects::g_subDirtyH   = dr.bottom - dr.top;
+			const CRenderersSettings& r = GetRenderersSettings();
+			CRect rcSource, rcDest;
+			DSObjects::g_subGeoHr = (long long)probe->GetSourceAndDest(
+				CRect(viewportRect), CRect(croppedVideoRect), &rcSource, &rcDest,
+				videoStretchFactor, xOffsetInPixels, r.subPicVerticalShift);
+			if (SUCCEEDED((HRESULT)DSObjects::g_subGeoHr)) {
+				branch = FAILED(hrDraw) ? 2 : 3;
+			}
+		}
+		DSObjects::g_subBranch = branch;
+	}
+	// Queue sample, every 50th callback (~2 s of video): what does the queue hold,
+	// around which time? depth=0 with an ACTIVE provider event means the worker
+	// caches nothing; a [rtStart..rtStop] window far from rtNow means a clock/time-
+	// base mismatch; a window covering rtNow with the draw still failing means the
+	// blit itself.
 	if ((DSObjects::g_subRender11Calls % 50) == 0) {
 		int n = 0;
 		REFERENCE_TIME rn = 0, rs = 0, re = 0;
@@ -200,22 +241,6 @@ HRESULT CMPCVRAllocatorPresenter::RenderEx3(REFERENCE_TIME rtStart,
 			DSObjects::g_subQueueRtNow    = rn;
 			DSObjects::g_subQueueRtStart  = rs;
 			DSObjects::g_subQueueRtStop   = re;
-		}
-		// Replay the first two branches of AlphaBltSubPic exactly as it runs them
-		// (same m_rtNow, same bAdviseBlocking, same rects): hit=0 -> the queue
-		// refuses the time despite its own cached window (worker/clock fault);
-		// hit=1 + geoHr failing -> geometry; hit=1 + geoHr=0 + lastHr=E_FAIL ->
-		// the AlphaBlt itself (target/device on the DX11 path).
-		CComPtr<ISubPic> probe;
-		const bool hit = m_pSubPicQueue->LookupSubPic(m_rtNow, !IsRendering(), probe);
-		DSObjects::g_subLookupHit = hit ? 1 : 0;
-		DSObjects::g_subGeoHr = 0x4005;   // E_FAIL sentinel: not reached
-		if (hit) {
-			const CRenderersSettings& r = GetRenderersSettings();
-			CRect rcSource, rcDest;
-			DSObjects::g_subGeoHr = (long long)probe->GetSourceAndDest(
-				CRect(viewportRect), CRect(croppedVideoRect), &rcSource, &rcDest,
-				videoStretchFactor, xOffsetInPixels, r.subPicVerticalShift);
 		}
 	}
 	return hrDraw;
@@ -288,6 +313,11 @@ namespace DSObjects {
 	volatile long long g_subLastDrawHr      = 0;
 	volatile long long g_subLookupHit       = 0;
 	volatile long long g_subGeoHr           = 0;
+	volatile long long g_subBranch          = 0;
+	volatile long long g_subPicW            = 0;
+	volatile long long g_subPicH            = 0;
+	volatile long long g_subDirtyW          = 0;
+	volatile long long g_subDirtyH          = 0;
 }
 
 HRESULT CMPCVRAllocatorPresenter::Render11(
@@ -428,6 +458,31 @@ STDMETHODIMP_(void) CMPCVRAllocatorPresenter::SetPosition(RECT w, RECT v)
     }
 
 	__super::SetPosition(w, v);
+}
+
+STDMETHODIMP_(void) CMPCVRAllocatorPresenter::SetSubPicProvider(ISubPicProvider* pSubPicProvider)
+{
+    __super::SetSubPicProvider(pSubPicProvider);
+    // The engine has no MPC-HC frame and never calls SetPosition, so the base's
+    // SetCurVidRect(m_videoRect) pushed an EMPTY rect into the allocator. Every
+    // text subpicture then failed at CRenderedTextSubtitle::Render's
+    // `if (!spd.vidrect.right) return S_FALSE;`, so the queue handed the renderer
+    // an empty subpic (dirty=0x0) and AlphaBltSubPic returned E_FAIL: drew=0 for
+    // every text track (measured 2026-11-18, UR-0005). With no position known,
+    // the correct rect is the whole subtitle canvas - the allocator's own default
+    // before the base overwrote it. If a position ever IS set, keep it.
+    if (m_pAllocator) {
+        if (!m_videoRect.IsRectEmpty()) {
+            m_pAllocator->SetCurSize(m_windowRect.Size());
+            m_pAllocator->SetCurVidRect(m_videoRect);
+        } else if (m_curSubtitleTextureSize.cx > 0 && m_curSubtitleTextureSize.cy > 0) {
+            m_pAllocator->SetCurSize(m_curSubtitleTextureSize);
+            m_pAllocator->SetCurVidRect(CRect(0, 0, m_curSubtitleTextureSize.cx, m_curSubtitleTextureSize.cy));
+        }
+        if (m_pSubPicQueue) {
+            m_pSubPicQueue->Invalidate();   // drop any subpic allocated with the empty rect
+        }
+    }
 }
 
 // ISubPicAllocatorPresenter

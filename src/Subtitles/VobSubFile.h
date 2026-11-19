@@ -105,7 +105,6 @@ public:
 
 protected:
     CString m_title;
-    CString m_path;
 
     void TrimExtension(CString& fn);
     bool ReadIdx(CString fn, int& ver), ReadSub(CString fn), ReadRar(CString fn), ReadIfo(CString fn);
@@ -132,7 +131,6 @@ public:
     virtual ~CVobSubFile();
 
     bool Copy(CVobSubFile& vsf);
-    CString GetPath();
 
     enum SubFormat {
         None,

@@ -1,6 +1,6 @@
 # Unplugged Settings Guide
 
-For **Unplugged 2.2.0**. Covers every control visible in the settings panel:
+For **Unplugged 2.3.0**. Covers every control visible in the settings panel:
 what it does, its full range, and what the picture does when you move it.
 
 ## Playback keys
@@ -23,7 +23,7 @@ never interferes with anything else running on the machine.
 | M | mute |
 | N | NLS on / off (same as the transport-bar button) |
 | S | stop back to the library |
-| Ctrl+S | save the current frame as PNG (paused only) |
+| Ctrl+S | save the current frame as PNG — file playback requires a paused picture; in **Video Processor** it saves the live frame on screen |
 | Esc | close settings → stop back to the library → recover the chrome, one layer per press |
 | Alt+F4 | asks before closing |
 
@@ -73,8 +73,14 @@ never interferes with anything else running on the machine.
   dragged on the bar; hover the bar and use the **mouse wheel** for one step of
   that row (1 on whole-number rows; the row's own increment on decimals — 0.01
   on most, 0.05 on NLS Curve, 0.001 on Display black) — this is how you land on
-  a measured value like 174 nits. With the panel focused, **←/→** move the row
-  focus; **↑** stays the chrome toggle everywhere, including here.
+  a measured value like 174 nits.
+- **Keyboard only:** **Tab / Shift+Tab** move the row focus; **←/→ step the
+  focused slider** by one increment (fine enough for 0.001 rows); **Enter**,
+  **F2**, or simply **typing a digit/`.`/`-`**, opens an **exact-value card** —
+  type the number and press Enter (Esc cancels). The value is clamped to the
+  row's range and rounded to its step. F2 keeps its mode-switch meaning when no
+  slider is focused, and a double-click on a slider opens the same card.
+  **↑** stays the chrome toggle everywhere, including here.
 - Everything applies **live** to the running picture and is saved immediately —
   including **Convert to SDR** and the debug passthroughs, which reselect the
   converter/shader in place rather than rebuilding the pipeline.
@@ -134,7 +140,7 @@ setups against the same paused frame.
   and a preset never drags the input along with it.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
   **Display black (nits)**, **Convert to SDR**, **Output gamut**,
-  **Display transfer** and the **DBLE compensation** rows describe the screen
+  **Display transfer** and the **ClipGuard** rows describe the screen
   you calibrated, not a look, so they are never part of a preset. They can be
   changed at any time — on `Default` or on any preset — the change applies to
   every preset, and it neither marks the preset dirty nor shows the popup.
@@ -147,13 +153,15 @@ setups against the same paused frame.
 
 ### What a preset does *not* contain
 
-Twelve rows describe the **display you calibrated, not your taste**, so they
+Twenty-one rows describe the **display you calibrated, not your taste**, so they
 stay with the machine and switching presets never changes them — and, as above,
 they are always editable, even on `Default`:
 
 > **SDR display nits · Static nits (max) · Display black (nits) ·
-> Convert to SDR · Output gamut · Display transfer · Enable DBLE ·
-> Strength · Trigger (picture %) · Highlight start · View · OSD**
+> Convert to SDR · Output gamut · Display transfer · Enable ClipGuard ·
+> Strength · Fix shape · Fix starts (%) · Full effect (%) · Highlight start ·
+> Color protect · Text skip (%) · Hot spot · Hot spot below (%) ·
+> Graded spot · Grid · Look-ahead · View · OSD**
 
 Also not part of a preset: the **Playback** and **Source** tabs (audio mode,
 input device, setup), the two UI-only rows on the System tab (context banner,
@@ -244,43 +252,106 @@ adjustment surface, and no Curve Settings section appears at all.
 | **GT7 shoulder reach** | 0.02…0.90 | 0.25 | Highlight headroom: **lower = longer shoulder**, more brightness band survives before detail merges to white; higher punches mid-highs but clips sooner. The first dial to turn down if explosions clip. |
 | **GT7 debug view** | `Off` + 4 greyscale modes | Off | Diagnostic overlays of the curve's internals. Leave Off for watching. |
 
-### DBLE Compensation
+### ClipGuard
 
-For projectors with **dynamic black / laser dimming (DBLE)**. The projector
-decides its own brightness from the scene; in a dark scene it dims the laser,
-and the brightest highlights are pushed into clipping. These rows roll the top
-of the range down **in dark scenes only**, in the display code you selected
-under **Display transfer**, so the projector's gain has somewhere to go. The
-trigger is measured from the finished picture, so the feature is independent of
-the ML grade: it works with the grade Off, Auto or Manual.
+> **ClipGuard ships separately.** The feature is developed and packaged by its
+> own author; Unplugged no longer exposes the tuning rows in the rail. Install
+> the author's ClipGuard package, then use **HDR → Tone Mapping → ClipGuard →
+> Configure**: it opens the `clipguard` folder next to the Unplugged executable,
+> where the package's presets live. The settings below are documented for the
+> package's own configuration; the values remain honoured by the engine.
+> ClipGuard stays off until it is enabled by the package.
+
+For projectors with **dynamic black / laser dimming**. The projector decides its
+own brightness from the scene; in a dark scene it dims the laser, and the
+brightest highlights are pushed into clipping. ClipGuard lowers highlights in
+dark pictures first, so after the projector's gain they land below clipping.
+It is measured from the finished picture, so it is independent of the ML grade
+and works with the grade Off, Auto or Manual. SDR output only.
 
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
-| **Enable DBLE** | On / Off | Off | Turn compensation on only when the projector's dynamic dimming is on. With it off the picture is identical to before this feature. SDR output only; HDR passthrough is untouched. |
-| **Strength** | 0…1 | 1.0 | How far the highlights are pulled. 1.0 puts peak white at 50%; start at 0.5 if 1.0 looks dull on your projector. |
-| **Trigger (picture %)** | 0.5…30 | 5.0 | The **measured brightness of the finished picture**, in percent of SDR white, below which the fix acts. Full effect below a quarter of this value; none at the trigger. This is the contributed DBLEFix trigger: it is measured from the picture itself, so no scene estimate or model is involved. Raise it if DBLE clips scenes that are not very dark; lower it if ordinary dim scenes lose their highlights. |
-| **Highlight start** | 0.20…0.95 | 0.30 | The display-code level where the pull begins; below it the picture is untouched. It is a code value in the selected **Display transfer**, so it follows Gamma 2.2, Gamma 2.4, BT.1886, sRGB or Gamma 2.0. |
-| **View** | `Normal` / `Clipping test` / `Split screen` | Normal | Diagnostic views of the fix. **Clipping test** tints pixels: green = above the knee and fixable, red = already clipped in the video, blue = actually lowered by the fix. **Split screen** puts the unfixed picture on the left and the fixed picture on the right with a divider. They apply only while DBLE is active, so a saved test view cannot tint the picture when the fix is off. Use them to see what the fix does; the test views change the picture, so do not judge the final look from them. |
-| **OSD** | On / Off | Off | Draws the contributed DBLEFix overlay over the picture: the six setting rows (Fix, Strength, Trigger, Highlight start, View, Overlay), the measured status line (`Picture … Fix … White … Scene …`), and the Clipping-test legend. It is drawn after the picture, so the fix never measures it. Leave it Off for normal viewing. |
+| **Enable ClipGuard** | On / Off | Off | Turn compensation on only when the projector's dynamic dimming is on. With it off the picture is unchanged. |
+| **Strength** | 0…1 | 0.35 | How far highlights are pulled. 1.0 puts peak white at 50%; more is not always better because the projector's laser dimming reacts to the dimmer picture and can raise its own gain. Tune on a dark scene with a white shirt or lamp. |
+| **Fix shape** | `Normal` / `Anchor` | Anchor | **Normal** squeezes every pixel above Highlight start. **Anchor** leaves the peak of large bright areas (windows, lit walls) so the projector's gain does not pump, and cuts gently just below them, keeping local ratios and detail. Small lights are left to Hot spot. |
+| **Fix starts (%)** | 1…50 | 10 | Measured picture brightness (percent of SDR white, shown as **Picture** on the overlay) below which the fix begins. Brighter pictures are untouched. |
+| **Full effect (%)** | 0.5…49.5 | 3 | At or below this picture brightness the fix is at full strength; between the two it fades in. Always below Fix starts. |
+| **Highlight start** | 0.20…0.95 | 0.40 | The picture-code level where the pull begins; everything below is untouched. |
+| **Color protect** | 0…1 | 0.90 | 0 judges a pixel by its strongest channel (bright red/blue is pulled like white); 1 judges by brightness, so saturated colours are pulled far less. Whites and pale colours are unchanged either way. |
+| **Text skip (%)** | 0…100 | 25 | When more than this share of a frame's highlights is bright-on-black with no glow (titles, credits, stars), the fix is held off for that frame. 0 = off. |
+| **Hot spot** | 0…1 | 0.60 | In a dark frame, small intense lights (headlamp, flashlight, streetlight) get a darker exposure in a soft patch; the rest of the picture is untouched. 0.50 ≈ 1.5 stops, 1.00 = 3 stops. 0 = off. |
+| **Hot spot below (%)** | 0…20 | 3 | Hot spot only in pictures darker than this. Full up to two-thirds of it, fading to none at it. 0 = no hot spots. |
+| **Graded spot** | 0…1 | 0.50 | Gentle local dimming of small graded highlights that are not lights (a lit cheek, a shirt shoulder) in the same dark scenes. Only their highlights are pulled; everything below Highlight start is untouched. 0 = off. |
+| **Grid** | `Normal` / `Fine` | Fine | Measuring grid. **Fine** (256×144) fits patches more tightly and finds small lights better; **Normal** (128×72) costs less. |
+| **Look-ahead** | `Off` / `2` / `4` / `6` frames | Off | Holds the picture back so the fix lands on the frame it was measured on. It delays video relative to audio: add the same delay on the receiver, or leave it Off. **Forced Off in live capture** (Video Processor mode), where there is no audio delay path. |
+| **View** | `Normal` / `Fix areas` / `Split screen` / `Side by side` | Normal | Diagnostic views. **Fix areas** tints lowered pixels yellow (3–10 %), red (10–25 %) and blue (25 %+), with hot-spot rings; **Split screen** shows unfixed left / fixed right; **Side by side** shows the whole picture twice at half size. They change the picture, so do not judge the final look from them. |
+| **OSD** | On / Off | Off | Draws the ClipGuard panel at the bottom left of the visible picture: the settings, keys and readout (Picture, Fix, White, Peak, spots, ADL before/after, GPU/CPU cost). It is drawn after the picture and is never measured by the fix. |
 
-The overlay's shortcuts work over the video, without changing focus:
+The overlay shortcuts work over the video, without changing focus:
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Alt+0` | Show / hide the overlay |
-| `Ctrl+Alt+D` | Fix On / Off |
-| `Ctrl+Alt+↑` / `Ctrl+Alt+↓` | Select the overlay row (the `>` marker) |
-| `Ctrl+Alt+←` / `Ctrl+Alt+→` | Change the selected row |
+| `F7` / `Ctrl+Alt+0` | Show / hide the overlay |
+| `F8` / `Ctrl+Alt+D` | ClipGuard On / Off |
+| `F9` | Fix areas view On / Off |
+| `F10` | Hot spot Off / back to its last value |
+| `F11` | Save the last 30 s of readout plus a screenshot to `%LOCALAPPDATA%\Unplugged\logs\clipguard` |
+| `↑` / `↓` or `Ctrl+Alt+↑/↓` | Select an overlay row |
+| `←` / `→` or `Ctrl+Alt+←/→` | Change the selected row |
 
-They edit the same settings as the rows above, so the panel and the overlay
-always agree. The overlay hides 8 seconds after the last shortcut unless its
-**Overlay** row is set to `Always`; when it is shown from the OSD row here, it
-starts as `Always`.
+Plain arrows belong to ClipGuard only while the overlay is showing; when it
+hides they return to seeking. The overlay hides 8 seconds after the last
+shortcut unless its **Overlay** row is set to `Always`.
 
-The amount is smoothed within a shot and snapped when the measured picture
-brightness jumps by 2× or more (a scene cut), so it does not pump. It runs after
-the display transfer and before the calibration LUT, so a 3D LUT still corrects
-the rolled-off signal.
+ClipGuard runs on the finished SDR picture, before the final display transfer
+and calibration LUT. Its Highlight start is therefore picture code, not the
+selected **Display transfer** target code.
+
+Upgrading from 2.2.0 migrates the old DBLE settings: if DBLE was On, ClipGuard
+starts On with the old Strength, Trigger (as Fix starts), quarter trigger (as
+Full effect) and Highlight start, using Normal shape and no Hot spot/Graded
+spot/Text skip/look-ahead. If DBLE was Off, ClipGuard starts Off.
+
+The overlay and its **View** are session-only: they always start **Off** and
+**Normal** at launch, even if they were left on last time. Press `F7` to bring
+the overlay up. This keeps a diagnostic view from tinting the film after a
+restart. The **Overlay** row inside the panel is `Auto-hide` or `Always`; the
+separate **OSD** row in this panel controls whether the overlay is shown at all.
+
+### ClipGuard recipes
+
+Starting points from the contributor’s testing on an XGIMI laser projector with
+dynamic dimming on. Start from the defaults, change only what the recipe lists,
+then fine-tune one setting at a time on a paused frame with `F8`.
+
+| Recipe | Change from defaults | Why |
+| --- | --- | --- |
+| **Balanced** (start here) | Nothing: Strength 0.35, Anchor, Hot spot 0.60, Graded spot 0.50, Look-ahead Off | Tested across night streets, lamp-lit rooms, windows, faces and headlights. |
+| **Brisk action** (fast cuts, explosions, muzzle flashes, headlights) | Look-ahead 4–6, Hot spot 0.70–0.80 | Look-ahead fades a new light’s dimming in before it appears; tune Hot spot until headlights stop blooming. Add the same audio delay on the receiver. |
+| **Bright punchy picture** | Strength 0.20–0.25, Highlight start 0.50, Graded spot 0.25 | Keeps the picture bright and touches only the very top of the highlights. Hot spot still catches the worst lights. |
+| **Maximum highlight detail** (big windows, snow at night, white curtains) | Strength 0.50–0.70, keep Anchor | Anchor keeps large bright areas at their peak, so the projector does not push back, and more Strength can be used without harming curtain or snow detail. |
+| **Dark, moody films** (night interiors, lamps, candles) | Hot spot 0.70, Hot spot below 4.0 % | Gives lamps and candles a little more room without dimming the scene. |
+| **Faces and white clothing clip** | Graded spot 0.75–1.00, Color protect stays 0.90 | Gently lowers lit cheeks, foreheads and shirts in dark scenes, with no dark patch. |
+| **Neon / tail lights / coloured lights clip** | Color protect 0.60–0.75 | Lets saturated lights be pulled down more. |
+| **Titles, credits, space scenes look dimmed** | Text skip 15 % | Skips the fix on more text-on-black frames. |
+| **No audio delay possible** | Look-ahead Off or 2 | Off means no picture delay; a new light may show a brief jump before its dimming catches up. |
+| **Slow PC** | Grid Normal, Look-ahead 2 | Less measuring work per frame. |
+
+### ClipGuard tips
+
+- **Too much Strength adds clipping.** The projector’s laser dimming reacts to
+  the picture it receives: dim the highlights a lot and it raises its own gain,
+  pushing them back into clipping. Use the lowest Strength that works and let
+  Hot spot and Anchor do the rest.
+- **Small areas can be dimmed hard; large ones cannot.** Small lights barely
+  move the projector’s gain, which is why Hot spot can dim them strongly.
+  Large bright areas drive the gain, which is why Anchor leaves their peak
+  alone.
+- **Test on dark scenes.** Above Fix starts the fix does nothing, so daylight
+  scenes look the same. Use night scenes with a lamp, a window or a white shirt.
+- **One setting at a time, paused, flipping F8.** Judge the result on the
+  projector, not in a screenshot: the screenshot shows the signal, but the
+  clipping happens inside the projector.
 
 ### Display Target
 
@@ -289,6 +360,7 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
+| **10-bit SDR output** | On/Off | Off | For a 10-bit picture **without** HDR. When On, the app turns Windows' wide-colour mode (WCG) off **when it starts** and leaves it off until Unplugged closes or restarts, so the whole session — library, playback and live capture — runs the neutral SDR path with no OS wide-gamut mapping on top of the renderer's own colour work. It also checks the display link: if Windows reports an 8-bit link it tells you where to set **Output colour depth = 10 bpc** (NVIDIA Control Panel → Display → Change resolution; the AMD/Intel equivalents are named too). The app cannot change the link depth itself — Windows gives applications no API for it — so this row is worth turning on only after the driver is set. **OUTPUT DEPTH** in the Info panel shows the result: `10-bit RGB SDR` is the target state; `10-bit RGB WCG` means the row is Off and Windows' wide-colour mode is active. Expect one brief display resync when Unplugged starts and another when it closes. |
 | **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
@@ -417,12 +489,20 @@ the rest of the frame is graded.
 | **Upscaling** | `Lanczos3` / `Jinc2` | Jinc2 | The enlargement filter for smaller-than-display sources. Jinc2 is the sharper reconstruction (the default, best for SD/HD onto 4K); Lanczos3 is a touch calmer, with less ringing on hard edges and grain. On noisy material, sharper is not better. |
 | **Downscaling** | `Lanczos` / `BicubicSharp` | Lanczos | Shrinking a source to fit. Lanczos keeps detail on fine patterns; BicubicSharp is a touch softer and calmer on grain. Matters most for 4K→1080p panels. |
 
+### Display
+
+| Setting | Choices / range | Default | What it does |
+| --- | --- | --- | --- |
+| **Match display refresh** | On/Off | On | Switches the display to the content's rate for the duration of playback and puts the desktop rate back when it ends. Applies in **both** modes: in Media Player the title's frame rate is probed before the graph is built; in Video Processor the **live signal's** rate is read from the running capture and applied once it has stayed the same for about a second. Only the refresh rate changes, never the resolution — if the display has no mode at that rate (many 4K displays expose only 59/60 Hz) the picture stays where it is, and the log records the request and the outcome. Live capture keeps the last matched rate across a source re-lock, so a disc changing from a 60 Hz menu to a 24 Hz film does not bounce the display through the desktop rate; the desktop mode is restored on exit, close and relaunch. Each change blanks the display briefly while the panel or projector resyncs.
+
+Press **Info** to read **OUTPUT DEPTH** next to DISPLAY REFRESH: it states the depth the display link is actually running at — `10-bit RGB WCG`, `8-bit RGB SDR`, `10-bit YCbCr 4:2:2 SDR` — which is what the renderer uses to decide whether it can present 10-bit. It reports the **link**, not the source: a 10-bit title on an 8-bit display path still reads 8-bit here. 10-bit SDR output (the "deep colour" a 4K panel or projector can accept without HDR) is enabled by the GPU driver's **Output colour depth** setting (e.g. NVIDIA Control Panel → Change resolution → Output colour depth = 10 bpc), optionally alongside Windows' wide-colour mode. The app reports that state but cannot set the link depth itself — Windows gives applications no API for it. |
+
 ### Geometry
 
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
 | **Fit mode** | `Source` / `Fixed aspect` / `Fill screen` | Source | How the picture is fitted to the window. Source respects the video's own aspect; Fixed aspect uses the **Fixed aspect** value; Fill screen stretches to the window and can remove black bars. |
-| **Fixed aspect** | 1.00 – 3.00 | 1.78 | The display aspect used in Fixed aspect mode. 1.78 = 16:9, 2.39 = scope. For a 2.35 screen use the screen's measured ratio. |
+| **Fixed aspect** | 1.00 – 3.00 | 1.78 | The display aspect used in Fixed aspect mode. The values are rounded: 1.78 is **not exactly** 16:9 (that is 1.7778, which the 0.01 step cannot express), so on a 3840×2160 display Fixed aspect 1.78 fits to 3840×2157. For a true 1:1 picture on a display that matches the source, use **Source** mode. For a 2.35 screen use the screen's measured ratio. |
 | **Zoom** | 50 – 200 % | 100 % | Scales the fitted picture. Above 100 % crops the overflow; use with Pan. 100 % is the neutral fit. |
 | **Pan X** | -100 – 100 % | 0 % | Moves a zoomed picture horizontally across its overflow. Has no effect while the picture fits inside the window. |
 | **Pan Y** | -100 – 100 % | 0 % | Moves a zoomed picture vertically across its overflow. Has no effect while the picture fits inside the window. |
@@ -447,7 +527,13 @@ spot.
 | **Post NLS X-Crop** | 0 – 45 % | 0 % | Percentage of the **screen width** cut after the NLS pass (10 % removes 5 % from each side), with the remainder stretched to fill. It crops the whole frame **including the black bars first**: use it to consume bars left by a partial **Bars removed**; only once the crop passes the bar width does it start cutting picture. |
 | **Post NLS Y-Crop** | 0 – 45 % | 0 % | Same for the screen height. This is the "remove the remaining letterbox" dial: with Bars removed below 100, raise Y-Crop until the top/bottom bars disappear, then stop; raising it further cuts into the picture (the first thing to go is heads). On a scope screen the same logic applies to X-Crop and pillarbox bars. |
 | **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small) and never crops, so it never caps. **Crop** is the zero-distortion baseline: it grows with **Bars removed** and covers with geometry, so at 0 % it is the plain fit rect and at 100 % it fills by cropping. **Auto** does the same but spends **Max distortion** on warping before cropping. **Off** letterboxes at the picture's own aspect. |
-| **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. |
+| **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. **Ignored while the Aspect rule is On** — the rule needs the live band. |
+| **Aspect rule** | On/Off | Off | Switches the NLS values above per **detected picture aspect**, so one tuning can serve a library of mixed formats. Three windows: **Native** (aspect ≤ Native max) bypasses NLS entirely — bars 0, crops 0 — so 16:9 and IMAX sections are never zoomed; **Small bars** (between the bounds) uses **Small-bar removal** with crops 0; **Scope** (≥ Scope min) uses your own Bars removed / Post-NLS crops as tuned. The detected aspect is shown in the Info panel, and the switch needs about a second of stable detection (a dark frame holds the current window). |
+| **Native max aspect** | 1.50 – 2.10 | 1.90 | Upper bound of the Native window. Content at or below it runs with NLS bypassed. Covers 16:9 (1.78) and 1.85 flat. |
+| **Scope min aspect** | 2.00 – 2.60 | 2.15 | Lower bound of the Scope window. Content at or above it uses your own NLS tuning. 2.00:1 falls between the bounds and gets the Small-bars window. |
+| **Small-bar removal** | 0 – 100 % | 100 % | Bars removed for content inside the Small-bars window (e.g. 2.00:1). Post-NLS crops are forced to 0 there, so a crop tuned for scope cannot over-zoom a narrower film. |
+
+| **SDR signal: BT.2020** | On/Off | Off | Experimental: declares the SDR output as **BT.2020 SDR** (gamma 2.2) instead of BT.709, so a projector or monitor that watches the HDMI colourimetry flag can switch to its wide-gamut mode. The picture must already be in BT.2020 — set **Output gamut = BT.2020** first, otherwise colours will be wrong. It also switches Windows' wide-colour mode (WCG) on while active. Whether the display actually switches is display-dependent; many only auto-switch on HDR metadata. Verify on the display's own signal-info screen. |
 
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does. With the rail up, the picture is the same screen-aspect composition scaled into the visible area, so settings can be judged without waiting for the chrome to hide.
 
@@ -458,7 +544,7 @@ While tuning, the Info panel's **Warp H / V**, **Geom crop** and **Post-NLS X/Y-
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
 | **Show statistics** | On/Off | Off | The renderer's on-screen performance overlay — frame render intervals, dropped frames, GPU figures. What to turn on when asking "is it smooth". |
-| **Save frame as PNG** | button | — | Captures the exact frame the renderer drew (not a screen grab: no overlays, no desktop compositing, no colour shift from screen capture) and lets you file it as lossless PNG. The right tool for showing someone a picture question. |
+| **Save frame as PNG** | button | — | Captures the exact frame the renderer drew (not a screen grab: no overlays, no desktop compositing, no colour shift from screen capture) and lets you file it as lossless PNG. When the output chain is 10-bit (`OUTPUT DEPTH` reads 10-bit), the saved PNG is **16-bit per channel**, preserving the 10-bit frame; with an 8-bit chain it is 8-bit. **Ctrl+S** does the same without the dialog (in Video Processor it saves the live frame). |
 
 ### Display Calibration
 
@@ -546,9 +632,10 @@ everything else at defaults for a week before tuning taste controls.
 Otherwise leave both on their defaults (BT.709 / Follow source) and let the
 projector's own 709/2.2 mode do the work.
 
-**Highlights clip only in dark scenes (laser dimming).** Enable **DBLE**, keep
-**Trigger** at 5.0 % and start at **Strength** 0.5; raise Trigger only if
-scenes that are not dark also clip. Turn on **OSD** while tuning so you can see
+**Highlights clip only in dark scenes (laser dimming).** Enable **ClipGuard**,
+keep **Fix starts** at 10 % and **Full effect** at 3 %, and start with
+**Strength** 0.35 and **Fix shape** Anchor; add **Hot spot** for small lights
+and **Graded spot** for lit faces. Turn on **OSD** while tuning so you can see
 the measured picture brightness and the applied fix. It works with the grade Off.
 
 ---
@@ -565,7 +652,8 @@ the measured picture brightness and the applied fix. It works with the grade Off
 - **Display transfer** applies to SDR as well as HDR→SDR. A calibration LUT is
   only valid for the transfer it was authored at; re-fit it if you change the
   transfer.
-- **DBLE compensation** is an SDR-output feature; HDR passthrough is untouched.
+- **ClipGuard** is an SDR-output feature; HDR passthrough is untouched. Its
+  look-ahead is forced Off in live capture.
 - P3-tagged SDR files are not detectable as P3 by Windows; the source gamut
   shown is BT.601, BT.709 or BT.2020.
 - Super Resolution is not available for HDR or 10-bit sources; it is a

@@ -586,6 +586,12 @@ HRESULT MpcPlayer::Open(std::wstring_view source)
     std::lock_guard<std::recursive_mutex> lk(m_graphMtx);
 
     m_liveReady = false;   // live cache must not touch the renderer mid-graph-op
+    // Renderer-derived classification must never leak across graphs: a DV title
+    // followed by an SDR one kept dovi=1 for ever because RefreshLive only ever
+    // assigns when the token is PRESENT (2026-11-18).
+    m_liveDovi = 0; m_liveRenderTf = 0; m_liveRenderPrim = 0;
+    m_liveMdrCll = 0; m_liveMdrFall = 0; m_liveMdrMmax = 0; m_liveMdrMmin = 0;
+    m_livePiping = false; m_clsFirstFrameAt = 0;
     ClearChapters();       // stale marks must never survive into a new source
     if (source.empty()) return E_INVALIDARG;
 
@@ -2614,6 +2620,19 @@ HRESULT MpcPlayer::ConfigureRendererWindow()
     if (CComQIPtr<IExFilterConfig> pCfg = renderer_) {
         pCfg->Flt_SetBool("lessRedraws", true);
         pCfg->Flt_SetBool("d3dFullscreenControl", true);
+        // Captures (GetCurrentImage -> GetDisplayedImage) keep the back buffer's
+        // 48-bit RGB when the swap chain is R10G10B10A2. Without this the grab is
+        // converted to 8-bit in the renderer and a 10-bit frame cannot be proven
+        // from a capture (2026-11-18). It only affects the grab path.
+        // UNPLUGGED_DEEP_CAPTURE=0 forces the 32-bit path: the instrument for an
+        // equal-depth A/B (10-bit render captured at 32-bit vs 8-bit render captured
+        // at 32-bit). The 10->8 conversion there truncates (v10 >> 2), a <1 code bias.
+        bool deepCapture = true;
+        { wchar_t e[16] = {};
+          if (::GetEnvironmentVariableW(L"UNPLUGGED_DEEP_CAPTURE", e, 16) && e[0] == L'0') deepCapture = false; }
+        const HRESULT hrDeep = pCfg->Flt_SetBool("allowDeepColorBitmaps", deepCapture);
+        if (FAILED(hrDeep))
+            Log("[ENGINE] allowDeepColorBitmaps FAILED hr=0x%08X", (unsigned)hrDeep);
     }
     return S_OK;
 }
@@ -2899,6 +2918,9 @@ bool HoldBackNegotiationFields(Settings_t& dst, const Settings_t& live)
     hold(dst.bHdrLocalToneMapping,     live.bHdrLocalToneMapping);
     hold(dst.iHdrToggleDisplay,        live.iHdrToggleDisplay);
     hold(dst.bHdrPassthrough,          live.bHdrPassthrough);
+    // SDR BT.2020 declares the SWAP CHAIN colour space — a rebuild is the only
+    // way it takes effect (the swap chain is created in InitSwapChain).
+    hold(dst.bSdrBt2020,               live.bSdrBt2020);
     // Configure() -> changeVP (video-processor re-init)
     hold(dst.bHdrPreferDoVi,           live.bHdrPreferDoVi);
     hold(dst.bVPScaling,               live.bVPScaling);
@@ -2933,18 +2955,28 @@ void ApplyHdrToSettings(const MpcPlayer::HdrSettings& h, Settings_t& s)
     s.fHdrDisplayMinNits = h.displayMinNits;
     s.iOutputGamut = h.outputGamut;
     s.iDisplayTransfer = h.displayTransfer;
-    s.bDbleEnabled = h.dbleEnabled;
-    s.fDbleStrength = h.dbleStrength;
-    s.fDbleTriggerPct = h.dbleTriggerPct;
-    s.fDbleKnee = h.dbleKnee;
-    s.iDbleView = h.dbleView;
-    s.bDbleOsd = h.dbleOsd;
-    s.bDbleOsdPinned = h.dbleOsdPinned;
-    s.iDbleOsdSelected = h.dbleOsdSelected;
-    s.iDbleOsdX = h.dbleOsdX;
-    s.iDbleOsdY = h.dbleOsdY;
-    s.iDbleOsdW = h.dbleOsdW;
-    s.iDbleOsdH = h.dbleOsdH;
+    s.clipGuard.enabled = h.cgEnabled;
+    s.clipGuard.strength = h.cgStrength;
+    s.clipGuard.fixShape = h.cgShape;
+    s.clipGuard.fixStartPct = h.cgFixStart;
+    s.clipGuard.fullPct = h.cgFull;
+    s.clipGuard.knee = h.cgKnee;
+    s.clipGuard.colorProtect = h.cgColor;
+    s.clipGuard.textSkipPct = h.cgText;
+    s.clipGuard.hotSpot = h.cgHot;
+    s.clipGuard.hotBelowPct = h.cgHotBelow;
+    s.clipGuard.gradedSpot = h.cgGraded;
+    s.clipGuard.grid = h.cgGrid;
+    s.clipGuard.lookAhead = h.cgLookAhead;
+    s.clipGuard.view = h.cgView;
+    s.clipGuard.osd = h.cgOsd;
+    s.clipGuard.osdPinned = h.cgOsdPinned;
+    s.clipGuard.osdSelected = h.cgOsdSelected;
+    s.clipGuard.osdX = h.cgOsdX;
+    s.clipGuard.osdY = h.cgOsdY;
+    s.clipGuard.osdW = h.cgOsdW;
+    s.clipGuard.osdH = h.cgOsdH;
+    s.clipGuard.logRequest = h.cgLog;
     s.fHdrTitlePeakNits = h.titlePeakNits;
     s.fHdrHableKnee = h.hableKnee;
     s.fSoftKnee      = h.softKnee;
@@ -2994,18 +3026,28 @@ void ReadHdrFromSettings(const Settings_t& s, MpcPlayer::HdrSettings& h)
     h.displayMinNits = s.fHdrDisplayMinNits;
     h.outputGamut = s.iOutputGamut;
     h.displayTransfer = s.iDisplayTransfer;
-    h.dbleEnabled = s.bDbleEnabled;
-    h.dbleStrength = s.fDbleStrength;
-    h.dbleTriggerPct = s.fDbleTriggerPct;
-    h.dbleKnee = s.fDbleKnee;
-    h.dbleView = s.iDbleView;
-    h.dbleOsd = s.bDbleOsd;
-    h.dbleOsdPinned = s.bDbleOsdPinned;
-    h.dbleOsdSelected = s.iDbleOsdSelected;
-    h.dbleOsdX = s.iDbleOsdX;
-    h.dbleOsdY = s.iDbleOsdY;
-    h.dbleOsdW = s.iDbleOsdW;
-    h.dbleOsdH = s.iDbleOsdH;
+    h.cgEnabled = s.clipGuard.enabled;
+    h.cgStrength = s.clipGuard.strength;
+    h.cgShape = s.clipGuard.fixShape;
+    h.cgFixStart = s.clipGuard.fixStartPct;
+    h.cgFull = s.clipGuard.fullPct;
+    h.cgKnee = s.clipGuard.knee;
+    h.cgColor = s.clipGuard.colorProtect;
+    h.cgText = s.clipGuard.textSkipPct;
+    h.cgHot = s.clipGuard.hotSpot;
+    h.cgHotBelow = s.clipGuard.hotBelowPct;
+    h.cgGraded = s.clipGuard.gradedSpot;
+    h.cgGrid = s.clipGuard.grid;
+    h.cgLookAhead = s.clipGuard.lookAhead;
+    h.cgView = s.clipGuard.view;
+    h.cgOsd = s.clipGuard.osd;
+    h.cgOsdPinned = s.clipGuard.osdPinned;
+    h.cgOsdSelected = s.clipGuard.osdSelected;
+    h.cgOsdX = s.clipGuard.osdX;
+    h.cgOsdY = s.clipGuard.osdY;
+    h.cgOsdW = s.clipGuard.osdW;
+    h.cgOsdH = s.clipGuard.osdH;
+    h.cgLog = s.clipGuard.logRequest;
     h.titlePeakNits = s.fHdrTitlePeakNits;
     h.hableKnee = s.fHdrHableKnee;
     h.softKnee      = s.fSoftKnee;
@@ -3061,6 +3103,7 @@ void ApplyOutToSettings(const MpcPlayer::OutSettings& o, Settings_t& s)
     s.bAdjustPresentTime = o.adjustPresent;
     s.bReinitByDisplay = o.reinitDisplay;
     s.bShowStats = o.showStats;
+    s.bSdrBt2020 = o.sdrBt2020;
     s.bTrayIcon = o.trayIcon;
 }
 
@@ -3089,6 +3132,7 @@ void ReadOutFromSettings(const Settings_t& s, MpcPlayer::OutSettings& o)
     o.adjustPresent = s.bAdjustPresentTime;
     o.reinitDisplay = s.bReinitByDisplay;
     o.showStats = s.bShowStats;
+    o.sdrBt2020 = s.bSdrBt2020;
     o.trayIcon = s.bTrayIcon;
 }
 
@@ -3207,63 +3251,100 @@ HRESULT MpcPlayer::GrabFrame(const std::string& utf8Path)
 {
     if (!renderer_ || utf8Path.empty()) return S_FALSE;
 
-    CComQIPtr<IBasicVideo> bv = renderer_;
-    if (!bv) {
-        Log("[ENGINE] GrabFrame: the renderer exposes no IBasicVideo");
-        return E_NOINTERFACE;
-    }
-
-    long size = 0;
-    HRESULT hr = bv->GetCurrentImage(&size, nullptr);   // ask for the size first
-    if (FAILED(hr) || size <= 0) {
-        Log("[ENGINE] GrabFrame: GetCurrentImage(size) hr=0x%08X size=%ld", (unsigned)hr, size);
-        return hr;
-    }
-
-    std::vector<BYTE> dib((size_t)size);
-    hr = bv->GetCurrentImage(&size, (long*)dib.data());
-    if (FAILED(hr)) {
-        Log("[ENGINE] GrabFrame: GetCurrentImage(data) hr=0x%08X", (unsigned)hr);
-        return hr;
-    }
-
     wchar_t wpath[MAX_PATH] = {};
     MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, wpath, MAX_PATH);
+
+    // Preferred path: IExFilterConfig "displayedImage". It reads the swap
+    // chain's BACK BUFFER, so the file matches what is on screen, and it is
+    // 48-bit RGB when the swap chain is R10G10B10A2 (allowDeepColorBitmaps is
+    // set in ConfigureRendererWindow). The IBasicVideo path below is the
+    // fallback: it always renders 32-bit and would silently reduce a 10-bit
+    // frame to 8 bits, which is why a "10-bit" capture looked 8-bit (2026-11-18).
+    // The buffer is LocalAlloc'd by the renderer; LocalFree when done.
+    LPVOID deep = nullptr;
+    size_t dibSize = 0;
+    std::vector<BYTE> owned;
+    if (CComQIPtr<IExFilterConfig> cfg = renderer_) {
+        unsigned n = 0;
+        const HRESULT hrd = cfg->Flt_GetBin("displayedImage", &deep, &n);
+        if (SUCCEEDED(hrd) && deep && n > sizeof(BITMAPINFOHEADER)) {
+            dibSize = n;
+        } else {
+            if (deep) { LocalFree(deep); deep = nullptr; }
+            if (FAILED(hrd))
+                Log("[ENGINE] GrabFrame: displayedImage hr=0x%08X - falling back to IBasicVideo",
+                    (unsigned)hrd);
+        }
+    }
+    if (!deep) {
+        CComQIPtr<IBasicVideo> bv = renderer_;
+        if (!bv) {
+            Log("[ENGINE] GrabFrame: the renderer exposes neither displayedImage nor IBasicVideo");
+            return E_NOINTERFACE;
+        }
+        long size = 0;
+        HRESULT hr = bv->GetCurrentImage(&size, nullptr);   // ask for the size first
+        if (FAILED(hr) || size <= 0) {
+            Log("[ENGINE] GrabFrame: GetCurrentImage(size) hr=0x%08X size=%ld", (unsigned)hr, size);
+            return hr;
+        }
+        owned.resize((size_t)size);
+        hr = bv->GetCurrentImage(&size, (long*)owned.data());
+        if (FAILED(hr)) {
+            Log("[ENGINE] GrabFrame: GetCurrentImage(data) hr=0x%08X", (unsigned)hr);
+            return hr;
+        }
+        dibSize = (size_t)size;
+    }
+    const BYTE* dib = deep ? (const BYTE*)deep : owned.data();
+
     FILE* f = nullptr;
     if (_wfopen_s(&f, wpath, L"wb") != 0 || !f) {
         Log("[ENGINE] GrabFrame: cannot open the output file");
+        if (deep) LocalFree(deep);
         return E_FAIL;
     }
 
-    // The buffer is a BITMAPINFOHEADER followed by top-down BGRX rows — that is
+    // The buffer is a BITMAPINFOHEADER followed by top-down BGR(X) rows — that is
     // the layout callers of IBasicVideo::GetCurrentImage expect, so it is written
     // out as a self-describing .bmp with the 14-byte file header in front.
-    const BITMAPINFOHEADER* bih = (const BITMAPINFOHEADER*)dib.data();
+    const BITMAPINFOHEADER* bih = (const BITMAPINFOHEADER*)dib;
     const DWORD offBits = (DWORD)(sizeof(BITMAPFILEHEADER) + bih->biSize);
     BITMAPFILEHEADER fh = {};
     fh.bfType    = 0x4D42;   // 'BM'
     fh.bfOffBits = offBits;
     fh.bfSize    = offBits + bih->biSizeImage;
     fwrite(&fh, sizeof(fh), 1, f);
-    fwrite(dib.data(), 1, (size_t)size, f);
+    fwrite(dib, 1, dibSize, f);
     fclose(f);
 
     // Mean luma of the captured frame — the objective answer to "is the image
     // black?". This is what told us the renderer PRESENTS 50fps while the screen
-    // reads black for an entirely reasons outside the counters; the luma number
-    // separates "black pixels out of the renderer" from "window not on screen".
+    // reads black for reasons outside the counters; the luma number separates
+    // "black pixels out of the renderer" from "window not on screen". The stride
+    // follows the DIB's real depth: 6 bytes/pixel for a 48-bit capture, else 4.
     double lumaSum = 0.0;
     size_t lumaCount = 0;
-    const BYTE* px = dib.data() + sizeof(BITMAPINFOHEADER);
+    const UINT bpp = bih->biBitCount;
+    const BYTE* px = dib + sizeof(BITMAPINFOHEADER);
     const size_t pxBytes = std::min((size_t)bih->biSizeImage,
-                                    (size_t)size - sizeof(BITMAPINFOHEADER));
-    for (size_t i = 0; i + 2 < pxBytes && i < 8ull * 1024 * 1024; i += 4) {
-        lumaSum += 0.114 * px[i] + 0.587 * px[i + 1] + 0.299 * px[i + 2];
-        lumaCount++;
+                                    dibSize - sizeof(BITMAPINFOHEADER));
+    if (bpp == 48) {
+        // 16 bits/channel little-endian: take the high byte of each channel.
+        for (size_t i = 0; i + 5 < pxBytes && i < 8ull * 1024 * 1024; i += 6) {
+            lumaSum += 0.114 * px[i + 1] + 0.587 * px[i + 3] + 0.299 * px[i + 5];
+            lumaCount++;
+        }
+    } else {
+        for (size_t i = 0; i + 2 < pxBytes && i < 8ull * 1024 * 1024; i += 4) {
+            lumaSum += 0.114 * px[i] + 0.587 * px[i + 1] + 0.299 * px[i + 2];
+            lumaCount++;
+        }
     }
-    Log("[ENGINE] GrabFrame: wrote %ldx%ld to %s  meanLuma=%.2f/255",
-        (long)bih->biWidth, (long)bih->biHeight, utf8Path.c_str(),
+    Log("[ENGINE] GrabFrame: wrote %ldx%ld %ubpp to %s  meanLuma=%.2f/255",
+        (long)bih->biWidth, (long)bih->biHeight, bpp, utf8Path.c_str(),
         lumaCount ? lumaSum / (double)lumaCount : -1.0);
+    if (deep) LocalFree(deep);
     return S_OK;
 }
 
@@ -4253,6 +4334,10 @@ void MpcPlayer::RefreshLive()
     OutSettings         ou{};
     DeckLinkSourceStats dl{};
     GetRendererStats(r);
+    // First frame of THIS graph: the settle clock for an SDR verdict. Reset in
+    // Open(); a renderer that has not received anything yet has not seen the
+    // stream, so nothing it reports can rule DV out (2026-11-18).
+    if (r.framesReceived > 0 && m_clsFirstFrameAt == 0) m_clsFirstFrameAt = GetTickCount64();
     GetMlStats(ml);
     // The band watch lives in WatchBand(), on its own per-frame cadence (the
     // rest of this snapshot keeps the 1 s telemetry tick).
@@ -4269,6 +4354,43 @@ void MpcPlayer::RefreshLive()
     // declared NO_SIGNAL and restarted capture every 8 s (its 5 s loss timeout plus
     // its 3 s cooldown), so the acquiring overlay re-appeared forever. Nothing in
     // here may mutate the renderer.
+    // Pipeline tokens are parsed on EVERY tick, not only on the throttled log
+    // tick below: the colour/DV flags they carry used to refresh once per ~5 s,
+    // which is long enough for a classification read to act on stale zeros
+    // (2026-11-18). The logging stays on the throttle — this part is cheap.
+    {
+        auto Tok = [&ml](const wchar_t* key) -> std::wstring {
+            const size_t at = ml.find(key);
+            if (at == std::wstring::npos) return L"?";
+            const size_t from = at + wcslen(key);
+            const size_t to = ml.find(L'\n', from);
+            return ml.substr(from, to == std::wstring::npos ? std::wstring::npos : to - from);
+        };
+        const std::wstring pipe = Tok(L"pipeline:");
+        // The renderer has described THIS graph's pipeline. Until this flips,
+        // nothing it would report (dovi=, tf=, cll=) exists yet and the app's
+        // SDR policy must not act — see GetUiStatusJson's contentClass.
+        m_livePiping = (pipe != L"?");
+        if (m_livePiping) {
+            const wchar_t* t = wcsstr(pipe.c_str(), L"tf=");
+            if (t) m_liveRenderTf = (int)wcstol(t + 3, nullptr, 10);
+            const wchar_t* p = wcsstr(pipe.c_str(), L"prim=");
+            if (p) m_liveRenderPrim = (int)wcstol(p + 5, nullptr, 10);
+            const wchar_t* dv = wcsstr(pipe.c_str(), L"dovi=");
+            if (dv) m_liveDovi = (int)wcstol(dv + 5, nullptr, 10);
+            const wchar_t* clv = wcsstr(pipe.c_str(), L"cll=");
+            if (clv) m_liveMdrCll = (int)wcstol(clv + 4, nullptr, 10);
+            const wchar_t* fav = wcsstr(pipe.c_str(), L"fall=");
+            if (fav) m_liveMdrFall = (int)wcstol(fav + 5, nullptr, 10);
+            const wchar_t* mav = wcsstr(pipe.c_str(), L"mmax=");
+            if (mav) m_liveMdrMmax = (int)wcstol(mav + 5, nullptr, 10);
+            const wchar_t* miv = wcsstr(pipe.c_str(), L"mmin=");
+            if (miv) m_liveMdrMmin = (int)wcstol(miv + 5, nullptr, 10);
+        }
+        const std::wstring mlState = Tok(L"mode: ");
+        m_liveMlActive = (mlState.find(L"active: yes") != std::wstring::npos) ? 1
+                       : (mlState.find(L"active: no")  != std::wstring::npos) ? 0 : -1;
+    }
     static int s_dbgn = 0;
     if ((++s_dbgn % 5) == 0) {
         // Carry the renderer's own one-line account of which converter is live
@@ -4366,14 +4488,18 @@ void MpcPlayer::RefreshLive()
             (long long)DSObjects::g_subRender11Dropped);
         // The queue leg (see the sample in RenderEx3): depth + cached window vs the
         // time the presenter asked at, plus the last blit's HRESULT.
-        Log("[live] subq: depth=%lld rtNow=%.2f cached=[%.2f..%.2f] lastHr=0x%08X hit=%lld geoHr=0x%08X",
+        Log("[live] subq: depth=%lld rtNow=%.2f cached=[%.2f..%.2f] lastHr=0x%08X hit=%lld geoHr=0x%08X "
+            "branch=%lld dirty=%lldx%lld pic=%lldx%lld",
             (long long)DSObjects::g_subQueueDepth,
             (double)DSObjects::g_subQueueRtNow / 10000000.0,
             (double)DSObjects::g_subQueueRtStart / 10000000.0,
             (double)DSObjects::g_subQueueRtStop / 10000000.0,
             (unsigned)(long long)DSObjects::g_subLastDrawHr,
             (long long)DSObjects::g_subLookupHit,
-            (unsigned)(long long)DSObjects::g_subGeoHr);
+            (unsigned)(long long)DSObjects::g_subGeoHr,
+            (long long)DSObjects::g_subBranch,
+            (long long)DSObjects::g_subDirtyW, (long long)DSObjects::g_subDirtyH,
+            (long long)DSObjects::g_subPicW, (long long)DSObjects::g_subPicH);
         // Provider-side truth, asked the SAME way the subpic queue asks it
         // (GetStartPosition at the presenter's rt): this splits the drew=0 space in
         // two from one log line. An event ACTIVE at rt with drew still 0 puts the
@@ -4567,14 +4693,67 @@ std::string MpcPlayer::GetUiStatusJson() const
         snprintf(chBuf, sizeof(chBuf), ",\"chapters\":[%s]", acc.c_str());
     }
 
+    // Positive content class for the app's SDR policy. 0=SDR, 1=HDR10/PQ,
+    // 2=HLG, 3=DV; known=0 means "not decided yet" and the app must do
+    // NOTHING — no disable, no message. SDR is never inferred from a missing
+    // field: a DV title whose pin media type carries no colour info read as
+    // all-zero and had its ML grade disabled with an SDR banner (2026-11-18).
+    // Only the renderer's own pipeline reading for THIS graph can rule DV out,
+    // so an SDR verdict additionally requires m_livePiping.
+    int contentClass = -1, contentKnown = 0;
+    {
+        const int tf = (m_liveRenderTf != 0) ? m_liveRenderTf : vs.transferFunction;
+        const bool meta = m_liveMdrCll > 10 || m_liveMdrFall > 10 || m_liveMdrMmax > 10;
+        // An SDR verdict needs the renderer to have PRESENTED content long
+        // enough for its DV/hdr reading to have converged. Measured on a DV P8
+        // title: pin tf=0 at connect, renderer's first pipeline read tf=5/dovi=0,
+        // DV truth (tf=15/dovi=1) 1.3 s later. 48 frames + 3 s of wall clock
+        // rejects that convergence window; HDR/DV never wait (they can only
+        // prevent a disable).
+        const bool settled = m_clsFirstFrameAt != 0 && rs.framesReceived >= 48
+                          && GetTickCount64() - m_clsFirstFrameAt >= 3000;
+        if (m_liveDovi > 0) {
+            contentClass = 3; contentKnown = 1;
+        } else if (tf == MFVideoTransFunc_HLG) {
+            contentClass = 2; contentKnown = 1;
+        } else if (tf == MFVideoTransFunc_2084 || vs.hdr || meta) {
+            contentClass = 1; contentKnown = 1;
+        } else if (m_livePiping && tf != 0 && settled) {
+            contentClass = 0; contentKnown = 1;
+        }
+    }
+    // Identity of the source the class belongs to. The app opens a title and
+    // polls: without this it could read the PREVIOUS graph's finished SDR
+    // verdict under the new title's path and act on it instantly.
+    unsigned srcHash = 2166136261u;
+    for (const wchar_t ch : snapshot_.source) { srcHash ^= (unsigned)ch; srcHash *= 16777619u; }
+
     char b1[2300];
     int dispW = 0, dispH = 0;
+    // DETECTED ACTIVE-PICTURE ASPECT for the app's aspect-aware NLS rule
+    // (UR-0007). Derived from the latched band, not from the container: an
+    // IMAX 16:9 section inside a 2.39 file reports ~1.78 here, and a full-frame
+    // read with NO band detected is reported as known=1 valid=1 with the frame's
+    // own aspect, so the rule can bypass NLS instead of zooming.
+    // known=0 (nothing latched yet, black frame, fade) => picAspect 0: the app
+    // must hold its current window rather than act on a guess.
+    double nlsPicAspect = 0.0;
+    const bool nlsBandKnown = m_nlsBandKnown.load();
+    const bool nlsBandValid = m_nlsBandValid.load();
+    if (nlsBandKnown && vs.width > 0 && vs.height > 0) {
+        const double hA = nlsBandValid
+            ? 1.0 - (double)m_nlsBandTop.load() - (double)m_nlsBandBot.load() : 1.0;
+        const double wA = nlsBandValid
+            ? 1.0 - (double)m_nlsBandLeft.load() - (double)m_nlsBandRight.load() : 1.0;
+        if (hA > 0.05 && wA > 0.05)
+            nlsPicAspect = ((double)vs.width * wA) / ((double)vs.height * hA);
+    }
     if (renderTarget_) {
         RECT wr{};
         if (::GetClientRect(renderTarget_, &wr)) { dispW = wr.right - wr.left; dispH = wr.bottom - wr.top; }
     }
     snprintf(b1, sizeof(b1),
-        "{\"gen\":%u,\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
+        "{\"gen\":%u,\"srcHash\":%u,\"state\":\"%s\",\"pos\":%lld,\"dur\":%lld,\"vol\":%d,\"muted\":%d,"
         "\"render\":{\"recv\":%u,\"draw\":%.2f,\"lagMs\":%.1f,\"drop\":%u,\"skip\":%u,\"fail\":%u},"
         "\"dl\":{\"stream\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"eotf\":%d,"
         "\"arrived\":%llu,\"delv\":%llu,\"skip\":%llu,\"gate\":%llu,\"qdrop\":%llu,\"reneg\":%llu,\"refUs\":%llu,"
@@ -4585,7 +4764,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         // warnings visible, not filtered to "error".
         "\"hdrMeta\":%d,\"maxCLL\":%.0f,\"maxFALL\":%.0f,\"masterMax\":%.0f,\"masterMin\":%.4f},"
         "\"signal\":{\"locked\":%d,\"w\":%d,\"h\":%d,\"fpsNum\":%d,\"fpsDen\":%d,\"cs\":%d,\"dr\":%d,\"depth\":%d,\"chroma\":%d,\"il\":%d},"
-        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d,\"dovi\":%d},"
+        "\"media\":{\"valid\":%d,\"w\":%d,\"h\":%d,\"fps\":%.3f,\"subtype\":\"%ls\",\"hdr\":%d,\"tf\":%d,\"prim\":%d,\"fmt\":%d,\"dovi\":%d,\"cls\":%d,\"known\":%d},"
         "\"cfg\":{\"ics\":%d,\"convSdr\":%d,\"sdrNits\":%d,\"scPeak\":%.4f,\"scAvg\":%.4f,"
         "\"mdr\":{\"cll\":%d,\"fall\":%d,\"mmax\":%d,\"mmin\":%d}},"
         // NLS state for the INFO panel: on/off, what filling this title would cost
@@ -4599,13 +4778,13 @@ std::string MpcPlayer::GetUiStatusJson() const
         // crop that actually happened per axis (always <= its limit).
         "\"nls\":{\"on\":%d,\"need\":%d,\"limit\":%d,\"filling\":%d,\"warp\":%d,\"crop\":%d,"
         "\"bars\":%d,\"max\":%d,\"wx\":%d,\"wy\":%d,\"cap\":%d,"
-        "\"cxl\":%d,\"cyl\":%d,\"cxn\":%d,\"cyn\":%d},"
+        "\"cxl\":%d,\"cyl\":%d,\"cxn\":%d,\"cyn\":%d,\"picAspect\":%.4f,\"known\":%d,\"valid\":%d},"
         // The surface every aspect decision is based on: the client rect of the
         // renderer's host window, i.e. whatever the app actually covers (the
         // screen, full-screen). Nothing asks the user for a screen size — this is
         // the number those decisions read, so it is worth showing them.
         "\"display\":{\"w\":%d,\"h\":%d}",
-        (unsigned)graphGen_,
+        (unsigned)graphGen_, srcHash,
         st, (long long)sn.position, (long long)sn.duration, sn.volume, sn.muted ? 1 : 0,
         rs.framesReceived, rs.drawFps, rs.presentLatencyMs, rs.dropped, rs.skipped, rs.failed,
         dl.streaming, dl.width, dl.height, dl.fpsNum, dl.fpsDen, dl.colorspace, dl.eotf,
@@ -4626,6 +4805,7 @@ std::string MpcPlayer::GetUiStatusJson() const
                                   : (m_liveRenderPrim == 9 ? 3 : m_liveRenderPrim == 2 ? 2 : 0),
         vs.pixelFormat,
         m_liveDovi,
+        contentClass, contentKnown,
         s.inputColorSpace, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits,
         scPeak, scAvg,
         m_liveMdrCll, m_liveMdrFall, m_liveMdrMmax, m_liveMdrMmin,
@@ -4642,6 +4822,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         (int)lround((double)pendingNls_.cropY * 100.0),
         (int)lround((double)pendingNls_.cropX * 100.0),
         (int)lround((double)pendingNls_.cropY * 100.0),
+        nlsPicAspect, nlsBandKnown ? 1 : 0, nlsBandValid ? 1 : 0,
         dispW, dispH);
 
     // P2 settings block — short keys matching the ApplySettingsFlat protocol.
@@ -4663,7 +4844,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         "\"deint\":%d,\"deintDb\":%d,\"deintBl\":%d,\"shaderVP\":%d,"
         "\"chroma\":%d,\"upsc\":%d,\"downsc\":%d,\"superRes\":%d,\"rtxVideoHdr\":%d,"
         "\"interpolate50\":%d,\"dither\":%d,\"swapEffect\":%d,\"exclusiveFS\":%d,"
-        "\"vblank\":%d,\"adjust\":%d,\"reinit\":%d,\"showStats\":%d,\"tray\":%d}}",
+        "\"vblank\":%d,\"adjust\":%d,\"reinit\":%d,\"showStats\":%d,\"sdrBt2020\":%d,\"tray\":%d}}",
         hdr.preferDoVi ? 1 : 0, hdr.convertToSdr ? 1 : 0, hdr.sdrDisplayNits, hdr.displayMaxNits,
         hdr.toneMapCurve, hdr.toggleDisplay, hdr.osdBrightness, hdr.hdrPassthroughRaw ? 1 : 0,
         hdr.displayMinNits, hdr.outputGamut,
@@ -4700,7 +4881,7 @@ std::string MpcPlayer::GetUiStatusJson() const
         out.interpolate50 ? 1 : 0, out.useDither ? 1 : 0,
         out.swapEffect, out.exclusiveFS ? 1 : 0,
         out.vBlank ? 1 : 0, out.adjustPresent ? 1 : 0, out.reinitDisplay ? 1 : 0,
-        out.showStats ? 1 : 0, out.trayIcon ? 1 : 0);
+        out.showStats ? 1 : 0, out.sdrBt2020 ? 1 : 0, out.trayIcon ? 1 : 0);
 
     // Splice the cached audio fragment in before the root object's closing brace.
     // m_audioJson already begins with a leading comma (,"audio":{…}); read it under
@@ -4788,18 +4969,28 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "blackNits")  hdr.displayMinNits = (float)vd(v);
             else if (name == "gamut")      hdr.outputGamut = std::clamp((int)vd(v), 0, 3);
             else if (name == "transfer")   hdr.displayTransfer = std::clamp((int)vd(v), 0, 5);
-            else if (name == "dble")         hdr.dbleEnabled = vb(v);
-            else if (name == "dbleStrength") hdr.dbleStrength = std::clamp((float)vd(v), 0.0f, 1.0f);
-            else if (name == "dbleTrigger")  hdr.dbleTriggerPct = std::clamp((float)vd(v), 0.5f, 30.0f);
-            else if (name == "dbleKnee")     hdr.dbleKnee = std::clamp((float)vd(v), 0.20f, 0.95f);
-            else if (name == "dbleView")     hdr.dbleView = std::clamp((int)vd(v), 0, 2);
-            else if (name == "dbleOsd")      hdr.dbleOsd = vb(v);
-            else if (name == "dbleOsdPin")   hdr.dbleOsdPinned = vb(v);
-            else if (name == "dbleOsdSel")   hdr.dbleOsdSelected = std::clamp((int)vd(v), 0, 5);
-            else if (name == "dbleOsdX")     hdr.dbleOsdX = (int)vd(v);
-            else if (name == "dbleOsdY")     hdr.dbleOsdY = (int)vd(v);
-            else if (name == "dbleOsdW")     hdr.dbleOsdW = std::clamp((int)vd(v), 0, 100000);
-            else if (name == "dbleOsdH")     hdr.dbleOsdH = std::clamp((int)vd(v), 0, 100000);
+            else if (name == "cgEnabled")   hdr.cgEnabled = vb(v);
+            else if (name == "cgStrength")  hdr.cgStrength = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "cgShape")     hdr.cgShape = std::clamp((int)vd(v), 0, 1);
+            else if (name == "cgFixStart")  hdr.cgFixStart = std::clamp((float)vd(v), 1.0f, 50.0f);
+            else if (name == "cgFull")      hdr.cgFull = std::clamp((float)vd(v), 0.5f, 49.5f);
+            else if (name == "cgKnee")      hdr.cgKnee = std::clamp((float)vd(v), 0.20f, 0.95f);
+            else if (name == "cgColor")     hdr.cgColor = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "cgText")      hdr.cgText = std::clamp((float)vd(v), 0.0f, 100.0f);
+            else if (name == "cgHot")       hdr.cgHot = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "cgHotBelow")  hdr.cgHotBelow = std::clamp((float)vd(v), 0.0f, 20.0f);
+            else if (name == "cgGraded")    hdr.cgGraded = std::clamp((float)vd(v), 0.0f, 1.0f);
+            else if (name == "cgGrid")      hdr.cgGrid = std::clamp((int)vd(v), 0, 1);
+            else if (name == "cgLookAhead") hdr.cgLookAhead = std::clamp((int)vd(v), 0, 6);
+            else if (name == "cgView")      hdr.cgView = std::clamp((int)vd(v), 0, 3);
+            else if (name == "cgOsd")       hdr.cgOsd = vb(v);
+            else if (name == "cgOsdPin")    hdr.cgOsdPinned = vb(v);
+            else if (name == "cgOsdSel")    hdr.cgOsdSelected = std::clamp((int)vd(v), 0, 20);
+            else if (name == "cgOsdX")      hdr.cgOsdX = (int)vd(v);
+            else if (name == "cgOsdY")      hdr.cgOsdY = (int)vd(v);
+            else if (name == "cgOsdW")      hdr.cgOsdW = std::clamp((int)vd(v), 0, 100000);
+            else if (name == "cgOsdH")      hdr.cgOsdH = std::clamp((int)vd(v), 0, 100000);
+            else if (name == "cgLog")       hdr.cgLog = (unsigned)vd(v);
             else if (name == "titlePeak")  hdr.titlePeakNits = (float)vd(v);
             else if (name == "hableKnee")  hdr.hableKnee = (float)vd(v);
             else if (name == "softKnee")      hdr.softKnee      = (float)vd(v);
@@ -4919,6 +5110,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "adjust")        out.adjustPresent = vb(v);
             else if (name == "reinit")        out.reinitDisplay = vb(v);
             else if (name == "showStats")     out.showStats = vb(v);
+            else if (name == "sdrBt2020")     out.sdrBt2020 = vb(v);
             else if (name == "tray")          out.trayIcon = vb(v);
             else hit = false;
             oAny = oAny || hit;
@@ -4978,6 +5170,10 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else hit = false;
         }
     }
+
+    // Live capture has no audio path to delay with the video: holding frames would
+    // desync the HDMI audio. ClipGuard's look-ahead is a file-playback feature.
+    if (!decklinkDevice_.empty()) hdr.cgLookAhead = 0;
 
     // Remember the merged intent, then push it to whatever renderer exists. The
     // remembering is what makes a pre-graph push survive; the push is what makes a
@@ -5427,6 +5623,16 @@ HRESULT MpcPlayer::SetSubtitleTrack(int posIndex)
     return S_OK;
 }
 
+HRESULT MpcPlayer::SetSubtitleScale(int percent)
+{
+    subScale_ = std::clamp(percent, 25, 300);
+    // The scale lives on the concrete presenter (the COM interface predates it);
+    // subAP_ always holds a CMPCVRAllocatorPresenter, created by AddRenderer.
+    if (subAP_) static_cast<DSObjects::CMPCVRAllocatorPresenter*>(subAP_.p)->SetSubtitleScale(subScale_);
+    Log("[SUBS] text size %d%%", subScale_);
+    return S_OK;
+}
+
 HRESULT MpcPlayer::SetSubtitlesEnabled(bool on)
 {
     subsOn_ = on;
@@ -5633,6 +5839,7 @@ void MpcPlayer::ApplySubtitleProvider()
     if (subsOn_ && curSub_ >= 0 && !subs_.empty()) {
         prov = CComQIPtr<ISubPicProvider>(subs_[0].stream);
     }
+    static_cast<DSObjects::CMPCVRAllocatorPresenter*>(subAP_.p)->SetSubtitleScale(subScale_);
     subAP_->SetSubPicProvider(prov);
     // Log the three gate inputs, not just the outcome: "cleared" alone cannot say
     // WHICH of subsOn_/curSub_/subs_ vetoed the attach, and on 2026-10-26 that

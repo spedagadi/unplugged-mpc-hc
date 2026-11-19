@@ -1,0 +1,161 @@
+
+🎬 What is Unplugged?
+====================
+Projector technology has come a long way in the home theater space, but Dynamic Tone Mapping (DTM) and overall picture quality still have room to grow on displays above a three-figure price tag.
+
+Unplugged is an active, open-source research experiment that runs on a Windows HTPC today. The core mission of the project is to prove a bigger point: that the computational complexity of DTM, an ML-driven color grade, and full media playback is low enough for a single modern 4K SoC to handle all three simultaneously on projector hardware. Unplugged is expected to run on off the shelf, easily procurable ARM based embedded hardware in near future as a useful reference.
+
+🚀 Key Technical Features
+===========================
+The project is actively pushing the envelope across a few exciting frontiers:
+
+🤖 Machine Learning Zion Grade: Three real-time XGBoost ML models analyze every incoming frame to predict exactly how a professional colorist would shape the tone curve for that specific scene. This collective inference drives the Zion Grade—making real-time shadow, mid-tone, and highlight tracking decisions per frame.
+⚡ Fast Feature Extraction (SAT): The engine utilizes a Summed Area Table (SAT) computer-vision technique to achieve lightning-fast feature extraction at a minimal performance cost. This drives the downstream scene-adaptive behaviors, including active black-bar detection, peak analysis, and temporal frame stability.
+🔬 Scene Segmentation (Early Stage / WIP): Real-time GPU based ONNX instance segmentation specifically targeting sky and skin regions is in early stage. The ultimate roadmap goal is to feed these structural masks back into the tone mapper to protect faces and preserve complex sky gradients under aggressive tone-mapping curves. Even in its early stage, it serves as an open reference pipeline for integrating custom ML inference into live video processing.
+
+🛠 Functionality & Deployment
+====================
+Unplugged acts as a single-box solution combining external processing and native playback. The dynamic tone mapping functions cleanly across both HDR10 and Dolby Vision (DV) streams:
+1. Media Player Mode: Decodes and maps container files natively from local storage.
+2. Video Processor Mode: Direct real-time capture, processing, and tone mapping of signal from an external source player .
+
+💻 Hardware Requirements
+==================
+To deploy Unplugged, an HTPC setup requires:
+🖥 OS: Dedicated HTPC running Windows 10 or 11 (64-bit) [Tested on RTX4070].
+🔌 Capture Hardware: A Blackmagic DeckLink Quad PCIe card. (Note: This capture card is strictly mandatory for real-time external Video Processor mode; native Media Player mode requires no capture hardware).
+💾 Media Sources: Local MKV or MP4 files or an external source player outputting 4K HDR10/Dolby Vision.
+🔒 HDCP Status: Unplugged requires an unencrypted HDMI input signal. In accordance with standard DeckLink hardware configurations, the incoming HDMI signal must be non-HDCP.
+
+⚠ Important Driver Note: To comply fully with open-source licensing, Unplugged does not package Blackmagic's proprietary runtimes. Users must independently download and install the latest Desktop Video Runtime Drivers directly from the official Blackmagic Design Support Portal before executing processor mode.
+
+
+🔮 Future Work
+============
+🍓 Standalone Hardware : Getting the Unplugged pipeline running entirely on an ARM based Single Board Computer featuring HDMI-In. Code-named Osiris, this standalone reference architecture is the realistic target — proving that high-end DTM and ML grading can happen right inside the projection chain without an an external HTPC.
+⚙ COM Object Exposure: Exposing the core renderer engine as a COM object to easily plug directly into MPC-HC and other DirectX video player platforms.
+
+🤝 Open Source & Contributions
+========================
+
+Unplugged stands proudly on the shoulders of giants. The project has built upon and extended exceptional codebases, including MPCVR, MPC-HC, Libavfilters, and future architecture elements of mpv.
+
+Because these open-source projects made Unplugged possible, it is only fair to pay it forward. The source code is completely open: feel free to use it, stress-test it, break it, modify it, and share your advancements.
+
+Get Unplugged and help push the envelope further! 🎥🚀 Release notes has few details on usage.
+
+Target SDR nits :120 - Comparison with Potplayer based madVR (09217+madVRhdrMeasure210), mpv-v0.41.0-dev-ga1bf4b655-36252823533-x86_64-w64-mingw32-full
+Preview image for gallery.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Order : Unplugged, mpv, madvr
+
+
+Interface
+=======
+
+Few screengrabs of the interface
+
+Electronic device Technology Screenshot Software Video Game Software
+
+
+Preview image for gallery.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+https://www.avsforum.com/media/albums/unplugged_interface.52513/
+
+Zion ML grade On Vs Off
+
+Slope Adventure Soil Shrubland Walking
+Adventure Walking Shrubland
+
+
+Quick config
+=========
+1. Press Up on keyboard will toggle display of Live status and Settings panels.
+2. Convert to SDR ON
+3. Set SDR Display Nits, Static nits(max), Display black (nits) to calibrated and measured values
+4. User trim is available in HDR tab for exposure, shadow and contrast
+5. Best to leave Zion tab settings to Auto where applicable.
+6. Calibration LUT files can be loaded in Output --> Display Calibration
+7. PNG screenshot feature in Output --> Save as PNG
+
+Credits
+=====
+github.com
+GitHub - Aleksoid1978/VideoRenderer: Внешний видео-рендерер
+Внешний видео-рендерер. Contribute to Aleksoid1978/VideoRenderer development by creating an account on GitHub.
+github.com github.com
+github.com
+Releases · clsid2/mpc-hc
+Media Player Classic. Contribute to clsid2/mpc-hc development by creating an account on GitHub.
+github.com github.com
+github.com
+GitHub - mpv-player/mpv: 🎥 Command line media player
+🎥 Command line media player. Contribute to mpv-player/mpv development by creating an account on GitHub.
+github.com github.com
+github.com
+GitHub - haasn/libplacebo: Official mirror of libplacebo
+Official mirror of libplacebo. Contribute to haasn/libplacebo development by creating an account on GitHub.
+github.com github.com
+github.com
+GitHub - billslack2/videoprocessor: Video processing on live data.
+Video processing on live data. Contribute to billslack2/videoprocessor development by creating an account on GitHub.
+github.com github.com
+docs.ultralytics.com
+Instance Segmentation with Ultralytics YOLO | Ultralytics Docs
+Master instance segmentation using YOLO26. Learn how to detect, segment and outline objects in images with detailed guides and examples.
+docs.ultralytics.com docs.ultralytics.com
+WIDER Face dataset
+
+Setup File : https://github.com/spedagadi/unplugged-mpc-hc/releases/download/v2.1.0/Unplugged-setup-2.1.0.exe
+User Guide : unplugged-mpc-hc/docs/settings-guide.md at zion-s3-shell · spedagadi/unplugged-mpc-hc
+
+Note : XGboost model design, training data will be documented & released in the future
+
+Updates:
+=======
+
+18/10/2026: Decklink mini recorder 4k was tested and confirmed as working. Please checkout https://www.avsforum.com/posts/64938799/
+18/10/2026: Added user interface screenshots with HDR10, DolbyVision renders from Everest, Rings of power TV series
+19/10/2026: v1.1.0 Better PCM volume on stereo outputs: Multichannel audio is mixed to match the active Windows audio output layout. For example, 7.1 audio is downmixed for a stereo HDMI monitor, while multichannel layouts are retained when the output supports them.
+21/10/2026: v1.1.1: Media Player mode now works alongside other codec packs, plus clearer errors and one-click problem reporting.
+22/10/2026: v1.2.0 : A new poster library that finds artwork for your films and shows automatically, a simpler settings panel, and Super Resolution as a single switch.
+01/11/2026 : v2.0.0 : Re-implemented UI in MFC as a single native Windows app, first version of non-linear stretch (NLS), self-saving presets, a daily update check, and correct Dolby Vision reporting over HDMI.
+[New] 04/11/2026 : v2.1.0 : NLS is now set-and-forget (Auto fills clean sources, new Post NLS X/Y crop, clean scope↔IMAX transitions), the library, posters and ratings are reliable, and Report a problem bundles a diagnostics zip

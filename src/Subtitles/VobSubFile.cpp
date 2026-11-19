@@ -33,7 +33,6 @@
 #endif
 #include "RTS.h"
 #include "../DSUtil/PathUtils.h"
-#include "../DSUtil/ISOLang.h"
 
 //
 
@@ -307,18 +306,13 @@ void CVobSubFile::TrimExtension(CString& fn)
 
 bool CVobSubFile::Open(CString fn)
 {
-    m_path = fn;
     TrimExtension(fn);
 
     do {
         Close();
 
         int ver;
-        try {
-            if (!ReadIdx(fn + _T(".idx"), ver)) {
-                break;
-            }
-        } catch (...) {
+        if (!ReadIdx(fn + _T(".idx"), ver)) {
             break;
         }
 
@@ -761,17 +755,13 @@ bool CVobSubFile::ReadSub(CString fn)
         return false;
     }
 
+    m_sub.SetLength(f.GetLength());
+    m_sub.SeekToBegin();
+
     int len;
     BYTE buff[2048];
-    try {
-        m_sub.SetLength(f.GetLength());
-        m_sub.SeekToBegin();
-        while ((len = f.Read(buff, sizeof(buff))) > 0 && *(DWORD*)buff == 0xba010000) {
-            m_sub.Write(buff, len);
-        }
-    }
-    catch (CFileException*) {
-        return false;
+    while ((len = f.Read(buff, sizeof(buff))) > 0 && *(DWORD*)buff == 0xba010000) {
+        m_sub.Write(buff, len);
     }
 
     return true;
@@ -824,10 +814,6 @@ bool CVobSubFile::ReadRar(CString fn)
 #define SetCallback        RARSetCallback
 #endif /* USE_STATIC_UNRAR */
 
-    if (fn.GetLength() >= MAX_PATH) {
-        return false;
-    }
-
     RAROpenArchiveDataEx OpenArchiveData;
     ZeroMemory(&OpenArchiveData, sizeof(OpenArchiveData));
 
@@ -850,7 +836,7 @@ bool CVobSubFile::ReadRar(CString fn)
     }
 
     RARHeaderDataEx HeaderDataEx;
-    ZeroMemory(&HeaderDataEx, sizeof(HeaderDataEx));
+    HeaderDataEx.CmtBuf = nullptr;
 
     while (ReadHeaderEx(hArcData, &HeaderDataEx) == 0) {
         CString subfn(HeaderDataEx.FileNameW);
@@ -1180,11 +1166,6 @@ BYTE* CVobSubFile::GetPacket(size_t idx, size_t& packetSize, size_t& dataSize, s
         packetSize = (buff[buff[0x16] + 0x18] << 8) + buff[buff[0x16] + 0x19];
         dataSize = (buff[buff[0x16] + 0x1a] << 8) + buff[buff[0x16] + 0x1b];
 
-        if (dataSize + 4 > packetSize) {
-            ASSERT(false);
-            break;
-        }
-
         try {
             ret = DEBUG_NEW BYTE[packetSize];
         } catch (CMemoryException* e) {
@@ -1351,10 +1332,6 @@ STDMETHODIMP_(POSITION) CVobSubFile::GetStartPosition(REFERENCE_TIME rt, double 
     return (POSITION)(i + 1);
 }
 
-CString CVobSubFile::GetPath() {
-    return m_path;
-}
-
 STDMETHODIMP_(POSITION) CVobSubFile::GetNext(POSITION pos)
 {
     size_t i = (size_t)pos;
@@ -1427,16 +1404,6 @@ STDMETHODIMP_(int) CVobSubFile::GetStreamCount()
     return iStreamCount;
 }
 
-DWORD LangIDToLCID(WORD langid)
-{
-    unsigned short id = lang_tbl[find_lang(langid)].id;
-    CHAR tmp[3];
-    tmp[0] = id / 256;
-    tmp[1] = id & 0xFF;
-    tmp[2] = 0;
-    return ISOLang::ISO6391ToLcid(tmp);
-}
-
 STDMETHODIMP CVobSubFile::GetStreamInfo(int iStream, WCHAR** ppName, LCID* pLCID)
 {
     for (const auto& sl : m_langs) {
@@ -1454,7 +1421,7 @@ STDMETHODIMP CVobSubFile::GetStreamInfo(int iStream, WCHAR** ppName, LCID* pLCID
         }
 
         if (pLCID) {
-            *pLCID = LangIDToLCID(sl.id);
+            *pLCID = 0; // TODO: make lcid out of "sl.id"
         }
 
         return S_OK;
@@ -1733,7 +1700,7 @@ HRESULT CVobSubSettings::Render(SubPicDesc& spd, RECT& bbox)
     /*
         CRenderedTextSubtitle rts(nullptr);
         rts.CreateDefaultStyle(DEFAULT_CHARSET);
-        rts.m_storageRes.SetSize(m_size.cx, m_size.cy);
+        rts.m_dstScreenSize.SetSize(m_size.cx, m_size.cy);
         CStringW assstr;
         m_img.Polygonize(assstr, false);
         REFERENCE_TIME rtStart = 10000i64*m_img.start, rtStop = 10000i64*(m_img.start+m_img.delay);
@@ -1764,11 +1731,7 @@ static bool CompressFile(CString fn)
 
 bool CVobSubFile::SaveVobSub(CString fn, int delay)
 {
-    if (!WriteIdx(fn + _T(".idx"), delay) || !WriteSub(fn + _T(".sub"))) {
-        return false;
-    }
-    m_path = fn + _T(".idx");
-    return true;
+    return WriteIdx(fn + _T(".idx"), delay) && WriteSub(fn + _T(".sub"));
 }
 
 bool CVobSubFile::SaveWinSubMux(CString fn, int delay)
@@ -1898,8 +1861,6 @@ bool CVobSubFile::SaveWinSubMux(CString fn, int delay)
             CompressFile(bmpfn);
         }
     }
-
-    m_path = fn + _T(".sub");
 
     return true;
 }
@@ -2161,8 +2122,6 @@ bool CVobSubFile::SaveScenarist(CString fn, int delay)
     m_bCustomPal = bCustomPal;
     memcpy(m_cuspal, tempCusPal, sizeof(m_cuspal));
 
-    m_path = fn + _T(".sst");
-
     return true;
 }
 
@@ -2391,8 +2350,6 @@ bool CVobSubFile::SaveMaestro(CString fn, int delay)
     m_bCustomPal = bCustomPal;
     memcpy(m_cuspal, tempCusPal, sizeof(m_cuspal));
 
-    m_path = fn + _T(".son");
-
     return true;
 }
 
@@ -2495,20 +2452,12 @@ void CVobSubStream::Open(CString name, BYTE* pData, int len)
 
 void CVobSubStream::Add(REFERENCE_TIME tStart, REFERENCE_TIME tStop, BYTE* pData, int len)
 {
-    int pkt_size = (pData[0] << 8) | pData[1];
-    if (len <= 4 || pkt_size != len) {
+    if (len <= 4 || ((pData[0] << 8) | pData[1]) != len) {
         return;
     }
 
     CVobSubImage vsi;
-    int dat_size = (pData[2] << 8) | pData[3];
-    if (pkt_size < dat_size + 4) {
-        ASSERT(false);
-        return;
-    }
-    if (!vsi.GetPacketInfo(pData, pkt_size, dat_size)) {
-        return;
-    }
+    vsi.GetPacketInfo(pData, (pData[0] << 8) | pData[1], (pData[2] << 8) | pData[3]);
 
     CAutoPtr<SubPic> p(DEBUG_NEW SubPic());
     p->tStart = tStart;
@@ -2608,9 +2557,9 @@ STDMETHODIMP CVobSubStream::Render(SubPicDesc& spd, REFERENCE_TIME rt, double fp
         if (sp->tStart <= rt && rt < sp->tStop) {
             if (m_img.nIdx != (size_t)pos || (sp->bAnimated && sp->tStart + m_img.tCurrent * 10000i64 <= rt)) {
                 BYTE* pData = sp->pData.GetData();
-                size_t packetsize = (pData[0] << 8) | pData[1];
-                size_t datasize = (pData[2] << 8) | pData[3];
-                m_img.Decode(pData, packetsize, datasize, int((rt - sp->tStart) / 10000i64), m_bCustomPal, m_tridx, m_orgpal, m_cuspal, true);
+                m_img.Decode(
+                    pData, (pData[0] << 8) | pData[1], (pData[2] << 8) | pData[3], int((rt - sp->tStart) / 10000i64),
+                    m_bCustomPal, m_tridx, m_orgpal, m_cuspal, true);
                 m_img.nIdx = (size_t)pos;
             }
 

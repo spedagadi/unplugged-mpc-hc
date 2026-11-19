@@ -27,36 +27,6 @@
 #include "Rasterizer.h"
 #include "SeparableFilter.h"
 #include "../SubPic/ISubPic.h"
-#include <ft2build.h>
-#include <freetype/ftoutln.h>
-#include <freetype/internal/ftobjs.h>
-#include FT_FREETYPE_H
-#include FT_SYNTHESIS_H
-
-#define DEBUG_PERFORMANCE 0
-#if DEBUG_PERFORMANCE
-#include <sstream>
-#include <chrono>
-#define BEGIN_PERF_TIMER(a) \
-    std::chrono::steady_clock::time_point begin##a = std::chrono::steady_clock::now(); \
-    std::wostringstream ss##a; \
-
-#define TRACE_PERF_TIMER(a, idx, ref1, ref2) \
-    std::chrono::steady_clock::time_point end##a##idx = std::chrono::steady_clock::now(); \
-    ss##a << "\n"; \
-    ss##a << std::chrono::time_point_cast<std::chrono::microseconds>(end##a##idx).time_since_epoch().count(); \
-    ss##a << ": "##ref1 << "(" << ref2 << ") = "; \
-    ss##a << std::chrono::duration_cast<std::chrono::microseconds>(end##a##idx - begin##a).count() << "[µs]" << std::endl; \
-
-#define END_PERF_TIMER(a, ref1, ref2) \
-    TRACE_PERF_TIMER(a, 0, ref1, ref2) \
-    TRACE("%s\n", ss##a.str().c_str()); \
-
-#else
-#define BEGIN_PERF_TIMER(a)
-#define TRACE_PERF_TIMER(a, idx, ref1, ref2)
-#define END_PERF_TIMER(a, ref1, ref2)
-#endif
 
 int Rasterizer::getOverlayWidth() const
 {
@@ -74,20 +44,13 @@ Rasterizer::Rasterizer()
     , mEdgeNext(0)
     , mpScanBuffer(nullptr)
 {
-    int cpuinfo[4];
-    __cpuid(cpuinfo, 1);
-    //bool sse2    = cpuinfo[3] & (1 << 26);
-    //bool sse42   = cpuinfo[2] & (1 << 20);
-    bool avxflag = cpuinfo[2] & (1 << 28);
-    bool osxsave = cpuinfo[2] & (1 << 27);
-    bool xsave   = cpuinfo[2] & (1 << 26);
-    if (avxflag && osxsave && xsave) {
-        __cpuidex(cpuinfo, 7, 0);
-        if (cpuinfo[1] & (1 << 5)) {
-            unsigned long long xcrFeatureMask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
-            m_bUseAVX2 = (xcrFeatureMask & 0x6) == 0x6;
-        }
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 0);
+    if (cpuInfo[0] < 7) {
+        return;
     }
+    __cpuidex(cpuInfo, 7, 0);
+    m_bUseAVX2 = !!(cpuInfo[1] & (1 << 5)) && (_xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x6) == 0x6;
 }
 
 Rasterizer::~Rasterizer()
@@ -112,95 +75,6 @@ void Rasterizer::_ReallocEdgeBuffer(unsigned int edges)
         mEdgeHeapSize = edges;
     } else {
         AfxThrowMemoryException();
-    }
-}
-
-void Rasterizer::AnalyzeBezierMinMax(int ptbase, bool fBSpline, int& minx, int& maxx, int& miny, int& maxy)
-{
-    const POINT* pt0 = mpPathPoints + ptbase;
-    const POINT* pt1 = mpPathPoints + ptbase + 1;
-    const POINT* pt2 = mpPathPoints + ptbase + 2;
-    const POINT* pt3 = mpPathPoints + ptbase + 3;
-
-    double x0 = pt0->x;
-    double x1 = pt1->x;
-    double x2 = pt2->x;
-    double x3 = pt3->x;
-    double y0 = pt0->y;
-    double y1 = pt1->y;
-    double y2 = pt2->y;
-    double y3 = pt3->y;
-
-    double cx3, cx2, cx1, cx0, cy3, cy2, cy1, cy0;
-
-    if (fBSpline) {
-        double _1div6 = 1.0 / 6.0;
-
-        cx3 = _1div6 * (-  x0 + 3 * x1 - 3 * x2 + x3);
-        cx2 = _1div6 * (3 * x0 - 6 * x1 + 3 * x2);
-        cx1 = _1div6 * (-3 * x0    + 3 * x2);
-        cx0 = _1div6 * (x0 + 4 * x1 + 1 * x2);
-
-        cy3 = _1div6 * (-  y0 + 3 * y1 - 3 * y2 + y3);
-        cy2 = _1div6 * (3 * y0 - 6 * y1 + 3 * y2);
-        cy1 = _1div6 * (-3 * y0     + 3 * y2);
-        cy0 = _1div6 * (y0 + 4 * y1 + 1 * y2);
-    } else { // bezier
-        cx3 = -  x0 + 3 * x1 - 3 * x2 + x3;
-        cx2 =  3 * x0 - 6 * x1 + 3 * x2;
-        cx1 = -3 * x0 + 3 * x1;
-        cx0 = x0;
-
-        cy3 = -  y0 + 3 * y1 - 3 * y2 + y3;
-        cy2 =  3 * y0 - 6 * y1 + 3 * y2;
-        cy1 = -3 * y0 + 3 * y1;
-        cy0 = y0;
-    }
-
-    double maxaccel1 = fabs(2 * cy2) + fabs(6 * cy3);
-    double maxaccel2 = fabs(2 * cx2) + fabs(6 * cx3);
-
-    double maxaccel = maxaccel1 > maxaccel2 ? maxaccel1 : maxaccel2;
-    double h = 1.0;
-
-    if (maxaccel > 8.0) {
-        h = sqrt(8.0 / maxaccel);
-    }
-
-    for (double t = 0; t < 1.0; t += h) {
-        double x = cx0 + t * (cx1 + t * (cx2 + t * cx3));
-        double y = cy0 + t * (cy1 + t * (cy2 + t * cy3));
-        int ix = (int)x;
-        int iy = (int)y;
-        if (ix < minx) {
-            minx = ix;
-        }
-        if (ix > maxx) {
-            maxx = ix;
-        }
-        if (iy < miny) {
-            miny = iy;
-        }
-        if (iy > maxy) {
-            maxy = iy;
-        }
-    }
-
-    double x = cx0 + cx1 + cx2 + cx3;
-    double y = cy0 + cy1 + cy2 + cy3;
-    int ix = (int)x;
-    int iy = (int)y;
-    if (ix < minx) {
-        minx = ix;
-    }
-    if (ix > maxx) {
-        maxx = ix;
-    }
-    if (iy < miny) {
-        miny = iy;
-    }
-    if (iy > maxy) {
-        maxy = iy;
     }
 }
 
@@ -342,8 +216,6 @@ void Rasterizer::_EvaluateLine(int x0, int y0, int x1, int y1)
 
     y1 = (y1 - 5) >> 3;
 
-    ASSERT(y1 < m_pOutlineData->mHeight);
-
     if (iy <= y1) {
         __int64 invslope = (__int64(x1 - x0) << 16) / dy;
 
@@ -411,43 +283,36 @@ bool Rasterizer::PartialBeginPath(HDC hdc, bool bClearPath)
     return !!::BeginPath(hdc);
 }
 
-bool Rasterizer::ResizePath(int nPoints) {
-    BYTE* pNewTypes = (BYTE*)realloc(mpPathTypes, (mPathPoints + nPoints) * sizeof(BYTE));
-    if (pNewTypes) {
-        mpPathTypes = pNewTypes;
-    } else {
-        return false;
-    }
-
-    POINT* pNewPoints = (POINT*)realloc(mpPathPoints, (mPathPoints + nPoints) * sizeof(POINT));
-    if (pNewPoints) {
-        mpPathPoints = pNewPoints;
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
 bool Rasterizer::PartialEndPath(HDC hdc, long dx, long dy)
 {
     ::CloseFigure(hdc);
 
     if (::EndPath(hdc)) {
         int nPoints;
+        BYTE* pNewTypes;
+        POINT* pNewPoints;
 
         nPoints = GetPath(hdc, nullptr, nullptr, 0);
 
-        if (nPoints < 1) {
+        if (!nPoints) {
             return true;
         }
 
-        bool resizeSuccess = ResizePath(nPoints);
+        pNewTypes = (BYTE*)realloc(mpPathTypes, (mPathPoints + nPoints) * sizeof(BYTE));
+        pNewPoints = (POINT*)realloc(mpPathPoints, (mPathPoints + nPoints) * sizeof(POINT));
+
+        if (pNewTypes) {
+            mpPathTypes = pNewTypes;
+        }
+
+        if (pNewPoints) {
+            mpPathPoints = pNewPoints;
+        }
 
         BYTE* pTypes = DEBUG_NEW BYTE[nPoints];
         POINT* pPoints = DEBUG_NEW POINT[nPoints];
 
-        if (resizeSuccess && nPoints == GetPath(hdc, pPoints, pTypes, nPoints)) {
+        if (pNewTypes && pNewPoints && nPoints == GetPath(hdc, pPoints, pTypes, nPoints)) {
             for (ptrdiff_t i = 0; i < nPoints; ++i) {
                 mpPathPoints[mPathPoints + i].x = pPoints[i].x + dx;
                 mpPathPoints[mPathPoints + i].y = pPoints[i].y + dy;
@@ -460,7 +325,7 @@ bool Rasterizer::PartialEndPath(HDC hdc, long dx, long dy)
             delete [] pPoints;
             return true;
         } else {
-            ASSERT(FALSE);
+            DebugBreak();
         }
 
         delete [] pTypes;
@@ -493,25 +358,9 @@ bool Rasterizer::ScanConvert()
         int maxx = INT_MIN;
         int maxy = INT_MIN;
 
-        int bezier_idx = 0;
         for (i = 0; i < mPathPoints; ++i) {
             int ix = mpPathPoints[i].x;
             int iy = mpPathPoints[i].y;
-
-            // in case of Bezier/BSpline calculate the actual min/max
-            BYTE pt = mpPathTypes[i] & ~PT_CLOSEFIGURE;
-            if (pt == PT_BEZIERTO || pt == PT_BSPLINETO) {
-                bezier_idx++;
-                if (bezier_idx == 1 && i > 0 && (mPathPoints >= i + 3)) {
-                    AnalyzeBezierMinMax(i - 1, pt == PT_BSPLINETO, minx, maxx, miny, maxy);
-                }
-                if (bezier_idx == 3) {
-                    bezier_idx = 0;
-                }
-                continue;
-            } else {
-                bezier_idx = 0;
-            }
 
             if (ix < minx) {
                 minx = ix;
@@ -853,12 +702,8 @@ void Rasterizer::CreateWidenedRegionFast(int rx, int ry)
     CAtlList<CEllipseCenterGroup> centerGroups;
     std::vector<SpanEndPoint> wideSpanEndPoints;
 
-    try {
-        wideSpanEndPoints.reserve(10);
-        m_pOutlineData->mWideOutline.reserve(m_pOutlineData->mOutline.size() + m_pOutlineData->mOutline.size() / 2);
-    } catch (...) {
-        return;
-    }
+    wideSpanEndPoints.reserve(10);
+    m_pOutlineData->mWideOutline.reserve(m_pOutlineData->mOutline.size() + m_pOutlineData->mOutline.size() / 2);
 
     auto flushLines = [&](int yStart, int yStop, tSpanBuffer & dst) {
         for (int y = yStart; y < yStop; y++) {
@@ -892,7 +737,7 @@ void Rasterizer::CreateWidenedRegionFast(int rx, int ry)
                     int xRight = it->x;
 
                     if (xLeft < xRight) {
-                        dst.emplace_back(static_cast<unsigned __int64>(y) << 32 | xLeft, static_cast<unsigned __int64>(y) << 32 | xRight);
+                        dst.emplace_back(unsigned __int64(y) << 32 | xLeft, unsigned __int64(y) << 32 | xRight);
                     }
                 }
 
@@ -980,27 +825,15 @@ bool Rasterizer::Rasterize(int xsub, int ysub, int fBlur, double fGaussianBlur)
     m_pOverlayData->mOverlayHeight = ((height + 14) >> 3) + 1;
     m_pOverlayData->mOverlayPitch = (m_pOverlayData->mOverlayWidth + 15) & ~15; // Round the next multiple of 16
 
-    uint64_t buffersize = m_pOverlayData->mOverlayPitch * m_pOverlayData->mOverlayHeight;
-    if (buffersize > 134217728ULL) {
-        TRACE(L"Skipping subtitle rasterize due to excessive overlay size\n");
-        m_pOverlayData = nullptr;
-        return false;
-    }
-    m_pOverlayData->mpOverlayBufferBody = (byte*)_aligned_malloc(buffersize, 16);
-    if (!m_pOverlayData->mpOverlayBufferBody) {
-        m_pOverlayData = nullptr;
-        return false;
-    }
-    m_pOverlayData->mpOverlayBufferBorder = (byte*)_aligned_malloc(buffersize, 16);
-    if (!m_pOverlayData->mpOverlayBufferBorder) {
-        _aligned_free(m_pOverlayData->mpOverlayBufferBody);
-        m_pOverlayData->mpOverlayBufferBody = nullptr;
+    m_pOverlayData->mpOverlayBufferBody = (byte*)_aligned_malloc(m_pOverlayData->mOverlayPitch * m_pOverlayData->mOverlayHeight, 16);
+    m_pOverlayData->mpOverlayBufferBorder = (byte*)_aligned_malloc(m_pOverlayData->mOverlayPitch * m_pOverlayData->mOverlayHeight, 16);
+    if (!m_pOverlayData->mpOverlayBufferBody || !m_pOverlayData->mpOverlayBufferBorder) {
         m_pOverlayData = nullptr;
         return false;
     }
 
-    ZeroMemory(m_pOverlayData->mpOverlayBufferBody, buffersize);
-    ZeroMemory(m_pOverlayData->mpOverlayBufferBorder, buffersize);
+    ZeroMemory(m_pOverlayData->mpOverlayBufferBody, m_pOverlayData->mOverlayPitch * m_pOverlayData->mOverlayHeight);
+    ZeroMemory(m_pOverlayData->mpOverlayBufferBorder, m_pOverlayData->mOverlayPitch * m_pOverlayData->mOverlayHeight);
 
     // Are we doing a border?
 
@@ -1661,7 +1494,7 @@ namespace
                 __m128i d1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst));
                 __m128i d2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 16));
                 __m128i d3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 32));
-                __m128i d4 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 48));
+                __m128i d4 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 64));
 
                 auto c_r_low = _mm256_castsi256_si128(c_r);
                 auto c_g_low = _mm256_castsi256_si128(c_g);
@@ -2004,120 +1837,7 @@ CRect Rasterizer::Draw(SubPicDesc& spd, CRect& clipRect, byte* pAlphaMask, int x
 
 void Rasterizer::FillSolidRect(SubPicDesc& spd, int x, int y, int nWidth, int nHeight, DWORD lColor) const
 {
-	if (x < 0 || y < 0) {
-        ASSERT(FALSE);
-        return;
-	}
     ASSERT(spd.w >= x + nWidth && spd.h >= y + nHeight);
     BYTE* dst = (BYTE*)((DWORD*)(spd.bits + spd.pitch * y) + x);
     DrawInternal(m_bUseAVX2, dst, spd.pitch, BYTE(0x40), nWidth, nHeight, lColor);
-}
-
-inline void Rasterizer::AddFTPath(BYTE type, FT_Pos x, FT_Pos y, FTPathData *data) {
-    y = data->tmAscent - y + data->dy;
-    x += data->dx;
-    data->ftTypes.push_back(type);
-    data->ftPoints.push_back({ x, y });
-}
-
-static FT_Error ft_move_to(const FT_Vector* to, void* user) {
-    FTPathData* data = (FTPathData*)user;
-    data->r->AddFTPath(PT_MOVETO, to->x / 64, to->y / 64, data);
-    return 0;
-}
-static FT_Error ft_line_to(const FT_Vector* to, void* user) {
-    FTPathData* data = (FTPathData*)user;
-    data->r->AddFTPath(PT_LINETO, to->x / 64, to->y / 64, data);
-    return 0;
-}
-static FT_Error ft_conic_to(const FT_Vector* control_1, const FT_Vector* to, void* user) {
-    FTPathData* data = (FTPathData*)user;
-    data->r->AddFTPath(PT_BEZIERTO, control_1->x / 64, control_1->y / 64, data);
-    data->r->AddFTPath(PT_BEZIERTO, (control_1->x+to->x) / 128, (control_1->y+to->y) / 128, data);
-    data->r->AddFTPath(PT_BEZIERTO, to->x / 64, to->y / 64, data);
-    return 0;
-}
-static FT_Error ft_cubic_to(const FT_Vector* control_1, const FT_Vector* control_2, const FT_Vector* to, void* user) {
-    FTPathData* data = (FTPathData*)user;
-    data->r->AddFTPath(PT_BEZIERTO, control_1->x / 64, control_1->y / 64, data);
-    data->r->AddFTPath(PT_BEZIERTO, control_2->x / 64, control_2->y / 64, data);
-    data->r->AddFTPath(PT_BEZIERTO, to->x / 64, to->y / 64, data);
-    return 0;
-}
-
-FT_DEFINE_OUTLINE_FUNCS(
-    ft_decompose_funcs,
-    (FT_Outline_MoveTo_Func)ft_move_to,   /* move_to  */
-    (FT_Outline_LineTo_Func)ft_line_to,   /* line_to  */
-    (FT_Outline_ConicTo_Func)ft_conic_to,  /* conic_to */
-    (FT_Outline_CubicTo_Func)ft_cubic_to,  /* cubic_to */
-    0,                                      /* shift    */
-    0                                       /* delta    */
-)
-
-FT_UInt Rasterizer::GetLangCodePoint(wchar_t ch, faceData& fd) {
-    FT_UInt cp;
-
-    if (fd.codePoints.count(ch)) {
-        cp = fd.codePoints[ch];
-    } else {
-        cp = FT_Get_Char_Index(fd.face, ch);
-    }
-    return cp;
-}
-
-bool Rasterizer::GetPathFreeType(HDC hdc, bool bClearPath, std::wstring fontNameK, wchar_t ch, int dx, int dy, CStringA langHint, FTLibraryData* ftLibraryData) {
-    BEGIN_PERF_TIMER(GetPathFreeType);
-    if (bClearPath) {
-        _TrashPath();
-    }
-
-    auto& fc = ftLibraryData->GetFaceCache();
-    if (fc.count(fontNameK) == 0) {
-        return false;
-    }
-
-    auto& fd = fc[fontNameK];
-    FT_Face& face = fd.face;
-    FT_Error error;
-
-    if (ftLibraryData && ftLibraryData->IsInitialized()) {
-        //error = FT_Load_Char(face, ch, FT_LOAD_NO_HINTING|FT_LOAD_NO_BITMAP);
-        FT_UInt cp =  GetLangCodePoint(ch, fd);
-        error = FT_Load_Glyph(face, cp, FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP);
-        if (!error) {
-            FT_Glyph_Metrics* metrics = &face->glyph->metrics;
-            FTPathData pd;
-            pd.dx = dx;
-            pd.dy = dy;
-            pd.r = this;
-            pd.tmAscent = fc[fontNameK].ascent; //this is the y baseline.  match windows and not Freetype
-            error = FT_Outline_Decompose(&face->glyph->outline, &ft_decompose_funcs, (void*)&pd);
-#if 0
-            for (int a = 0; a < mPathPoints; a++) {
-                TRACE("winxxx\t%d\t%d\t%d\n", mpPathPoints[a].x, mpPathPoints[a].y, mpPathTypes[a]);
-            }
-#endif
-            int nPoints = pd.ftPoints.size();
-            if (nPoints > 0 && ResizePath(nPoints)) {
-                for (int a = 0; a < pd.ftPoints.size(); a++) {
-                    mpPathTypes[mPathPoints + a] = pd.ftTypes[a];
-                    mpPathPoints[mPathPoints + a] = pd.ftPoints[a];
-                }
-                mPathPoints += nPoints;
-            } else {
-                error = nPoints > 0 || !CStringW::StrTraits::IsSpace(ch);
-            }
-#if 0
-            for (int a = mPathPoints - nPoints; a < mPathPoints; a++) {
-                TRACE("ft\t%d\t%d\t%d\n", mpPathPoints[a].x, mpPathPoints[a].y, mpPathTypes[a]);
-            }
-#endif
-        }
-        if (!error) {
-            END_PERF_TIMER(GetPathFreeType, "function", fontNameK);
-            return true;
-        }
-    }
-    return false;
 }

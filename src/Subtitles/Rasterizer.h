@@ -24,10 +24,7 @@
 #include "Ellipse.h"
 #include <memory>
 #include <vector>
-#include <unordered_map>
-#include "SubRendererSettings.h"
-#include "OpenTypeLangTags.h"
-#include "FreeTypePathTools.h"
+
 
 #define PT_MOVETONC         0xfe
 #define PT_BSPLINETO        0xfc
@@ -73,21 +70,15 @@ struct COverlayData {
         , mOverlayHeight(overlayData.mOverlayHeight)
         , mOverlayPitch(overlayData.mOverlayPitch) {
         if (mOverlayPitch > 0 && mOverlayHeight > 0) {
-            uint64_t buffersize = mOverlayPitch * mOverlayHeight;
-            if (buffersize <= 134217728ULL) {
-                mpOverlayBufferBody = (byte*)_aligned_malloc(buffersize, 16);
-                mpOverlayBufferBorder = (byte*)_aligned_malloc(buffersize, 16);
-            } else {
-                ASSERT(false);
-            }
+            mpOverlayBufferBody = (byte*)_aligned_malloc(mOverlayPitch * mOverlayHeight, 16);
+            mpOverlayBufferBorder = (byte*)_aligned_malloc(mOverlayPitch * mOverlayHeight, 16);
             if (!mpOverlayBufferBody || !mpOverlayBufferBorder) {
                 mOffsetX = mOffsetY = 0;
                 mOverlayWidth = mOverlayHeight = 0;
                 DeleteOverlay();
-                return;
             }
-            memcpy(mpOverlayBufferBody, overlayData.mpOverlayBufferBody, buffersize);
-            memcpy(mpOverlayBufferBorder, overlayData.mpOverlayBufferBorder, buffersize);
+            memcpy(mpOverlayBufferBody, overlayData.mpOverlayBufferBody, mOverlayPitch * mOverlayHeight);
+            memcpy(mpOverlayBufferBorder, overlayData.mpOverlayBufferBorder, mOverlayPitch * mOverlayHeight);
         } else {
             mpOverlayBufferBody = mpOverlayBufferBorder = nullptr;
         }
@@ -134,19 +125,7 @@ struct COverlayData {
     }
 };
 
-class Rasterizer;
-
 typedef std::shared_ptr<COverlayData> COverlayDataSharedPtr;
-typedef signed long  FT_Pos;
-struct FTPathData {
-    std::vector<BYTE> ftTypes;
-    std::vector<POINT> ftPoints;
-    int dx;
-    int dy;
-    Rasterizer* r;
-    LONG tmAscent;
-};
-
 
 class Rasterizer
 {
@@ -174,6 +153,7 @@ private:
     unsigned int mEdgeNext;
 
     unsigned int* mpScanBuffer;
+
 protected:
     CEllipseSharedPtr m_pEllipse;
     COutlineDataSharedPtr m_pOutlineData;
@@ -182,7 +162,6 @@ protected:
 private:
     void _TrashPath();
     void _ReallocEdgeBuffer(unsigned int edges);
-    void AnalyzeBezierMinMax(int ptbase, bool fBSpline, int& minx, int& maxx, int& miny, int& maxy);
     void _EvaluateBezier(int ptbase, bool fBSpline);
     void _EvaluateLine(int pt1idx, int pt2idx);
     void _EvaluateLine(int x0, int y0, int x1, int y1);
@@ -190,7 +169,6 @@ private:
     template<int flag> __forceinline void _EvaluateLine(int x0, int y0, int x1, int y1);
     static void _OverlapRegion(tSpanBuffer& dst, const tSpanBuffer& src, int dx, int dy);
     void CreateWidenedRegionFast(int borderX, int borderY);
-    bool ResizePath(int nPoints);
 
 public:
     Rasterizer();
@@ -204,9 +182,6 @@ public:
     bool CreateWidenedRegion(int borderX, int borderY);
     bool Rasterize(int xsub, int ysub, int fBlur, double fGaussianBlur);
     int getOverlayWidth() const;
-    FT_UInt GetLangCodePoint(wchar_t ch, faceData& fd);
-    bool GetPathFreeType(HDC hdc, bool bClearPath, std::wstring fontNameK, wchar_t ch, int dx, int dy, CStringA langHint, FTLibraryData* ftLibraryData);
-    inline void AddFTPath(BYTE type, FT_Pos x, FT_Pos y, FTPathData* data);
 
     CRect Draw(SubPicDesc& spd, CRect& clipRect, byte* pAlphaMask, int xsub, int ysub, const DWORD* switchpts, bool fBody, bool fBorder) const;
     void FillSolidRect(SubPicDesc& spd, int x, int y, int nWidth, int nHeight, DWORD lColor) const;

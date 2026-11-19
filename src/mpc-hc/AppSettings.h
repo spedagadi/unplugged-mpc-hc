@@ -31,7 +31,7 @@
 #include "../filters/renderer/VideoRenderers/RenderersSettings.h"
 #include "SettingsDefines.h"
 #include "Shaders.h"
-#include "../Subtitles/SubRendererSettings.h"
+// Subtitle stack is the MPC-HC reference version; it has no SubRendererSettings.
 #include <afxadv.h>
 #include <afxsock.h>
 #include "CMPCTheme.h"

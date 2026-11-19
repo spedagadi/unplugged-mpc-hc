@@ -1,5 +1,5 @@
 /*
- * (C) 2013-2018 see Authors.txt
+ * (C) 2013-2014, 2017 see Authors.txt
  *
  * This file is part of MPC-HC.
  *
@@ -25,6 +25,10 @@
 template<typename K, typename V, class KTraits = CElementTraits<K>, class VTraits = CElementTraits<V>>
 class CRenderingCache : private CAtlMap<K, POSITION, KTraits>
 {
+    // CAtlMap exposes KINARGTYPE as a dependent base typedef; the toolset used here
+    // does not find it unqualified in a class template (MPC-HC's build does). Same
+    // definition as atlcoll.h: typedef typename KTraits::INARGTYPE KINARGTYPE.
+    using KINARGTYPE = typename KTraits::INARGTYPE;
 private:
     size_t m_maxSize;
     struct CPositionValue {
@@ -36,8 +40,8 @@ private:
 public:
     CRenderingCache(size_t maxSize) : m_maxSize(maxSize) {};
 
-    bool Lookup(typename KTraits::INARGTYPE key, _Out_ typename VTraits::OUTARGTYPE value) {
-        POSITION pos = nullptr;
+    bool Lookup(KINARGTYPE key, _Out_ typename VTraits::OUTARGTYPE value) {
+        POSITION pos;
         bool bFound = __super::Lookup(key, pos);
 
         if (bFound) {
@@ -48,8 +52,8 @@ public:
         return bFound;
     };
 
-    POSITION SetAt(typename KTraits::INARGTYPE key, typename VTraits::INARGTYPE value) {
-        POSITION pos = nullptr;
+    POSITION SetAt(KINARGTYPE key, typename VTraits::INARGTYPE value) {
+        POSITION pos;
         bool bFound = __super::Lookup(key, pos);
 
         if (bFound) {

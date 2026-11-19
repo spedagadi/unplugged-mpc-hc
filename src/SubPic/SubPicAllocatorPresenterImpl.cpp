@@ -117,6 +117,32 @@ HRESULT CSubPicAllocatorPresenterImpl::AlphaBltSubPic(const CRect& windowRect,
         int yOffset = yOffsetInPixels + r.subPicVerticalShift;
         if (SUCCEEDED(pSubPic->GetSourceAndDest(windowRect, videoRect, rcSource, rcDest,
                                                 videoStretchFactor, xOffsetInPixels, yOffset))) {
+            // Size control: scale the destination around its bottom-centre, so the
+            // subtitle stays where it sits and only changes size. The source and the
+            // rendered pixels are untouched (ASS styles, PGS/VobSub images).
+            if (m_subScale != 100 && rcDest.Width() > 0 && rcDest.Height() > 0) {
+                const double f = m_subScale / 100.0;
+                const int cx = (rcDest.left + rcDest.right) / 2;
+                const int by = rcDest.bottom;
+                int w = (int)(rcDest.Width() * f + 0.5);
+                int h = (int)(rcDest.Height() * f + 0.5);
+                if (w < 1) w = 1;
+                if (h < 1) h = 1;
+                rcDest = CRect(cx - w / 2, by - h, cx - w / 2 + w, by);
+            }
+            // Scope screens: when the picture stops short of the window bottom,
+            // the black bar under it is where captions belong. Pin the block's
+            // BOTTOM inside that bar. Anchoring at the picture edge let a
+            // two-line caption grow UP into the image (the reported "sometimes
+            // it extends up"). No bar (NLS fill, 16:9 content) => the video and
+            // window bottoms coincide and this is a no-op.
+            const int barH = windowRect.bottom - videoRect.bottom;
+            if (barH > 1) {
+                const int margin  = (windowRect.Height() * 2) / 100;
+                const int wantBot = windowRect.bottom - margin;
+                const int dy      = wantBot - rcDest.bottom;
+                if (dy > 0) rcDest.OffsetRect(0, dy);
+            }
             return pSubPic->AlphaBlt(rcSource, rcDest, pTarget);
         }
     }

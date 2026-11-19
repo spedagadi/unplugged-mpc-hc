@@ -36,6 +36,7 @@
 #include "../DSUtil/DSUtil.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <vector>
 #include <list>
 #include <memory>

@@ -48,9 +48,16 @@ namespace DSObjects
 	// AlphaBltSubPic has three failure branches — LookupSubPic miss, GetSourceAndDest
 	// fail, AlphaBlt fail — and the queue stats alone cannot say which one fires.
 	// These replay the first two steps (mirroring the real call's bAdviseBlocking)
-	// on the same 50th-callback sample.
+	// at the SAME m_rtNow as the real call, every callback. The earlier version
+	// sampled only every 50th callback but printed the result next to a current
+	// lastRt, so "hit=0 + provider ACTIVE" was a sampling artefact (2026-11-18).
 	extern volatile long long g_subLookupHit;
 	extern volatile long long g_subGeoHr;
+	// Per-call branch witness: 0 = lookup miss, 1 = GetSourceAndDest failed,
+	// 2 = AlphaBlt failed, 3 = drew. dirty/pic say whether the subpic the queue
+	// handed over had content at all (empty dirty = nothing rasterised).
+	extern volatile long long g_subBranch;
+	extern volatile long long g_subPicW, g_subPicH, g_subDirtyW, g_subDirtyH;
 
 	class CMPCVRAllocatorPresenter
 		: public CSubPicAllocatorPresenterImpl
@@ -108,6 +115,12 @@ namespace DSObjects
         STDMETHODIMP CreateRenderer(IUnknown** ppRenderer) override;
         STDMETHODIMP_(SIZE) GetVideoSize(bool bCorrectAR) const;
         STDMETHODIMP_(void) SetPosition(RECT w, RECT v) override;
+        // The engine has no MPC-HC frame and never calls SetPosition, so the base
+        // implementation pushed an EMPTY video rect into the subtitle allocator.
+        // CRenderedTextSubtitle::Render bails on !spd.vidrect.right, which made
+        // every text track produce an empty subpicture (drew=0, geoHr=E_INVALIDARG,
+        // dirty=0x0; 2026-11-18). Restore the full subtitle canvas after attaching.
+        STDMETHODIMP_(void) SetSubPicProvider(ISubPicProvider* pSubPicProvider) override;
         STDMETHODIMP_(bool) Paint(bool bAll) override;
         STDMETHODIMP GetDIB(BYTE* lpDib, DWORD* size) override;
         STDMETHODIMP GetDisplayedImage(LPVOID* dibImage) override;

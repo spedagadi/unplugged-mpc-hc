@@ -335,8 +335,10 @@ void SeparableFilterY_SSE2(unsigned char* src, unsigned char* dst, int width, in
 
 static inline double NormalDist(double sigma, double x)
 {
-    if (sigma <= 0.000000001) {
-        return (x == 0.0) ? 1.0 : 0.0;
+    if (sigma <= 0.0 && x == 0.0) {
+        return 1.0;
+    } else if (sigma <= 0.0) {
+        return 0.0;
     } else {
         return exp(-(x * x) / (2 * sigma * sigma)) / (sigma * sqrt(2 * M_PI));
     }
