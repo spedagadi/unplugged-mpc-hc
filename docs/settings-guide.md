@@ -593,6 +593,12 @@ There are two supported ways to run 10-bit. They are alternatives; doing both
 makes them fight and leaves the NVIDIA box greyed for no benefit. **Both
 require the display mode itself to expose 10-bit** — neither can create one.
 
+The two rows ask for **opposite WCG states**: SDR BT.2020 needs Windows' wide
+colour **on**, 10-bit SDR needs it **off**. With both On, the SDR BT.2020 row
+wins and the 10-bit SDR row is ignored (the app honors BT.2020 first and
+returns); the picture is the WCG path, not a combination of the two. Turn the
+other one Off so the panel shows which path is actually running.
+
 **A. WCG path (no driver step).** Windows' wide-colour mode owns the depth, but
 only on a mode the display already exposes as 10-bit.
 
