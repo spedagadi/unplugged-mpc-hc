@@ -48,6 +48,7 @@
 #include "vendor/webview2/include/WebView2.h"
 #include <gdiplus.h>
 #include <dwmapi.h>
+#include <tlhelp32.h>
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE      // older SDK headers lack the macro
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
@@ -774,8 +775,8 @@ static const wchar_t* kChromaMode[]={L"Default",L"Manual",L"Off"};
 static const wchar_t* kTexFmt[]={L"Auto",L"8-bit",L"10-bit",L"16-bit float"}; static const int kTexFmtV[]={0,8,10,16};
 static const wchar_t* kDeint[]={L"Disable",L"Enable",L"Hack future frames"};
 static const wchar_t* kSwap[]={L"Discard",L"Flip"};
-static const wchar_t* kFit[]={L"Source",L"Fixed aspect",L"Fill screen"};
-static const int kFitV[]={0,1,2};
+static const wchar_t* kFit[]={L"Source",L"Fixed aspect",L"Fill screen",L"Active picture"};
+static const int kFitV[]={0,1,2,3};
 // Which axis carries the aspect correction. "Split" hands the horizontal axis
 // the share in the Split row and the vertical the rest, so the same correction
 // is paid in a milder way on both axes instead of all on one (the choice
@@ -953,7 +954,7 @@ static Row g_rows[]={
  {4,2,L"VIDEO PROCESSING",L"Downscaling","out.downscaling",0,0,0,0,false,0,kDownscale,2,kDownscaleV,{},0,0,0,0},
  {4,0,L"VIDEO PROCESSING",L"Interpolate at 50%","out.interpolate50",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
  {4,0,L"VIDEO PROCESSING",L"Use dithering","out.useDither",0,0,0,0,true,0,nullptr,0,nullptr,{},0,0,1,0},
- {4,2,L"GEOMETRY",L"Fit mode","geo.mode",0,0,0,0,false,0,kFit,3,kFitV,{},0,0,0,0},
+ {4,2,L"GEOMETRY",L"Fit mode","geo.mode",0,0,0,0,false,0,kFit,4,kFitV,{},0,0,0,0},
  {4,1,L"GEOMETRY",L"Fixed aspect","geo.aspect",1.0,3.0,0.01,1.78,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"GEOMETRY",L"Zoom","geo.zoom",50,200,1,100,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {4,1,L"GEOMETRY",L"Pan X","geo.panX",-100,100,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -1710,6 +1711,42 @@ static const UINT HK_DBLE_SHOW = 200, HK_DBLE_FIX = 201,
                   HK_DBLE_F10 = 212, HK_DBLE_F11 = 213,
                   HK_DBLE_PUP = 220, HK_DBLE_PDOWN = 221,
                   HK_DBLE_PLEFT = 222, HK_DBLE_PRIGHT = 223;
+// ClipGuard.exe owns the settings while it runs. Unplugged starts first and
+// would otherwise register F7 and the arrow set, leaving the companion's OSD
+// unreachable (reported by the ClipGuard author, 2026-11-20). The process is
+// the simplest liveness probe; the renderer's own check is the shared mapping.
+static bool IsClipGuardHostRunning(){
+  HANDLE s=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+  if(s==INVALID_HANDLE_VALUE) return false;
+  PROCESSENTRY32W pe{}; pe.dwSize=sizeof(pe); bool found=false;
+  if(Process32FirstW(s,&pe)) do {
+    if(_wcsicmp(pe.szExeFile,L"ClipGuard.exe")==0){ found=true; break; }
+  } while(Process32NextW(s,&pe));
+  CloseHandle(s); return found; }
+static bool s_cgHotkeys=false;
+static void SetCgHotkeys(bool on){
+  CWnd* w=AfxGetMainWnd(); if(!w||!w->GetSafeHwnd()) return;
+  HWND h=w->GetSafeHwnd();
+  if(on==s_cgHotkeys) return;
+  struct { UINT id; UINT vk; UINT mods; } hk[] = {
+    {HK_DBLE_SHOW,'0',MOD_CONTROL|MOD_ALT|MOD_NOREPEAT},
+    {HK_DBLE_FIX,'D',MOD_CONTROL|MOD_ALT|MOD_NOREPEAT},
+    {HK_DBLE_UP,VK_UP,MOD_CONTROL|MOD_ALT}, {HK_DBLE_DOWN,VK_DOWN,MOD_CONTROL|MOD_ALT},
+    {HK_DBLE_LEFT,VK_LEFT,MOD_CONTROL|MOD_ALT}, {HK_DBLE_RIGHT,VK_RIGHT,MOD_CONTROL|MOD_ALT},
+    {HK_DBLE_F7,VK_F7,MOD_NOREPEAT}, {HK_DBLE_F8,VK_F8,MOD_NOREPEAT},
+    {HK_DBLE_F9,VK_F9,MOD_NOREPEAT}, {HK_DBLE_F10,VK_F10,MOD_NOREPEAT},
+    {HK_DBLE_F11,VK_F11,MOD_NOREPEAT} };
+  if(on){
+    for(auto&k:hk) if(!::RegisterHotKey(h,k.id,k.mods,k.vk))
+      LogF("ClipGuard hotkey id=%u vk=0x%02X registration failed (%lu)",
+           k.id,k.vk,(unsigned long)GetLastError());
+  } else {
+    for(auto&k:hk) ::UnregisterHotKey(h,k.id);
+    ::UnregisterHotKey(h,HK_DBLE_PUP); ::UnregisterHotKey(h,HK_DBLE_PDOWN);
+    ::UnregisterHotKey(h,HK_DBLE_PLEFT); ::UnregisterHotKey(h,HK_DBLE_PRIGHT);
+  }
+  s_cgHotkeys=on;
+  LogF("ClipGuard hotkeys %s (host=%d)",on?"on":"off",(int)IsClipGuardHostRunning()); }
 static void DblePushOsdState(){
   char b[128];
   snprintf(b,sizeof(b),"{\"a\":\"set\",\"sets\":\"hdr.cgOsdSel=%d;hdr.cgOsdPin=%s\"}",
@@ -1722,6 +1759,7 @@ static void DbleTouch(){
     else             AfxGetMainWnd()->SetTimer(TID_DBLE_OSD,8000,nullptr); } }
 static bool g_cgPlainArrows=false;
 static void DblePlainArrows(bool on){
+  if(IsClipGuardHostRunning()) on=false;
   CWnd* w=AfxGetMainWnd(); if(!w||!w->GetSafeHwnd()) return;
   if(on==g_cgPlainArrows) return;
   if(on){
@@ -1736,6 +1774,7 @@ static void DblePlainArrows(bool on){
     ::UnregisterHotKey(w->GetSafeHwnd(),HK_DBLE_PRIGHT); }
   g_cgPlainArrows=on; }
 static void DbleShowOsd(bool show){
+  if(show && IsClipGuardHostRunning()) return;   // the companion owns the menu
   Row* osd=FindRow("hdr.cgOsd"); if(!osd) return;
   if(osd->on!=show){ osd->on=show; PushRow(*osd); }
   if(show) DbleTouch();
@@ -1752,6 +1791,9 @@ static void CgCycle(const char* key,int dir){
 static void CgToggle(const char* key){
   Row* r=FindRow(key); if(!r) return; r->on=!r->on; PushRow(*r); }
 static void DbleStep(int dir){
+  // Row order is ClipGuard 2.62's OSD, which is what the renderer draws in
+  // fallback mode (no ClipGuard.exe). The old 2.25 order made "Dim fire" step
+  // Look-ahead and left the Projector/LUT rows unreachable (reported 2026-11-20).
   switch(g_dbleSel){
   case 0: CgToggle("hdr.cgEnabled"); break;
   case 1: CgStepNum("hdr.cgStrength",0.01*dir,0.0,1.0); break;
@@ -1764,12 +1806,16 @@ static void DbleStep(int dir){
   case 8: CgStepNum("hdr.cgHot",0.01*dir,0.0,1.0);
           { Row* r=FindRow("hdr.cgHot"); if(r) g_cgHotLast=(float)r->val; } break;
   case 9: CgStepNum("hdr.cgHotBelow",0.1*dir,0.0,20.0); break;
-  case 10: CgStepNum("hdr.cgGraded",0.05*dir,0.0,1.0); break;
-  case 11: CgCycle("hdr.cgGrid",dir); break;
-  case 12: CgCycle("hdr.cgLookAhead",dir); break;
-  case 13: CgCycle("hdr.cgView",dir); break;
-  case 14: g_dblePinned=!g_dblePinned; DblePushOsdState(); break;
-  case 15: g_cgRestart=true; break;
+  // 10 Hot spot mask, 12 Dim fire, 15 Dither, 16 Projector, 17 LUT are set by
+  // ClipGuard.exe only; the native block has no field for them.
+  case 10: case 12: case 15: case 16: case 17:
+    LogF("ClipGuard shortcut row=%d is companion-only",g_dbleSel); break;
+  case 11: CgStepNum("hdr.cgGraded",0.05*dir,0.0,1.0); break;
+  case 13: CgCycle("hdr.cgGrid",dir); break;
+  case 14: CgCycle("hdr.cgLookAhead",dir); break;
+  case 18: CgCycle("hdr.cgView",dir); break;
+  case 19: g_dblePinned=!g_dblePinned; DblePushOsdState(); break;
+  case 20: g_cgRestart=true; break;
   }
   DbleTouch(); LogF("ClipGuard shortcut row=%d dir=%d",g_dbleSel,dir); }
 
@@ -11038,6 +11084,11 @@ public:
     // the renderer raises its own child window, it can no longer cover a single
     // chrome pixel or take a single chrome click. The host itself keeps its full
     // size - resizing it would call ResizeBuffers on a live capture swap chain.
+    // Apply the picture rect and let the paused redraw land BEFORE the host
+    // region widens. Doing it the other way round revealed the newly vacated
+    // area with the old picture still scaled into it for a frame - the
+    // "flash of a different resolution" on a shell toggle (reported 2026-11-20).
+    PlaceVideo(vid,rc.TopLeft());
     if(g_host){
       // Full size (the engine's geometry canvas must stay the whole window)...
       ::MoveWindow(g_host,rc.left,rc.top,rc.Width(),rc.Height(),TRUE);
@@ -11047,7 +11098,6 @@ public:
                              vid.left-hx+vid.Width(), vid.top-hy+vid.Height());
       ::SetWindowRgn(g_host, rgn, TRUE);       // window manager owns rgn
     }
-    PlaceVideo(vid,rc.TopLeft());
     m_confirm.Place(); m_splash.Place(); BringUiTop(); }
   // Tell the engine the picture rect moved. MpcPlayer::ResizeVideo reads the host's
   // client rect, so this is what makes the picture follow the advice above. Skipped
@@ -11089,6 +11139,10 @@ public:
       "{\"a\":\"videorect\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}",x,y,w,h);
     int rc=Cmd(b);
     LogF("video rect cmd rc=%d %dx%d@%d,%d",rc,w,h,x,y);
+    // A paused frame is repainted on the graph thread. Give that redraw a moment
+    // before Layout reveals the new host region, so the reveal shows the new
+    // picture instead of the old one scaled into it (the flash on a shell toggle).
+    if(m_paused && m_appMode==L"media_player" && rc==0) ::Sleep(100);
   }
   // m_confirm LAST in the array on purpose: this is the same list the 300 ms heal
   // re-tops, so the confirm card ends up above the chrome instead of under it
@@ -11931,20 +11985,10 @@ protected:
     COLORREF noborder=0xFFFFFFFE;                        // DWMWA_COLOR_NONE
     HRESULT bh=DwmSetWindowAttribute(m_hWnd,34 /*DWMWA_BORDER_COLOR*/,&noborder,sizeof(noborder));
     LogF("corner hr=0x%08X border hr=0x%08X",dh,bh);
-    // ClipGuard shortcuts: F7-F11 and Ctrl+Alt variants. Registered app-wide so
-    // they work over the video child, where key focus cannot reach the frame.
-    struct { UINT id; UINT vk; UINT mods; } hk[] = {
-      {HK_DBLE_SHOW,'0',MOD_CONTROL|MOD_ALT|MOD_NOREPEAT},
-      {HK_DBLE_FIX,'D',MOD_CONTROL|MOD_ALT|MOD_NOREPEAT},
-      {HK_DBLE_UP,VK_UP,MOD_CONTROL|MOD_ALT}, {HK_DBLE_DOWN,VK_DOWN,MOD_CONTROL|MOD_ALT},
-      {HK_DBLE_LEFT,VK_LEFT,MOD_CONTROL|MOD_ALT}, {HK_DBLE_RIGHT,VK_RIGHT,MOD_CONTROL|MOD_ALT},
-      {HK_DBLE_F7,VK_F7,MOD_NOREPEAT}, {HK_DBLE_F8,VK_F8,MOD_NOREPEAT},
-      {HK_DBLE_F9,VK_F9,MOD_NOREPEAT}, {HK_DBLE_F10,VK_F10,MOD_NOREPEAT},
-      {HK_DBLE_F11,VK_F11,MOD_NOREPEAT} };
-    for(auto&h:hk){
-      if(!::RegisterHotKey(m_hWnd,h.id,h.mods,h.vk))
-        LogF("ClipGuard hotkey id=%u vk=0x%02X registration failed (%lu)",
-             h.id,h.vk,(unsigned long)::GetLastError()); }
+    // ClipGuard has no controls in the shell: the companion app owns the whole
+    // ClipGuard UI and its hotkeys. Unplugged deliberately registers none, so
+    // there is nothing to hand over or conflict with (decided 2026-11-20).
+    LogF("ClipGuard hotkeys disabled (companion app owns the ClipGuard UI)");
     Create2(); return 0; }
   // The white border at startup was the frame's CLASS background brush: MFC registers
   // the popup frame class with COLOR_WINDOW (white), so Windows paints the whole
@@ -12146,6 +12190,7 @@ protected:
   // ClipGuard shortcuts. They edit the same rows the settings rail edits, so
   // the rail and the overlay can never disagree.
   afx_msg void OnHotKey(UINT id, UINT, UINT){
+    if(IsClipGuardHostRunning()) return;   // ClipGuard.exe owns the ClipGuard UI
     Row* osd=FindRow("hdr.cgOsd");
     const bool vis=osd&&osd->on;
     if(id==HK_DBLE_SHOW||id==HK_DBLE_F7){
@@ -12155,7 +12200,7 @@ protected:
       DbleShowOsd(true);
     } else if(id==HK_DBLE_UP||id==HK_DBLE_DOWN||id==HK_DBLE_PUP||id==HK_DBLE_PDOWN){
       const bool up=(id==HK_DBLE_UP||id==HK_DBLE_PUP);
-      if(vis){ g_dbleSel=(g_dbleSel+(up?15:1))%16; DblePushOsdState(); }
+      if(vis){ g_dbleSel=(g_dbleSel+(up?20:1))%21; DblePushOsdState(); }
       else DbleShowOsd(true);
       DbleTouch();
     } else if(id==HK_DBLE_LEFT||id==HK_DBLE_RIGHT||id==HK_DBLE_PLEFT||id==HK_DBLE_PRIGHT){

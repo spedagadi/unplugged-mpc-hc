@@ -500,7 +500,7 @@ Press **Info** to read **OUTPUT DEPTH** next to DISPLAY REFRESH: it states the d
 
 | Setting | Choices / range | Default | What it does |
 | --- | --- | --- | --- |
-| **Fit mode** | `Source` / `Fixed aspect` / `Fill screen` | Source | How the picture is fitted to the window. Source respects the video's own aspect; Fixed aspect uses the **Fixed aspect** value; Fill screen stretches to the window and can remove black bars. |
+| **Fit mode** | `Source` / `Fixed aspect` / `Fill screen` / `Active picture` | Source | How the picture is fitted to the window. **Source** respects the video's own (coded) aspect; **Fixed aspect** uses the **Fixed aspect** value; **Fill screen** stretches to the window. **Active picture** crops the detected letterbox and fits the real picture uniformly — no NLS stretch — so a scope film fills a scope screen instead of sitting in the coded 16:9 frame with extra bars. It falls back to Source until the bar detector has a band. |
 | **Fixed aspect** | 1.00 – 3.00 | 1.78 | The display aspect used in Fixed aspect mode. The values are rounded: 1.78 is **not exactly** 16:9 (that is 1.7778, which the 0.01 step cannot express), so on a 3840×2160 display Fixed aspect 1.78 fits to 3840×2157. For a true 1:1 picture on a display that matches the source, use **Source** mode. For a 2.35 screen use the screen's measured ratio. |
 | **Zoom** | 50 – 200 % | 100 % | Scales the fitted picture. Above 100 % crops the overflow; use with Pan. 100 % is the neutral fit. |
 | **Pan X** | -100 – 100 % | 0 % | Moves a zoomed picture horizontally across its overflow. Has no effect while the picture fits inside the window. |
