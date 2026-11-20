@@ -10,7 +10,7 @@ supports it.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.3.0.exe` | 125,618,160 bytes | `ABD89A9844AC8BB1799FC3CD02D9C970FC8387BD42382909DFD60D863D1B331C` |
+| `Unplugged-setup-2.3.0.exe` | 125,607,335 bytes | `17E3EB43ED2B48890BCEC1E2B90E2B2363497DC5B433D5A7310F392D9C60D0DB` |
 
 The standalone renderer remains at its 2.2.1 release; no new renderer package is
 published with 2.3.0.

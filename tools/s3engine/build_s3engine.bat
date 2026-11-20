@@ -37,5 +37,10 @@ cl /nologo /EHsc /std:c++17 /W3 /utf-8 /Ox /MT /DNDEBUG /DWIN32_LEAN_AND_MEAN /D
   SubPic.lib Subtitles.lib DSUtil.lib unrar.lib libass.lib libharfbuzz.lib freetype2.lib libfribidi.lib libunibreak.lib zlib.lib libiconv.lib ^
   strmiids.lib mfuuid.lib mf.lib mfplat.lib ole32.lib oleaut32.lib user32.lib gdi32.lib dbghelp.lib version.lib vfw32.lib wininet.lib
 ECHO S3ENGINE_BUILD_EXIT=%ERRORLEVEL%
+REM The app and the installer stage from bin\app\Release, NOT from this folder.
+REM Leaving the old DLL there shipped a stale engine even when this build was new
+REM (2026-11-20: the installer packaged the 10:23 engine and the SDR BT.2020
+REM graph-rebuild bug came back). Keep the two in step here.
+IF EXIST "..\..\bin\app\Release" COPY /Y s3engine.dll "..\..\bin\app\Release\s3engine.dll" >NUL
 POPD
 ENDLOCAL
