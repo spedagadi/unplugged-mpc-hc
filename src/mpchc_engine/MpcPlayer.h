@@ -661,6 +661,10 @@ public:
     // whatever geometry change was queued - asking on the caller's thread drew
     // the old rect and then nothing repainted the new one.
     std::atomic<bool> m_redrawPending{false};
+    // A second redraw after the window/swap chain resize has settled. On a paused
+    // frame the immediate redraw can be presented into the old surface, so the
+    // picture stays small until playback (reported 2026-11-20 when the shell hid).
+    std::atomic<ULONGLONG> m_redrawAgainAt{0};
     // The thread that owns the graph/renderer (the live thread). ResizeVideo refuses
     // to run anywhere else and defers instead - see its comment.
     std::thread::id m_graphThreadId{};

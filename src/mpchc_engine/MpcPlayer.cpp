@@ -511,7 +511,14 @@ MpcPlayer::MpcPlayer()
                 // A paused frame only repaints when asked, so without this the
                 // old, smaller destination stayed on screen and the area the
                 // chrome vacated was left black until playback resumed.
-                if (snapshot_.state == State::Paused) m_redrawPending = true;
+                if (snapshot_.state == State::Paused) {
+                    m_redrawPending = true;
+                    // The immediate redraw can land in the old swap chain while
+                    // the host is still resizing; ask one more time after the
+                    // resize settles, otherwise the paused picture stays small
+                    // until playback (reported 2026-11-20).
+                    m_redrawAgainAt = GetTickCount64() + 150;
+                }
             }
             // Same thread, AFTER the geometry above: a paused frame only repaints
             // when asked to, and asking before the new destination rect landed
@@ -521,6 +528,17 @@ MpcPlayer::MpcPlayer()
                     m_videoRectPending.load() ? 0 : 1);
                 if (CComQIPtr<IExFilterConfig> cfg = renderer_)
                     cfg->Flt_SetBool("cmd_redraw", true);
+            }
+            // Second redraw after the host/swap-chain resize settles. See
+            // m_redrawAgainAt: the first one can paint into the old surface.
+            if (snapshot_.state != State::Stopped) {
+                const ULONGLONG again = m_redrawAgainAt.load();
+                if (again && GetTickCount64() >= again) {
+                    m_redrawAgainAt = 0;
+                    Log("[ENGINE] paused redraw after the resize settled");
+                    if (CComQIPtr<IExFilterConfig> cfg = renderer_)
+                        cfg->Flt_SetBool("cmd_redraw", true);
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -1319,6 +1337,19 @@ HRESULT MpcPlayer::ResizeVideo()
         if (nlsAction) g.mode = 2;
         m_nlsFillOk.store(nlsAction != 0);
         m_nlsCropFill.store(nl.fillMode == 2);
+        // Fit mode 3: crop the detected letterbox and fit the ACTIVE picture,
+        // uniformly, with no NLS warp. This is what a 2.39 title needs on a 2.39
+        // screen: the coded frame is 16:9 with the bars baked in, so a Source fit
+        // leaves the picture small with unnecessary bars (reported 2026-11-20).
+        bool activeFit = false;
+        double afT = 0.0, afB = 0.0, afL = 0.0, afR = 0.0, afAW = 1.0, afAH = 1.0;
+        if (g.mode == 3 && m_nlsBandKnown.load()) {
+            afT = (double)m_nlsBandTop.load(); afB = (double)m_nlsBandBot.load();
+            afL = (double)m_nlsBandLeft.load(); afR = (double)m_nlsBandRight.load();
+            afAW = 1.0 - afL - afR;
+            afAH = 1.0 - afT - afB;
+            activeFit = afAW > 0.2 && afAH > 0.2;
+        }
         double videoAR = (double)vw / (double)vh;
         if (g.mode == 1 && g.aspect > 0.0) videoAR = std::clamp(g.aspect, 1.0, 3.0);
         else if (g.mode == 2) videoAR = clientAR;      // fill
@@ -1328,7 +1359,17 @@ HRESULT MpcPlayer::ResizeVideo()
         m_nlsWarpRatioY.store(1.0f);
         m_nlsWarpPct.store(0);      // no warp this pass: the panel must not show a stale one
         m_nlsCropPct.store(0);
-        if (g.mode != 2) {
+        if (activeFit) {
+            // Scale the FULL coded frame so the active band fits the canvas; the
+            // bars land outside the window and are cropped by it. Uniform, no warp.
+            const double activeAR = ((double)vw * afAW) / ((double)vh * afAH);
+            double aw, ah;
+            if (clientAR > activeAR) { ah = clientH; aw = clientH * activeAR; }
+            else { aw = clientW; ah = clientW / activeAR; }
+            const double scale = aw / ((double)vw * afAW);
+            destW = std::max(1, (int)std::lround((double)vw * scale));
+            destH = std::max(1, (int)std::lround((double)vh * scale));
+        } else if (g.mode != 2) {
             if (clientAR > videoAR) destW = (int)(clientH * videoAR + 0.5);
             else if (clientAR < videoAR) destH = (int)(clientW / videoAR + 0.5);
         } else if (nlsAction == 1 && m_nlsBandKnown.load()) {
@@ -1353,37 +1394,50 @@ HRESULT MpcPlayer::ResizeVideo()
         destW = std::max(1, (int)(destW * zoom + 0.5));
         destH = std::max(1, (int)(destH * zoom + 0.5));
         // Pan is meaningful only where the PICTURE overflows the window; -1/+1
-        // walks it from one edge to the other.
-        //
-        // With a geometric NLS crop the destination also overflows by the bars,
-        // and that overflow is NOT picture: panning into it slides the image off
-        // the screen — a black strip on one side and content lost on the other
-        // (observed: a stored Pan Y of 0.15 from the T5a test left a 36 px black
-        // band at the top). So the vertical pan room is the active-picture size
-        // minus the window, and the clamp keeps the active band covering it; at
-        // zoom 1 the room is exactly zero.
-        const int roomX = destW - clientW;
+        // walks it from one edge to the other. With active-picture fit the
+        // overflow includes the bars, so the pan room and the clamp are the
+        // ACTIVE band, exactly as in the NLS geometric crop.
         int destX = (clientW - destW) / 2;
         int destY = (clientH - destH) / 2;
-        if (roomX > 0) {
-            destX += (int)(std::clamp(g.panX, -1.0, 1.0) * roomX / 2.0);
-            destX = std::clamp(destX, clientW - destW, 0);
-        }
-        if (geomCrop) {
-            const double fracT = (double)m_nlsBandTop.load();
-            const double fracB = (double)m_nlsBandBot.load();
-            const int barTopPx = (int)lround((double)destH * fracT);
-            const int activeH  = (int)lround((double)destH * (1.0 - fracT - fracB));
-            const int roomY    = activeH - clientH;
+        if (activeFit) {
+            const int barLeftPx = (int)std::lround(afL * destW);
+            const int barTopPx  = (int)std::lround(afT * destH);
+            const int awPx = (int)std::lround(afAW * destW);
+            const int ahPx = (int)std::lround(afAH * destH);
+            destX = (clientW - awPx) / 2 - barLeftPx;
+            destY = (clientH - ahPx) / 2 - barTopPx;
+            const int roomX = awPx - clientW;
+            if (roomX > 0) {
+                destX += (int)(std::clamp(g.panX, -1.0, 1.0) * roomX / 2.0);
+                destX = std::clamp(destX, clientW - awPx - barLeftPx, -barLeftPx);
+            }
+            const int roomY = ahPx - clientH;
             if (roomY > 0) {
                 destY += (int)(std::clamp(g.panY, -1.0, 1.0) * roomY / 2.0);
-                // Keep the active band covering the window: its top edge may not
-                // drop below y=0 nor its bottom rise above clientH.
-                destY = std::clamp(destY, clientH - activeH - barTopPx, -barTopPx);
+                destY = std::clamp(destY, clientH - ahPx - barTopPx, -barTopPx);
             }
-        } else if (destH > clientH) {
-            destY += (int)(std::clamp(g.panY, -1.0, 1.0) * (destH - clientH) / 2.0);
-            destY = std::clamp(destY, clientH - destH, 0);
+        } else {
+            const int roomX = destW - clientW;
+            if (roomX > 0) {
+                destX += (int)(std::clamp(g.panX, -1.0, 1.0) * roomX / 2.0);
+                destX = std::clamp(destX, clientW - destW, 0);
+            }
+            if (geomCrop) {
+                const double fracT = (double)m_nlsBandTop.load();
+                const double fracB = (double)m_nlsBandBot.load();
+                const int barTopPx = (int)lround((double)destH * fracT);
+                const int activeH  = (int)lround((double)destH * (1.0 - fracT - fracB));
+                const int roomY    = activeH - clientH;
+                if (roomY > 0) {
+                    destY += (int)(std::clamp(g.panY, -1.0, 1.0) * roomY / 2.0);
+                    // Keep the active band covering the window: its top edge may not
+                    // drop below y=0 nor its bottom rise above clientH.
+                    destY = std::clamp(destY, clientH - activeH - barTopPx, -barTopPx);
+                }
+            } else if (destH > clientH) {
+                destY += (int)(std::clamp(g.panY, -1.0, 1.0) * (destH - clientH) / 2.0);
+                destY = std::clamp(destY, clientH - destH, 0);
+            }
         }
         dest = {destX, destY, destX + destW, destY + destH};
         {
@@ -1395,7 +1449,7 @@ HRESULT MpcPlayer::ResizeVideo()
                 s_last = dest; s_lastW = clientW; s_lastH = clientH;
                 Log("[GEOM] client=%dx%d dest=(%d,%d) %dx%d mode=%d crop=%d zoom=%.2f pan=%.2f/%.2f",
                     clientW, clientH, destX, destY, destW, destH,
-                    g.mode, geomCrop ? 1 : 0, g.zoom, g.panX, g.panY);
+                    g.mode, (geomCrop || activeFit) ? 1 : 0, g.zoom, g.panX, g.panY);
             }
         }
         if (geomCrop) {
@@ -3553,7 +3607,10 @@ void MpcPlayer::ApplyPendingSettings()
     // The redraw is asked for on the GRAPH thread (see the live loop): this call
     // runs on the caller's thread, where ResizeVideo has only QUEUED the new
     // rect, and a redraw here would draw the old geometry with the new shader.
-    if (!m_inGraphBuild && snapshot_.state == State::Paused) m_redrawPending = true;
+    if (!m_inGraphBuild && snapshot_.state == State::Paused) {
+        m_redrawPending = true;
+        m_redrawAgainAt = GetTickCount64() + 150;
+    }
 }
 
 void MpcPlayer::ApplyPostFx()
@@ -5138,7 +5195,7 @@ HRESULT MpcPlayer::ApplySettingsFlat(const std::vector<std::string>& sets)
             else if (name == "nlsFillMode") { nls.fillMode = std::clamp((int)vd(v), 0, 3); nAny = true; }
             else {
                 bool hit = true;
-                if      (name == "mode")   geo.mode = std::clamp((int)vd(v), 0, 2);
+                if      (name == "mode")   geo.mode = std::clamp((int)vd(v), 0, 3);
                 else if (name == "aspect") geo.aspect = std::clamp(vd(v), 1.0, 3.0);
                 else if (name == "zoom")   geo.zoom = std::clamp(vd(v), 0.5, 2.0);
                 else if (name == "panX")   geo.panX = std::clamp(vd(v), -1.0, 1.0);
