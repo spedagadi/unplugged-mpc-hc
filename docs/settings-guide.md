@@ -139,7 +139,7 @@ setups against the same paused frame.
   machine and the session, not of a look — so it stays available on `Default`,
   and a preset never drags the input along with it.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
-  **Display black (nits)**, **Convert to SDR**, **Output gamut**,
+  **Display black (nits)**, **Convert to SDR**, **Display gamut**,
   **Display transfer** and the **ClipGuard** rows describe the screen
   you calibrated, not a look, so they are never part of a preset. They can be
   changed at any time — on `Default` or on any preset — the change applies to
@@ -158,7 +158,7 @@ stay with the machine and switching presets never changes them — and, as above
 they are always editable, even on `Default`:
 
 > **SDR display nits · Static nits (max) · Display black (nits) ·
-> Convert to SDR · Output gamut · Display transfer · Enable ClipGuard ·
+> Convert to SDR · Display gamut · Display transfer · Enable ClipGuard ·
 > Strength · Fix shape · Fix starts (%) · Full effect (%) · Highlight start ·
 > Color protect · Text skip (%) · Hot spot · Hot spot below (%) ·
 > Graded spot · Grid · Look-ahead · View · OSD**
@@ -228,8 +228,7 @@ most people only touch **Tone curve**, **Exposure** and the taste sliders.
 | **Exposure** | −5…+5 | 0 | A brightness dial that works **before** the tone curve, in thirds of a stop: ±1 = ±⅓ stop, ±3 = ±1 stop. Because it's pre-curve, the shoulder absorbs it — brightness without spending your highlights. The safest lever when a specific film looks dark or washed. |
 | **Shadow detail** | −5…+5 | 0 | How much texture survives in the dark end. **Positive** spreads dark values apart — you see fabric weave, night-scene layout, object edges — while true black stays black (it is *detail*, not a brightness lift). **Negative** compresses blacks together, for a denser, more "filmic" shadow that hides crushed masters. Never greys the image. |
 | **Contrast** | −5…+5 | 0 | A symmetric S-curve around mid grey: black, mid grey and white stay exactly where they are, everything between moves away from (positive) or toward (negative) them. Positive = more "pop"; negative = flatter, softer. If you want one dial to taste day-to-day, this is the safe one. |
-| **Output gamut** | `Follow source` / `BT.709 (standard)` / `BT.2020 (wide)` / `DCI-P3 (D65)` | `BT.709 (standard)` | The colour space delivered. **BT.709** is what SDR (and effectively every TV's SDR mode) expects. **BT.2020** keeps wide colour for a display actually in HDR/wide-gamut mode. **DCI-P3 (D65)** is the consumer projector's P3 mode: HDR is mapped from BT.2020 into P3 in the tone map, and SDR 709 content is converted in the final pass. **Follow source** passes SDR primaries through and keeps BT.2020 for HDR→SDR. The display must be set to the same gamut; a mismatch reads as over- or under-saturation. |
-| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with Output gamut = 709; inert for BT.2020, DCI-P3 and Follow source, because the curve was fitted to the 709 triangle. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
+| **Gamut capacity (709)** | 0.20…1.00 | 1.00 | Active only with **Display gamut = Auto (BT.709)**; inert for BT.2020 and DCI-P3, because the curve was fitted to the 709 triangle. Colours can look garish not when they *exceed* the gamut but when they sit exactly *on its edge* — the maximum for their lightness. This lands each colour at a fraction of its own distance to the edge: 1.00 = off; 0.55 is how much breathing room measured reference software leaves a deep-blue sky. Pale colours have long distances and stay untouched at any setting, so this can never "desaturate the whole film" — only edge-crowded blues/reds relax. |
 | **Highlight desat** | 0…1 | 0 | A companion to the row above for **the Unplugged curve**: at higher brightness levels, pull saturation toward the level's own neutral point (hue preserved). Measured against reference renderers, 0.50 matches; 0 is off. Note: it runs inside the grade, so it needs *Enable ML grade* (Zion tab) on. |
 
 **Exposure**, **Shadow detail** and **Contrast** are taste trims — they work
@@ -360,7 +359,7 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
-| **10-bit SDR output** | On/Off | Off | For a 10-bit picture **without** HDR. When On, the app turns Windows' wide-colour mode (WCG) off **when it starts** and leaves it off until Unplugged closes or restarts, so the whole session — library, playback and live capture — runs the neutral SDR path with no OS wide-gamut mapping on top of the renderer's own colour work. It also checks the display link: if Windows reports an 8-bit link it tells you where to set **Output colour depth = 10 bpc** (NVIDIA Control Panel → Display → Change resolution; the AMD/Intel equivalents are named too). The app cannot change the link depth itself — Windows gives applications no API for it — so this row is worth turning on only after the driver is set. **OUTPUT DEPTH** in the Info panel shows the result: `10-bit RGB SDR` is the target state; `10-bit RGB WCG` means the row is Off and Windows' wide-colour mode is active. Expect one brief display resync when Unplugged starts and another when it closes. The full chain — the WCG alternative, the projector caveat and the verification steps — is in **10-bit output — end-to-end setup** below. |
+| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | What the display itself is set to, and the **only** output-chain question. The app derives everything else: the conversion (SDR 709→2020 or P3, HDR already 2020), the SDR signal declaration (P709, or SDR P2020 for BT.2020), WCG ownership (on only for BT.2020) and 10-bit (automatic whenever the display link reports 10 bpc). Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. If a display's own gamut is on Auto but it does not follow SDR BT.2020 (many only switch for HDR), colours look washed out — force the display to BT2020 and set this row to BT2020. The full chain and verification are in **10-bit output — end-to-end setup** below. |
 | **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
@@ -495,7 +494,7 @@ the rest of the frame is graded.
 | --- | --- | --- | --- |
 | **Match display refresh** | On/Off | On | Switches the display to the content's rate for the duration of playback and puts the desktop rate back when it ends. Applies in **both** modes: in Media Player the title's frame rate is probed before the graph is built; in Video Processor the **live signal's** rate is read from the running capture and applied once it has stayed the same for about a second. Only the refresh rate changes, never the resolution — if the display has no mode at that rate (many 4K displays expose only 59/60 Hz) the picture stays where it is, and the log records the request and the outcome. Live capture keeps the last matched rate across a source re-lock, so a disc changing from a 60 Hz menu to a 24 Hz film does not bounce the display through the desktop rate; the desktop mode is restored on exit, close and relaunch. Each change blanks the display briefly while the panel or projector resyncs.
 
-Press **Info** to read **OUTPUT DEPTH** next to DISPLAY REFRESH: it states the depth the display link is actually running at — `10-bit RGB WCG`, `8-bit RGB SDR`, `10-bit YCbCr 4:2:2 SDR` — which is what the renderer uses to decide whether it can present 10-bit. It reports the **link**, not the source: a 10-bit title on an 8-bit display path still reads 8-bit here. 10-bit SDR output (the "deep colour" a 4K panel or projector can accept without HDR) is enabled by the GPU driver's **Output colour depth** setting (e.g. NVIDIA Control Panel → Change resolution → Output colour depth = 10 bpc), optionally alongside Windows' wide-colour mode. The app reports that state but cannot set the link depth itself — Windows gives applications no API for it. The complete setup, including which row owns 10-bit, is in **10-bit output — end-to-end setup** below. |
+Press **Info** to read **OUTPUT DEPTH** next to DISPLAY REFRESH: it states the depth the display link is actually running at — `10-bit RGB WCG`, `8-bit RGB SDR`, `10-bit YCbCr 4:2:2 SDR` — which is what the renderer uses to decide whether it can present 10-bit. It reports the **link**, not the source: a 10-bit title on an 8-bit display path still reads 8-bit here. 10-bit is automatic whenever the link reports it; the link depth itself is the GPU driver's **Output colour depth** setting (e.g. NVIDIA Control Panel → Change resolution → Output colour depth = 10 bpc). The app reports that state but cannot set the link depth itself — Windows gives applications no API for it. **Display gamut** in HDR → Display Target is the only output-chain choice; the complete setup is in **10-bit output — end-to-end setup** below. |
 
 ### Geometry
 
@@ -533,8 +532,6 @@ spot.
 | **Scope min aspect** | 2.00 – 2.60 | 2.15 | Lower bound of the Scope window. Content at or above it uses your own NLS tuning. 2.00:1 falls between the bounds and gets the Small-bars window. |
 | **Small-bar removal** | 0 – 100 % | 100 % | Bars removed for content inside the Small-bars window (e.g. 2.00:1). Post-NLS crops are forced to 0 there, so a crop tuned for scope cannot over-zoom a narrower film. |
 
-| **SDR signal: BT.2020** | On/Off | Off | Experimental: declares the SDR output as **BT.2020 SDR** (gamma 2.2) instead of BT.709, so a projector or monitor that watches the HDMI colourimetry flag can switch to its wide-gamut mode. The picture must already be in BT.2020 — set **Output gamut = BT.2020** first, otherwise colours will be wrong. It also switches Windows' wide-colour mode (WCG) on while active. Whether the display actually switches is display-dependent; many only auto-switch on HDR metadata. Verify on the display's own signal-info screen. |
-
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does. With the rail up, the picture is the same screen-aspect composition scaled into the visible area, so settings can be judged without waiting for the chrome to hide.
 
 While tuning, the Info panel's **Warp H / V**, **Geom crop** and **Post-NLS X/Y-Crop** rows show what the current settings are actually costing, so "why does it look like that" has a number next to it.
@@ -557,139 +554,77 @@ While tuning, the Info panel's **Warp H / V**, **Geom crop** and **Post-NLS X/Y-
 
 ## 10-bit output — end-to-end setup
 
-10-bit is not a switch inside Unplugged. It is the depth of the **display mode**
-that Windows negotiated with the display, and Unplugged can only use it. Two
-different layers have to agree:
+10-bit is the depth of the **display mode** Windows negotiated with the
+display. Unplugged uses it when it is there, but cannot create it — so there is
+no 10-bit switch in the app. Describe the display once, and 10-bit follows.
 
-| Layer | Who sets it | What it decides |
-| --- | --- | --- |
-| **Display mode / EDID** | projector or TV → GPU → Windows (NVIDIA/AMD/Intel control panel) | which resolutions, refresh rates, **bit depths**, RGB/YCbCr formats and colour spaces are available at all |
-| **Swap-chain colour space** | Unplugged (per title, automatically) | which of the available colour spaces the signal declares: BT.709, SDR BT.2020, HDR PQ, … |
+### Set it up in three steps
 
-Unplugged can select a colour space and use a 10-bit mode; it cannot create a
-10-bit mode that the display's EDID never offered, and Windows exposes no API
-for changing the link depth. That is why the driver/display setting and the app
-row must both be right.
+1. **Set the display itself.** In the display's own menu, choose its gamut and
+   turn on its high-bandwidth input:
+   - **BT.2020** for a projector or TV you want in wide-gamut mode;
+   - **sRGB / BT.709** for a standard display;
+   - **DCI-P3** only if it has a real P3 mode.
+   On a projector or TV enable **HDMI Enhanced / Deep Color / HDMI 2.0** (the
+   name varies by brand); on a monitor use its **10-bit / Deep Color** input
+   mode if it has one.
 
-### Read the result in the Info panel
+2. **Tell Unplugged what you set.** HDR → Display Target → **Display gamut**:
+   `Auto (BT.709)` for sRGB/709, `BT.2020` for a BT2020 display, `DCI-P3` for a
+   P3 display. This is the only output setting; the app derives the conversion,
+   the SDR BT.2020 declaration and WCG from it.
 
-Press **Info** and look at **OUTPUT DEPTH**. It reports the **link**, not the
-source:
+3. **Leave the GPU driver on Default** (NVIDIA Control Panel → Change
+   resolution → "Use default color settings"). If you prefer to choose,
+   **10 bpc / RGB / Full**. Never force **8 bpc**: it is a hard cap no app can
+   override.
+
+### Check it
+
+Unplugged **Info → OUTPUT DEPTH** reports the **link**, not the source:
 
 | OUTPUT DEPTH | Meaning |
 | --- | --- |
-| `10-bit RGB WCG` | 10-bit link with Windows wide-colour mode active. This is the 10-bit SDR result when **SDR BT.2020** is On, the driver is at Default/10 bpc, **and the display mode itself exposes 10-bit**. |
-| `10-bit RGB SDR` | 10-bit link without WCG. The target of **10-bit SDR output** with the driver at 10 bpc. |
-| `8-bit RGB WCG` | WCG is on but the link is 8-bit — the driver or EDID is capping it. |
-| `8-bit RGB SDR` | Ordinary 8-bit SDR. |
+| `10-bit RGB WCG` | 10-bit link with Windows wide-colour mode active. This is the **BT.2020** profile when the link exposes 10-bit. |
+| `10-bit RGB SDR` | 10-bit link with WCG off. This is the **Auto (BT.709)** or **DCI-P3** profile when the driver offers a 10-bit SDR mode. |
+| `8-bit RGB WCG` | BT.2020 profile, but the link is 8-bit — the driver or EDID is capping it. |
+| `8-bit RGB SDR` | Auto/P3 profile, and the link is 8-bit. |
 | `10-bit YCbCr 4:2:2 SDR` | A TV-style 10-bit link; lossy chroma but valid 10-bit. |
 
 A 10-bit title on an 8-bit path still reads 8-bit here. The display's own
 signal-information page is the final authority for what reaches the panel.
 
-### Choose ONE 10-bit owner
+### What Display gamut does
 
-There are two supported ways to run 10-bit. They are alternatives; doing both
-makes them fight and leaves the NVIDIA box greyed for no benefit. **Both
-require the display mode itself to expose 10-bit** — neither can create one.
+| Display gamut | Picture sent | WCG | 10-bit |
+| --- | --- | --- | --- |
+| Auto (BT.709) | BT.709 SDR | off | automatic |
+| BT.2020 | BT.2020 SDR | on | automatic |
+| DCI-P3 | P3 SDR | off | automatic |
 
-The two rows ask for **opposite WCG states**: SDR BT.2020 needs Windows' wide
-colour **on**, 10-bit SDR needs it **off**. With both On, the SDR BT.2020 row
-wins and the 10-bit SDR row is ignored (the app honors BT.2020 first and
-returns); the picture is the WCG path, not a combination of the two. Turn the
-other one Off so the panel shows which path is actually running.
+10-bit is not a second row. The renderer uses a 10-bit internal texture and a
+10-bit swap chain whenever the display link reports 10 bpc — including for
+8-bit SDR sources. If the link is 8-bit, no app setting can change it.
 
-**A. WCG path (no driver step).** Windows' wide-colour mode owns the depth, but
-only on a mode the display already exposes as 10-bit.
+The old **10-bit SDR output**, **SDR signal: BT.2020** and **Output gamut**
+rows are internal now (visible only with grade internals); they are
+consequences of this choice, not questions of their own.
 
-1. Unplugged: **SDR BT.2020 = On** (HDR → Display Target), **10-bit SDR = Off**.
-2. Driver: leave NVIDIA on **Default** (or set 10 bpc explicitly).
-3. If the display mode is 10-bit, expect `10-bit RGB WCG` about a second after
-   playback starts and the NVIDIA "Output colour depth" box **greyed** —
-   Windows owns the mode; that is normal. If the display's mode is 8-bit
-   (projector in Auto/PC, or a forced 8 bpc), WCG still enables but the result
-   is `8-bit RGB WCG`; fix the display mode first — see **Projector and TV
-   gamut** below.
-4. The signal declares SDR BT.2020. That only makes a display's **Auto** gamut
-   switch if the display honours SDR BT.2020 — many do **not** and stay on
-   BT.709 (washed-out colour); some also keep an 8-bit PC EDID while on Auto.
-   If yours does not switch, force the display's BT2020 mode and set **Output
-   gamut = BT2020**.
+### If it is not 10-bit
 
-**B. Explicit SDR path (neutral, no WCG).** The mode itself is 10-bit.
+| Symptom | What to do |
+| --- | --- |
+| `8-bit` in OUTPUT DEPTH | Enable the display's **Enhanced / Deep Color** input, then set NVIDIA → **Default** (or 10 bpc). A forced 8 bpc is a hard cap; Unplugged cannot override it. |
+| NVIDIA depth box greyed | With **Display gamut = BT.2020** the app turns WCG on, so the box is greyed on purpose — that is the 10-bit path. With Auto/P3 it should be editable; if not, the display is still in an 8-bit/PC EDID mode. |
+| Washed-out colours on a projector/TV | Its gamut is on Auto but it only switches to BT.2020 for HDR. Force the display to **BT2020** and set **Display gamut = BT.2020**. |
+| Over-saturated / punchy colours | The display is in a wide gamut but **Display gamut** is Auto (709). Set both to the same gamut. |
+| 10-bit only at 23/24 Hz, not 60 | HDMI 2.0 bandwidth. Keep the film rate, or use YCbCr 4:2:2 at 60 Hz. |
 
-1. Driver: NVIDIA Control Panel → **Change resolution** → **Use NVIDIA color
-   settings** → **Output colour depth = 10 bpc**, **Output colour format =
-   RGB** (or YCbCr 4:4:4), **Dynamic range = Full**. AMD/Intel have the same
-   controls under Display → Colour.
-2. Unplugged: **10-bit SDR output = On**, **SDR BT.2020 = Off**.
-3. Expect `10-bit RGB SDR`. The app turns WCG off for the whole session and
-   restores it on exit; expect one brief resync at start and one at close.
+Two facts worth keeping:
 
-**Never force 8 bpc.** A forced 8 bpc is a hard cap: WCG still enables, but the
-link stays 8-bit (`8-bit RGB WCG`) and Unplugged cannot override it. This is
-measurable and was retested on 2026-11-20:
-
-```
-NVIDIA forced 8 bpc:   8-bit RGB SDR -> WCG on -> 8-bit RGB WCG   (stays)
-NVIDIA Default:        8-bit RGB SDR -> WCG on -> 10-bit RGB WCG  (~1 s)
-```
-
-### If the NVIDIA depth box is greyed
-
-That means one of these is true — in this order:
-
-1. **Windows advanced colour (HDR or WCG) is active.** Windows then owns the
-   scanout format and the driver control is disabled by design. Use path A, or
-   turn HDR/WCG off first, set the depth, then re-enable.
-2. **The display's EDID does not offer 10-bit in the current mode.** Typical
-   cause: the projector/TV input is in **PC / Standard / HDMI 1.4** mode. Switch
-   that input to **AV / Enhanced / Deep Color / HDMI 2.0** (the name varies by
-   brand), then re-detect the display in Windows (or `Win+Ctrl+Shift+B`).
-3. **Bandwidth.** 3840×2160 at 60 Hz with 10-bit RGB exceeds HDMI 2.0. At 23/24
-   Hz it fits easily. At 60 Hz choose YCbCr 4:2:2, or use HDMI 2.1/DisplayPort
-   with DSC.
-
-### Projector and TV gamut: Auto is not always your friend
-
-Some displays only auto-switch to BT.2020 for **HDR**. For an SDR signal they
-assume BT.709 even when the signal correctly declares SDR BT.2020 — the picture
-then looks **washed out**, because BT.2020 colours are being shown through the
-BT.709 gamut. The same display may also present an 8-bit "PC" EDID while its
-gamut menu is on Auto.
-
-- If the display follows SDR BT.2020 (check its info page: it should show
-  **BT.2020**), leave gamut on **Auto**.
-- If it does not, set the display's gamut to **BT2020** manually and set
-  Unplugged **Output gamut = BT2020** for all content. SDR titles are then
-  converted 709→2020 before output, so colours are correct; HDR titles already
-  target BT.2020. This is the reliable workaround — not a compromise — and it
-  is safe for SDR precisely because the output gamut is converted.
-- Do **not** leave **Output gamut** on `Follow source` / 709 with a forced
-  BT2020 display: SDR would be sent as 709 into a 2020 gamut and look wrong.
-- Unplugged cannot change the display's internal gamut or its EDID. Without
-  IP/RS-232/CEC control of the display, that one setting is manual.
-
-### Verification checklist
-
-1. Display info page: **3840×2160, 23/24 Hz, 10-bit, BT.2020, SDR** (or HDR for
-   an HDR title).
-2. Unplugged Info → **OUTPUT DEPTH**: `10-bit …`.
-3. Unplugged Info → **SOURCE TRANSFER / SOURCE GAMUT**: confirm the source is
-   what you think it is (a 10-bit title on an 8-bit path still reads 8-bit in
-   OUTPUT DEPTH).
-4. Play a dark gradient: with a true 10-bit chain the banding steps are half as
-   tall; the **Deband** section is still available if the source itself bands.
-
-### Troubleshooting
-
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `8-bit RGB WCG` | driver forced to 8 bpc, or an 8-bit EDID in this mode | NVIDIA → Default or 10 bpc; display input → Enhanced/AV |
-| `10-bit` but washed-out colour | display in BT.709 Auto; SDR BT.2020 ignored | force display gamut BT2020 + Output gamut BT2020, or Output gamut BT709 |
-| NVIDIA depth box greyed | HDR/WCG active, or 8-bit EDID | path A (let WCG own it) or enable the display's Enhanced mode |
-| 10-bit appears only at 23/24 Hz | HDMI 2.0 bandwidth at 4K60 | keep the matched film rate, or use 4:2:2 at 60 Hz |
-| Depth flips when a title starts | Windows HDR toggling | use **10-bit SDR output** for SDR, or **Do not change** for Windows HDR |
+- **WCG is not a depth switch.** It carries SDR BT2020; it cannot raise an 8-bit mode.
+- **The app cannot change the display's EDID or internal gamut.** That setting
+  lives in the display's own menu; only IP/RS-232/CEC control can automate it.
 
 ---
 
@@ -764,11 +699,11 @@ black (nits)** from the black patch, **Display transfer** to the projector's
 calibrated transfer, load a calibration **LUT** if you have one — then leave
 everything else at defaults for a week before tuning taste controls.
 
-**Projector with P3 mode or a 2.4 calibration?** Set **Output gamut** to
-`DCI-P3 (D65)` only if the projector is actually in its P3 mode, and
+**Projector with P3 mode or a 2.4 calibration?** Set **Display gamut** to
+`DCI-P3` only if the projector is actually in its P3 mode, and
 **Display transfer** to `Gamma 2.4` or `BT.1886` if it is calibrated there.
-Otherwise leave both on their defaults (BT.709 / Follow source) and let the
-projector's own 709/2.2 mode do the work.
+Otherwise leave both on their defaults (Auto (BT.709) / Follow source) and let
+the projector's own 709/2.2 mode do the work.
 
 **Black bars on a 2.39 or 2.00 film?** Set **Aspect rule = On**: native
 pictures (up to **Native max aspect**) are never zoomed, 1.90–2.15 titles lose
@@ -777,8 +712,8 @@ their bars via **Small-bar removal**, and 2.15+ uses **Scope bar removal**
 
 **Washed-out colours on a projector with SDR BT.2020?** Its gamut on Auto is
 treating the SDR signal as BT.709 — many displays only auto-switch for HDR.
-Force the projector's gamut to **BT2020** and set Unplugged **Output gamut =
-BT2020**; SDR titles are converted to 2020, so colours are correct. See
+Force the projector's gamut to **BT2020** and set Unplugged **Display gamut =
+BT.2020**; SDR titles are converted to 2020, so colours are correct. See
 **10-bit output — end-to-end setup** for the depth side.
 
 **Highlights clip only in dark scenes (laser dimming).** Enable **ClipGuard**,
@@ -810,7 +745,7 @@ the measured picture brightness and the applied fix. It works with the grade Off
 - **SDR BT.2020 auto-switching is display-dependent.** Many projectors and TVs
   only switch to BT.2020 for HDR; for SDR BT.2020 they stay on BT.709, which
   reads as washed-out colour. Forcing the display's BT2020 gamut and setting
-  **Output gamut = BT2020** is the reliable configuration.
+  **Display gamut = BT.2020** is the reliable configuration.
 - P3-tagged SDR files are not detectable as P3 by Windows; the source gamut
   shown is BT.601, BT.709 or BT.2020.
 - Super Resolution is not available for HDR or 10-bit sources; it is a
