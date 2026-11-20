@@ -1,5 +1,9 @@
 # 2.3.0 — user-feedback audit (2026-11-19)
 
+> **Superseded for the summary by [AUDIT-2.3.0-COMPLETE.md](AUDIT-2.3.0-COMPLETE.md)**
+> (2026-11-20), which adds the projector/10-bit, ClipGuard 2.60/2.62 and update-card
+> work. This file remains the detailed evidence for the 19 Nov forum batch.
+
 Source: `C:\htpc\bugs_19_11_2026.txt` (forum reports gathered 19 Nov). This
 audits each report against the **2.3.0 working tree** (`zion-s3-shell`, HEAD
 `7b18fe3f5` + uncommitted work). "In tree" means built and verified unless the

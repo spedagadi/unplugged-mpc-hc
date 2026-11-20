@@ -19,6 +19,10 @@ Users send a diagnostics bundle from the app (**Help → Diagnostics**, or the p
 
 ## Tracker
 
+Reports UR-0008 onward (projector/10-bit, ClipGuard 2.60/2.62, update card) are
+indexed in [AUDIT-2.3.0-COMPLETE.md](AUDIT-2.3.0-COMPLETE.md); the rows below are
+the original UR-0001–0007 evidence.
+
 | ID | Date | Version | Symptom | Status |
 | --- | --- | --- | --- | --- |
 | UR-0001 | 2026-11-15 | 2.2.0 | Network library: every title shows UNAVAILABLE | **Fixed** (2.3.0 tree) |
