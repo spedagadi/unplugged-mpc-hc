@@ -1464,9 +1464,14 @@ static void StartUpdateCheck(bool userInitiated){
     std::string body;
     if(!forced.empty()){
       s.version=forced;
-      s.notes=L"Release notes would appear here, word-wrapped, straight from the "
-               L"GitHub release body.\n\nThis text is the QA override: remove "
-               L"ui.updateTestVersion from s3_shell.ini to see the real check.";
+      s.notes=L"# Unplugged 9.9.9\n\n## New features\n\n"
+               L"- **Bold** text and `inline code` are rendered.\n"
+               L"- Bullets wrap with a hanging indent, so long lines stay readable.\n"
+               L"- Tables become one line per row, not raw pipes.\n\n"
+               L"| Download | Size |\n| --- | --- |\n| setup | 1 MB |\n\n"
+               L"### Fixes\n\nA paragraph with a [link](https://example.com) and "
+               L"an `--option`. Remove `ui.updateTestVersion` from s3_shell.ini to "
+               L"see the real check.\n\n---\n\nEnd of the QA notes.";
       s.page=L"https://github.com/spedagadi/unplugged-mpc-hc/releases";
       s.done=true; s.newer=true;
     } else if(HttpGetText(L"api.github.com",L"/repos/spedagadi/unplugged-mpc-hc/releases/latest",body)){
@@ -3909,15 +3914,113 @@ protected:
 // release newer than this build, and by the System tab's Check-now row. Notify
 // only: the primary button opens the release page, because installing is the
 // user's call (and a self-update would fight the locked renderer DLL).
+// ---- lightweight markdown for the update card -------------------------------
+// GitHub release bodies are markdown. The card used to draw them verbatim, so
+// users saw "# Unplugged 2.3.0", "**bold**", "| table |" and HTML comments.
+// This renderer keeps the structure (headings, bullets, rules, table rows) and
+// strips the syntax, with word wrap and a scroll offset for long notes.
+struct MdBlock { std::wstring text; int kind=1; int px=13; bool bold=false;
+  COLORREF col=RGB(0xCC,0xCC,0xCC); int indent=0; int gap=4; int h=0; };
+static std::wstring MdTrim(std::wstring s){
+  size_t a=0,b=s.size(); while(a<b&&iswspace((wint_t)s[a])) ++a;
+  while(b>a&&iswspace((wint_t)s[b-1])) --b; return s.substr(a,b-a); }
+static std::wstring MdInline(std::wstring s){
+  // images ![alt](url) -> alt
+  for(;;){ size_t p=s.find(L"!["); if(p==std::wstring::npos) break;
+    size_t rb=s.find(L"](",p), re=(rb==std::wstring::npos)?std::wstring::npos:s.find(L')',rb);
+    if(rb==std::wstring::npos||re==std::wstring::npos) break;
+    s.replace(p,re-p+1,s.substr(p+2,rb-p-2)); }
+  // links [text](url) -> text
+  for(;;){ size_t p=s.find(L'['); if(p==std::wstring::npos) break;
+    size_t rb=s.find(L"](",p), re=(rb==std::wstring::npos)?std::wstring::npos:s.find(L')',rb);
+    if(rb==std::wstring::npos||re==std::wstring::npos) break;
+    s.replace(p,re-p+1,s.substr(p+1,rb-p-1)); }
+  auto rep=[&](const wchar_t* a){ size_t p=0;
+    while((p=s.find(a,p))!=std::wstring::npos) s.replace(p,wcslen(a),L""); };
+  rep(L"**"); rep(L"`"); rep(L"*");
+  // HTML tags and comments that survived
+  for(;;){ size_t a=s.find(L'<'); if(a==std::wstring::npos) break;
+    size_t b=s.find(L'>',a); if(b==std::wstring::npos) break; s.erase(a,b-a+1); }
+  auto ent=[&](const wchar_t* a,const wchar_t* b){ size_t p=0;
+    while((p=s.find(a,p))!=std::wstring::npos){ s.replace(p,wcslen(a),b); p+=wcslen(b); } };
+  ent(L"&amp;",L"&"); ent(L"&lt;",L"<"); ent(L"&gt;",L">");
+  ent(L"&quot;",L"\""); ent(L"&#39;",L"'"); ent(L"&nbsp;",L" ");
+  return MdTrim(s); }
+static bool MdTableSep(const std::wstring& l){
+  if(l.empty()||l[0]!=L'|') return false;
+  bool any=false;
+  for(wchar_t c:l){ if(c==L'-') any=true;
+    else if(c!=L'|'&&c!=L':'&&c!=L' '&&c!=L'\t') return false; }
+  return any; }
+static int MdMeasure(CDC* dc,const std::wstring& t,int px,bool bold,int width){
+  if(t.empty()||width<=0) return 0;
+  CFont f; f.CreateFontW(-Px(px),0,0,0,bold?FW_SEMIBOLD:FW_NORMAL,0,0,0,
+    DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,g_fontFam);
+  CFont* of=dc->SelectObject(&f); dc->SetBkMode(TRANSPARENT);
+  CRect r(0,0,width,0);
+  int h=dc->DrawTextW(t.c_str(),(int)t.size(),&r,DT_LEFT|DT_WORDBREAK|DT_CALCRECT);
+  dc->SelectObject(of); return h>0?h:0; }
+static void MdDraw(CDC* dc,const CRect& r,const std::wstring& t,int px,bool bold,COLORREF c){
+  if(t.empty()||r.IsRectEmpty()) return;
+  CFont f; f.CreateFontW(-Px(px),0,0,0,bold?FW_SEMIBOLD:FW_NORMAL,0,0,0,
+    DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,g_fontFam);
+  CFont* of=dc->SelectObject(&f); dc->SetTextColor(c); dc->SetBkMode(TRANSPARENT);
+  CRect rr=r; dc->DrawTextW(t.c_str(),(int)t.size(),&rr,DT_LEFT|DT_WORDBREAK);
+  dc->SelectObject(of); }
+static std::vector<MdBlock> MdParse(const std::wstring& md,CDC* dc,int width){
+  std::vector<MdBlock> out;
+  std::wstring s=md;
+  for(;;){ size_t a=s.find(L"<!--"); if(a==std::wstring::npos) break;
+    size_t b=s.find(L"-->",a);
+    if(b==std::wstring::npos){ if(a==0) s.clear(); else s.erase(a); break; }
+    s.erase(a,b+3-a); }
+  std::vector<std::wstring> lines; size_t p=0;
+  while(p<=s.size()){ size_t e=s.find(L'\n',p); if(e==std::wstring::npos) e=s.size();
+    std::wstring l=s.substr(p,e-p); if(!l.empty()&&l.back()==L'\r') l.pop_back();
+    lines.push_back(l); p=e+1; }
+  for(size_t i=0;i<lines.size();++i){
+    std::wstring line=lines[i];
+    while(!line.empty()&&iswspace((wint_t)line.back())) line.pop_back();
+    if(line.empty()){ MdBlock g; g.kind=0; g.gap=6; out.push_back(g); continue; }
+    MdBlock b;
+    int hashes=0; while(hashes<(int)line.size()&&line[hashes]==L'#') ++hashes;
+    if(hashes>0&&hashes<=6&&(hashes==(int)line.size()||line[hashes]==L' ')){
+      b.kind=1; b.bold=true; b.px=(hashes<=2)?16:14; b.col=RGB(255,255,255);
+      b.text=MdInline(line.substr(hashes)); b.gap=10; }
+    else if(line==L"---"||line==L"***"||line==L"___"){
+      b.kind=4; b.gap=9; b.h=1; }
+    else if(line.rfind(L"- ",0)==0||line.rfind(L"* ",0)==0||line.rfind(L"+ ",0)==0){
+      b.kind=2; b.indent=Px(16); b.gap=3; b.text=MdInline(line.substr(2)); }
+    else if(line[0]==L'|'){
+      if(MdTableSep(line)) continue;
+      std::wstring row=line; if(row.size()>=2&&row.front()==L'|') row.erase(0,1);
+      if(!row.empty()&&row.back()==L'|') row.pop_back();
+      std::wstring joined; size_t a=0;
+      for(;;){ size_t e=row.find(L'|',a);
+        std::wstring cell=MdInline(row.substr(a,(e==std::wstring::npos?row.size():e)-a));
+        if(!cell.empty()){ if(!joined.empty()) joined+=L"  \x00B7  "; joined+=cell; }
+        if(e==std::wstring::npos) break; a=e+1; }
+      const bool header=(i+1<lines.size()&&MdTableSep(lines[i+1]));
+      b.kind=5; b.text=joined; b.bold=header;
+      b.col=header?RGB(0xE8,0xE8,0xE8):RGB(0xC0,0xC0,0xC0); b.gap=2; }
+    else if(line[0]==L'>'){
+      b.kind=1; b.text=MdInline(line.substr(1)); b.col=RGB(0xAA,0xAA,0xAA); b.gap=3; }
+    else { b.kind=1; b.text=MdInline(line); }
+    if(b.kind!=4&&b.kind!=0) b.h=MdMeasure(dc,b.text,b.px,b.bold,width-b.indent);
+    out.push_back(b); }
+  return out; }
+
 class CUpdateCard : public CUiWnd {
 public:
   std::wstring version, notes, pageText;
   int hov=0; CRect openR, laterR, notesR, closeR;
+  std::vector<MdBlock> blocks_; bool mdValid_=false; int mdW_=0, contentH_=0, scroll_=0;
   BOOL CreateCard(CWnd* owner){
     return CreateEx(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_COMPOSITED,
                     CUiWnd::ClassName(),L"",WS_POPUP,CRect(0,0,Px(760),Px(460)),owner,0); }
   void Show(const UpdateState& s){
     version=s.version; notes=s.notes; pageText=s.page;
+    mdValid_=false; scroll_=0;
     if(pageText.empty()) pageText=L"https://github.com/spedagadi/unplugged-mpc-hc/releases";
     Place(); ShowWindow(SW_SHOWNOACTIVATE);
     SetWindowPos(&CWnd::wndTopMost,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -3939,6 +4042,7 @@ public:
     laterR=CRect(rc.right-Px(16)-Px(110),by,rc.right-Px(16),by+bh);
     openR=CRect(laterR.left-Px(10)-Px(190),by,laterR.left-Px(10),by+bh);
     notesR=CRect(Px(28),Px(96),rc.right-Px(28),by-Px(16));
+    mdValid_=false; scroll_=0;
     Invalidate(FALSE); }
   void Remember(){     // never prompt for this version again automatically
     g_ini["ui.dismissedVersion"]=Narrow(version); g_iniDirty=true; SaveIni("update dismissed"); }
@@ -3958,15 +4062,54 @@ protected:
     sub+=kAppVersion; sub+=L".";
     TxtW(&dc,CRect(Px(28),Px(52),rc.right-Px(28),Px(78)),sub.c_str(),ACCENT2,13,false,DT_LEFT|DT_VCENTER);
     TxtW(&dc,CRect(closeR),L"\x2715",hov==100?RGB(255,255,255):MID,13,false,DT_CENTER|DT_VCENTER);
-    // Release notes, word-wrapped and clipped to the space above the buttons.
-    ::SetBkMode(dc.m_hDC,TRANSPARENT);
-    int saved=dc.SaveDC();
-    dc.IntersectClipRect(notesR);
-    TxtW(&dc,notesR,notes.empty()?L"(no notes in this release)":notes.c_str(),
-         RGB(0xCC,0xCC,0xCC),13,false,DT_LEFT|DT_TOP|DT_WORDBREAK);
-    dc.RestoreDC(saved);
+    // Release notes: markdown rendered to blocks, clipped and scrollable.
+    DrawNotes(&dc);
     Btn(&dc,openR,L"Open download page",true,hov==1);
     Btn(&dc,laterR,L"Later",true,hov==2); }
+  void BuildMd(CDC* dc){
+    int w=max(Px(80),notesR.Width()-Px(12));
+    std::wstring src=notes.empty()?std::wstring(L"(no notes in this release)"):notes;
+    blocks_=MdParse(src,dc,w);
+    contentH_=0; for(const MdBlock& b:blocks_) contentH_+=b.gap+b.h;
+    mdValid_=true; }
+  void DrawNotes(CDC* dc){
+    if(!mdValid_) BuildMd(dc);
+    if(notesR.IsRectEmpty()) return;
+    const int vh=notesR.Height();
+    const int maxS=max(0,contentH_-vh);
+    if(scroll_<0) scroll_=0; if(scroll_>maxS) scroll_=maxS;
+    CRect view=notesR; view.right-=Px(10);
+    ::SetBkMode(dc->m_hDC,TRANSPARENT);
+    int saved=dc->SaveDC();
+    dc->IntersectClipRect(notesR);
+    int y=view.top-scroll_;
+    for(const MdBlock& b:blocks_){
+      y+=b.gap;
+      if(b.kind==4){
+        if(y<notesR.bottom&&y>=notesR.top-Px(1))
+          dc->FillSolidRect(CRect(view.left,y,view.right,y+Px(1)),RGB(60,60,64));
+        y+=b.h; continue; }
+      if(b.kind==0){ y+=b.h; continue; }
+      if(b.kind==2)
+        MdDraw(dc,CRect(view.left,y,view.left+b.indent,y+b.h),L"\x2022",13,true,ACCENT);
+      MdDraw(dc,CRect(view.left+b.indent,y,view.right,y+b.h),b.text,b.px,b.bold,b.col);
+      y+=b.h; }
+    dc->RestoreDC(saved);
+    if(contentH_>vh){
+      const int tx=notesR.right-Px(5);
+      dc->FillSolidRect(CRect(tx,notesR.top,tx+Px(2),notesR.bottom),RGB(40,40,44));
+      int th=max(Px(24),(int)((long long)vh*vh/contentH_));
+      if(th>vh) th=vh;
+      int ty=notesR.top+(int)((long long)(vh-th)*scroll_/max(1,contentH_-vh));
+      dc->FillSolidRect(CRect(tx,ty,tx+Px(2),ty+th),RGB(94,94,100)); } }
+  afx_msg BOOL OnMouseWheel(UINT, short zDelta, CPoint pt){
+    CRect rc; GetClientRect(rc); ScreenToClient(&pt);
+    if(!notesR.PtInRect(pt)) return FALSE;
+    if(!mdValid_){ CClientDC dc(this); BuildMd(&dc); }
+    const int maxS=max(0,contentH_-notesR.Height());
+    scroll_-=(int)(zDelta/120)*Px(48);
+    if(scroll_<0) scroll_=0; if(scroll_>maxS) scroll_=maxS;
+    Invalidate(FALSE); return TRUE; }
   void Btn(CDC* dc,CRect r,const wchar_t* t,bool en,bool hv){
     RR(dc,r,Px(8),en?(hv?ACCENT:RGB(44,44,48)):RGB(26,26,28));
     StrokeR(dc,r,Px(8),en?(hv?ACCENT2:RGB(70,70,74)):RGB(40,40,42));
@@ -3982,6 +4125,7 @@ protected:
 };
 BEGIN_MESSAGE_MAP(CUpdateCard,CUiWnd)
   ON_WM_PAINT() ON_WM_ERASEBKGND() ON_WM_MOUSEMOVE() ON_WM_LBUTTONDOWN()
+  ON_WM_MOUSEWHEEL()
 END_MESSAGE_MAP()
 
 // Shared first-run / Rename-input card (FirstRunDialog + InputConfigDialog).
