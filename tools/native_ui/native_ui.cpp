@@ -724,6 +724,7 @@ static void PushRow(const Row& r);
 // still reaches the engine, but the INI and the preset dirty marker are left
 // alone: the user's HDR preference must survive an SDR title.
 static bool g_rowNoSave=false;
+static bool g_inDisplayGamut=false;
 // Display refresh matching: the helpers live with the ffprobe block far below,
 // but the settings rail and the play paths above them call into it.
 static bool MatchRefreshOn();
@@ -732,6 +733,7 @@ static void MatchRefreshBegin(const std::wstring& path,bool notify=false);
 static void MatchRefreshRestore();
 static void TenBitBegin();      // 10-bit SDR output (WCG ownership), see below
 static void TenBitRestore();
+static void ApplyDisplayGamut(bool push);   // one axis -> outGamut + SDR BT.2020 + WCG
 static void SaveIni(const char* why);
 
 struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
@@ -749,6 +751,11 @@ struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
 static const wchar_t* kHd[]={L"Bitstream",L"PCM"}; static const int kHdV[]={1,0};
 static const wchar_t* kCurve[]={L"Unplugged",L"GT7 Adapt"}; static const int kCurveV[]={7,10};
 static const wchar_t* kGamut[]={L"Follow source",L"BT.709 (standard)",L"BT.2020 (wide)",L"DCI-P3 (D65)"}; static const int kGamutV[]={3,0,1,2};
+// Unified display intent (one axis). The value drives the engine output gamut,
+// the SDR BT.2020 declaration, WCG ownership and (in the renderer) whether the
+// chain is 10-bit whenever the link supports it.
+static const wchar_t* kDisplayGamut[]={L"Auto (BT.709)",L"BT.2020",L"DCI-P3"};
+static const int kDisplayGamutV[]={0,1,2};
 static const wchar_t* kWinHdr[]={L"Do not change",L"On (fullscreen)",L"On",L"On/off (fullscreen)",L"On/off"};
 static const wchar_t* kDisplayTransfer[]={L"Follow source",L"Gamma 2.2",L"Gamma 2.4",L"BT.1886",L"sRGB",L"Gamma 2.0"};
 static const int kDisplayTransferV[]={5,0,1,2,3,4};
@@ -816,7 +823,7 @@ static Row g_rows[]={
  {2,1,L"TONE MAPPING",L"Exposure","hdr.exposureTrim",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Shadow detail","hdr.shadowLift",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Contrast","hdr.punch",-5,5,1,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
- {2,2,L"TONE MAPPING",L"Output gamut","hdr.outputGamut",0,0,0,0,false,0,kGamut,4,kGamutV,{},0,0,0,0},
+ {2,2,L"TONE MAPPING",L"Output gamut","hdr.outputGamut",0,0,0,0,false,0,kGamut,4,kGamutV,{},0,0,1,0},
  {2,1,L"TONE MAPPING",L"Gamut capacity (709)","hdr.gamutCap",0.2,1.0,0.01,1.0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"TONE MAPPING",L"Highlight desat","hdr.hiDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  // ClipGuard is an external package; its tuning rows are hidden. One entry
@@ -860,16 +867,21 @@ static Row g_rows[]={
  {2,0,L"CLIPGUARD",L"OSD","hdr.cgOsd",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
  // ?????? DISPLAY TARGET ??????
  {2,2,L"DISPLAY TARGET",L"Windows HDR","hdr.toggleDisplay",0,0,0,0,false,0,kWinHdr,5,nullptr,{},0,0,0,0},
+ // ONE AXIS: what the display is set to. Drives output gamut conversion, the
+ // SDR BT.2020 declaration, WCG ownership and (renderer-side) the 10-bit chain.
+ // The old "10-bit SDR output" / "SDR signal: BT.2020" / "Output gamut" rows are
+ // internal now: they are consequences of this choice, not separate questions.
+ {2,2,L"DISPLAY TARGET",L"Display gamut","hdr.displayGamut",0,0,0,0,false,0,kDisplayGamut,3,kDisplayGamutV,{},0,1,0,0},
  // 10-bit SDR output: the link depth belongs to the GPU driver, which Windows
  // exposes no API for ??? so this row owns only what an app CAN own: the SDR
  // composition (WCG). With the driver set to 10 bpc, WCG off gives the renderer
  // bitsPerColorChannel=10 in plain SDR, i.e. R10G10B10A2 with no OS wide-gamut
  // mapping on top. Off by default: it changes display state (a brief resync).
- {2,0,L"DISPLAY TARGET",L"10-bit SDR output","hdr.tenBitSdr",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,0,L"DISPLAY TARGET",L"10-bit SDR output","hdr.tenBitSdr",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
  // TEST: declare the SDR swap chain as BT.2020 SDR so the display may switch to
  // its wide-gamut mode. Requires Output gamut = BT.2020 (the image must actually
  // be BT.2020) and forces WCG on for the session. Effect is display-dependent.
- {2,0,L"DISPLAY TARGET",L"SDR signal: BT.2020","out.sdrBt2020",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
+ {2,0,L"DISPLAY TARGET",L"SDR signal: BT.2020","out.sdrBt2020",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
  {2,2,L"DISPLAY TARGET",L"Display transfer","hdr.transfer",0,0,0,0,false,0,kDisplayTransfer,6,kDisplayTransferV,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Static nits (max)","hdr.maxNits",10,1000,1,1000,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Display black (nits)","hdr.blackNits",0,2,0.001,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -1481,7 +1493,8 @@ static void SeedIni(){
   int changed=0;
   for(int i=0;i<NROWS;++i){ const Row&r=g_rows[i];
     if(r.kind!=0&&r.kind!=1&&r.kind!=2) continue;
-    if(!IsSettingsKey(EngineKey(r.key))&&strncmp(r.key,"ui.",3)!=0) continue;
+    if(!IsSettingsKey(EngineKey(r.key))&&strncmp(r.key,"ui.",3)!=0&&
+       strcmp(r.key,"hdr.displayGamut")!=0) continue;
     const std::string want=IniValue(r); auto it=g_ini.find(r.key);
     if(it==g_ini.end()||it->second!=want){ g_ini[r.key]=want; ++changed; } }
   if(g_ini.find("ui.curveValueIsEngine")==g_ini.end()){ g_ini["ui.curveValueIsEngine"]="true"; ++changed; }
@@ -1581,6 +1594,11 @@ static void PushAll(){
   PushLut();   // LUT is a command, re-applied on every graph generation like 1.3.0
 }
 static void PushRow(const Row& r){ char b[192];
+  // ONE AXIS: a change of the Display gamut row derives the engine output gamut
+  // and the SDR BT.2020 declaration, then re-applies WCG ownership. Guarded so
+  // the derived pushes cannot re-enter this block.
+  if(!strcmp(r.key,"hdr.displayGamut")&&!g_inDisplayGamut&&!g_applyingPreset){
+    g_inDisplayGamut=true; ApplyDisplayGamut(true); g_inDisplayGamut=false; }
   // Aspect-rule scope tuning (UR-0007). Every user edit of the live Bars/crop
   // rows and of the dedicated Scope row lands here; forced pushes carry
   // g_rowNoSave and must not touch the tuning. This lives in PushRow, not in
@@ -1764,6 +1782,7 @@ static bool PresetDeviceRow(const Row& r){
   if(!r.key) return false;
   return !strcmp(r.key,"hdr.sdrNits") || !strcmp(r.key,"hdr.maxNits") ||
          !strcmp(r.key,"hdr.blackNits") || !strcmp(r.key,"hdr.convertToSdr") ||
+         !strcmp(r.key,"hdr.displayGamut") ||
          !strcmp(r.key,"hdr.outputGamut") || !strcmp(r.key,"hdr.transfer") ||
          !strcmp(r.key,"hdr.cgEnabled") || !strcmp(r.key,"hdr.cgStrength") ||
          !strcmp(r.key,"hdr.cgShape") || !strcmp(r.key,"hdr.cgFixStart") ||
@@ -1972,6 +1991,28 @@ static void MigrateNlsDefaults(){
       changed=true; } }
   g_ini["ui.nlsDefaultsV"]="2"; g_iniDirty=true; SaveIni("nls defaults v2");
   LogF("nls defaults: fill limit 105->200 migrated (%s)",changed?"changed":"no stored default");
+}
+// One-time migration to the unified Display gamut axis. The old build asked two
+// separate questions (Output gamut + SDR BT.2020) plus a 10-bit row; derive the
+// one answer from them: BT.2020 if the output gamut was 2020 or the SDR BT.2020
+// signal was on, DCI-P3 if the output gamut was P3, BT.709 otherwise (including
+// the old "Follow source" default, which no longer exists in the user UI).
+static void MigrateDisplayGamut(){
+  if(!IniGet("ui.displayGamutV").empty()) return;
+  Row* dg=FindRow("hdr.displayGamut");
+  Row* og=FindRow("hdr.outputGamut");
+  Row* sb=FindRow("out.sdrBt2020");
+  const int ogv=og?(og->optvals?og->optvals[og->opt]:og->opt):0;
+  const bool sdrB=sb&&sb->on;
+  int g=0;
+  if(ogv==1||sdrB) g=1; else if(ogv==2) g=2;
+  if(dg){
+    dg->opt=(g==1?1:(g==2?2:0));   // kDisplayGamutV index == engine value
+    SaveRowIni(*dg);
+    ApplyDisplayGamut(false); }
+  g_ini["ui.displayGamutV"]="1"; g_iniDirty=true;
+  SaveIni("display gamut migration");
+  LogF("displaygamut: migrated outGamut=%d sdrBt2020=%d -> %d",ogv,(int)sdrB,g);
 }
 // 2.2.0 users tuned DBLE compensation; 2.3.0 replaces it with ClipGuard. Their
 // previous state must survive the upgrade, not silently switch the feature off.
@@ -6983,19 +7024,15 @@ static void MatchRefreshRestore(){
   LogF("refresh: restore result rc=%ld actual=%S",rc,ModeStr(s_refDev).c_str());
   s_refChanged=false; s_refHz=0; }
 
-// ---- 10-bit SDR output (WCG ownership; row hdr.tenBitSdr) --------------------
+// ---- display gamut / WCG ownership (one axis: hdr.displayGamut) --------------
 // The LINK depth is the GPU driver's business and Windows exposes no API for
-// it. What an app CAN own is the SDR composition: with the driver at 10 bpc,
-// WCG off makes GET_ADVANCED_COLOR_INFO_2 report bits=10, mode=SDR, and the
-// renderer takes R10G10B10A2 with no OS wide-gamut mapping on top ??? the same
-// neutral path the CM3588 produces with bpc=10. Off by default: it changes
-// display state (brief resync). When On it applies for the WHOLE Unplugged
-// SESSION ??? off at startup, restored on exit/relaunch ??? so titles and mode
-// switches never bounce the desktop through WCG.
+// it; the renderer picks 10-bit whenever the link reports 10 bpc. What an app
+// CAN own is the composition: BT.2020 needs WCG on so the OS carries the SDR
+// P2020 signal; BT.709 and DCI-P3 want WCG off (plain SDR with no OS wide-gamut
+// mapping on top). The choice applies for the whole session; whichever state
+// the app forces is journaled and restored on exit/relaunch (and after a crash).
 static bool s_wcgForcedOff=false;
-static bool TenBitRowOn(){
-  for(int i=0;i<NROWS;++i) if(g_rows[i].key&&!strcmp(g_rows[i].key,"hdr.tenBitSdr")) return g_rows[i].on;
-  return false; }
+static bool s_wcgForcedOn=false;
 static std::wstring GpuName(){
   HKEY k=nullptr;
   if(RegOpenKeyExW(HKEY_LOCAL_MACHINE,
@@ -7014,45 +7051,87 @@ static const wchar_t* GpuAdvice(const std::wstring& gpu){
     return L"Set 10 bpc in Intel Graphics Command Center > Display.";
   return L"Set 10 bpc in the GPU driver's display settings."; }
 static void TenBitRestore(){
-  if(!s_wcgForcedOff) return;
-  s_wcgForcedOff=false;
-  g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("10-bit restore");
-  LogF("10bit: WCG restore %s",SetWcgState(true)?"ok":"FAILED"); }
+  if(s_wcgForcedOn){
+    s_wcgForcedOn=false;
+    g_ini["ui.wcgRestoreOn"]="False"; g_iniDirty=true; SaveIni("display gamut WCG restore off");
+    LogF("displaygamut: WCG restore-off %s",SetWcgState(false)?"ok":"FAILED"); }
+  if(s_wcgForcedOff){
+    s_wcgForcedOff=false;
+    g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("10-bit restore");
+    LogF("displaygamut: WCG restore-on %s",SetWcgState(true)?"ok":"FAILED"); } }
 static void TenBitAdvise(const OutDepth& od){
   static bool advised=false;   // once per launch: a nag at every title is worse than none
   if(advised) return; advised=true;
   g_toastText=L"10-bit output requested: link is 8-bit";
   g_toastReason=GpuAdvice(GpuName());
-  LogF("10bit: link is %d-bit; advice shown",od.bits);
+  LogF("displaygamut: link is %d-bit; advice shown",od.bits);
   if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0); }
 static void TenBitBegin(){
-  // SDR BT.2020 SIGNAL takes precedence: it needs wide-colour composition ON,
-  // the opposite of the 10-bit-SDR row's WCG-off. The renderer declares the
-  // swap chain P2020; WCG is what lets the OS/driver carry that in SDR.
-  { Row* b=FindRow("out.sdrBt2020");
-    if(b&&b->on){
-      const bool wasOff=s_wcgForcedOff; s_wcgForcedOff=false;
-      if(wasOff){ g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("bt2020 WCG on"); }
-      LogF("bt2020: WCG on for SDR BT.2020 signal %s",SetWcgState(true)?"ok":"FAILED");
-      return; } }
-  if(!TenBitRowOn()){ TenBitRestore(); return; }
+  Row* dg=FindRow("hdr.displayGamut");
+  const int gamut=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
+  const bool wantWcg=(gamut==1);   // BT.2020 needs wide-colour composition
   OutDepth od=CurrentOutputDepth();
-  if(!od.ok){ LogF("10bit: output depth unavailable (Windows too old for advanced colour info)"); return; }
-  if(od.mode==2){ LogF("10bit: Windows HDR is active - already 10-bit, WCG untouched"); return; }
-  if(od.mode==1){
+  if(!od.ok){ LogF("displaygamut: output depth unavailable (Windows too old for advanced colour info)"); return; }
+  if(od.mode==2){ LogF("displaygamut: Windows HDR is active - WCG untouched"); return; }
+
+  if(wantWcg){
+    if(s_wcgForcedOff){
+      // The user's original state was WCG on: this is a restore, not a forced-on.
+      s_wcgForcedOff=false; g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("display gamut WCG restore on");
+      LogF("displaygamut: BT.2020 restores WCG %s",SetWcgState(true)?"ok":"FAILED"); }
+    else if(s_wcgForcedOn){
+      LogF("displaygamut: BT.2020 - WCG already forced on"); }
+    else if(od.mode==0){
+      g_ini["ui.wcgRestoreOn"]="True"; g_iniDirty=true; SaveIni("display gamut WCG on journal");
+      if(SetWcgState(true)){ s_wcgForcedOn=true; LogF("displaygamut: WCG on for BT.2020 (journaled)"); }
+      else { g_ini["ui.wcgRestoreOn"]="False"; g_iniDirty=true; SaveIni("display gamut WCG on failed");
+             LogF("displaygamut: WCG on FAILED"); } }
+    else { LogF("displaygamut: BT.2020 - WCG already on"); }
+    od=CurrentOutputDepth();
+    if(od.ok&&od.bits>=10) LogF("displaygamut: link %d-bit %S %S - target state",od.bits,EncName(od.enc),ColModeName(od.mode));
+    else if(od.ok) TenBitAdvise(od);
+    return; }
+
+  // BT.709 or DCI-P3: neutral SDR composition, WCG off for the session.
+  if(s_wcgForcedOn){
+    // The user's original state was WCG off: this is a restore, not a forced-off.
+    s_wcgForcedOn=false; g_ini["ui.wcgRestoreOn"]="False"; g_iniDirty=true; SaveIni("display gamut WCG restore off");
+    LogF("displaygamut: neutral restores WCG %s",SetWcgState(false)?"ok":"FAILED"); }
+  else if(s_wcgForcedOff){
+    LogF("displaygamut: neutral - WCG already forced off"); }
+  else if(od.mode==1){
     // Journal BEFORE changing: a crash must not leave the desktop changed.
-    g_ini["ui.wcgRestore"]="True"; g_iniDirty=true; SaveIni("10-bit WCG off");
-    if(SetWcgState(false)){ s_wcgForcedOff=true; LogF("10bit: WCG disabled for this session");
-      od=CurrentOutputDepth(); }
-    else LogF("10bit: WCG disable FAILED (SET_WCG_STATE unavailable)"); }
-  if(od.bits>=10)
-    LogF("10bit: link %d-bit %S %S - target state",od.bits,EncName(od.enc),ColModeName(od.mode));
-  else TenBitAdvise(od); }
+    g_ini["ui.wcgRestore"]="True"; g_iniDirty=true; SaveIni("display gamut WCG off journal");
+    if(SetWcgState(false)){ s_wcgForcedOff=true; LogF("displaygamut: WCG off for the session (journaled)"); }
+    else LogF("displaygamut: WCG off FAILED (SET_WCG_STATE unavailable)"); }
+  od=CurrentOutputDepth();
+  if(od.ok&&od.bits>=10) LogF("displaygamut: link %d-bit %S %S - target state",od.bits,EncName(od.enc),ColModeName(od.mode));
+  else if(od.ok) TenBitAdvise(od); }
+static void ApplyDisplayGamut(bool push){
+  Row* dg=FindRow("hdr.displayGamut"); if(!dg) return;
+  const int g=dg->optvals?dg->optvals[dg->opt]:dg->opt;
+  // kGamut index: 0 Follow source, 1 BT.709, 2 BT.2020, 3 DCI-P3.
+  const int ogIdx=(g==1)?2:(g==2)?3:1;
+  if(Row* og=FindRow("hdr.outputGamut")){
+    if(og->opt!=ogIdx){ og->opt=ogIdx;
+      if(push) PushRow(*og); else SaveRowIni(*og); } }
+  if(Row* sb=FindRow("out.sdrBt2020")){
+    const bool want=(g==1);
+    if(sb->on!=want){ sb->on=want;
+      if(push) PushRow(*sb); else SaveRowIni(*sb); } }
+  if(push) TenBitBegin();
+  LogF("displaygamut: %s -> outGamut=%d sdrBt2020=%d%s",
+       g==1?"BT.2020":g==2?"DCI-P3":"BT.709", g, (int)(g==1), push?"":" (load)"); }
 static void TenBitCrashRecovery(){
-  if(!IniBool(IniGet("ui.wcgRestore"))) return;
-  LogF("10bit: previous run left WCG off - restoring");
-  SetWcgState(true);
-  g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("10-bit crash restore"); }
+  if(IniBool(IniGet("ui.wcgRestoreOn"))){
+    LogF("displaygamut: previous run left WCG forced on - restoring off");
+    SetWcgState(false);
+    g_ini["ui.wcgRestoreOn"]="False"; g_iniDirty=true; }
+  if(IniBool(IniGet("ui.wcgRestore"))){
+    LogF("displaygamut: previous run left WCG off - restoring on");
+    SetWcgState(true);
+    g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; }
+  if(g_iniDirty) SaveIni("display gamut crash restore"); }
 
 // Returns false only if ffprobe failed; probeJson carries what was found.
 static bool ParseProbe(const std::string& j,long long size,std::string& probeJson,double& duration){
@@ -10570,6 +10649,7 @@ public:
     TenBitCrashRecovery();   // WCG off is journaled because a crash cannot restore it
     MigrateDbleToClipGuard(hadCgKey); // 2.2 DBLE profile -> ClipGuard, preserving state
     MigrateNlsDefaults();   // 105 -> 200 for the pre-2026-11-01 default only
+    MigrateDisplayGamut();  // old Output gamut + SDR BT.2020 -> one Display gamut axis
     // ClipGuard's overlay and diagnostic view are SESSION state. A saved
     // "Overlay: On" must not reappear over the picture at the next launch: the
     // user brings it up with F7, and it starts Off every time. The view is reset
