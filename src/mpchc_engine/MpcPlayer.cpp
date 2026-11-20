@@ -2918,9 +2918,13 @@ bool HoldBackNegotiationFields(Settings_t& dst, const Settings_t& live)
     hold(dst.bHdrLocalToneMapping,     live.bHdrLocalToneMapping);
     hold(dst.iHdrToggleDisplay,        live.iHdrToggleDisplay);
     hold(dst.bHdrPassthrough,          live.bHdrPassthrough);
-    // SDR BT.2020 declares the SWAP CHAIN colour space — a rebuild is the only
-    // way it takes effect (the swap chain is created in InitSwapChain).
-    hold(dst.bSdrBt2020,               live.bSdrBt2020);
+    // SDR BT.2020 used to be held here because the swap chain colour space is
+    // set at creation. The renderer now handles it live: Configure() detects
+    // bSdrBt2020 changing, sets changeWindow, and InitSwapChain re-creates the
+    // swap chain on the next frame. Holding it back rebuilt the whole graph,
+    // and the re-open resumed playback — so switching Display gamut on a paused
+    // frame started playing it (reported 2026-11-20). Do NOT put it back here
+    // without a live path in the renderer.
     // Configure() -> changeVP (video-processor re-init)
     hold(dst.bHdrPreferDoVi,           live.bHdrPreferDoVi);
     hold(dst.bVPScaling,               live.bVPScaling);

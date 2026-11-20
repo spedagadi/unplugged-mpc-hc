@@ -51,6 +51,9 @@ existing files stay as the detailed evidence:
 | UR-0025 | Sateesh | Limitation | SDR BT.2020 auto-switch is display-dependent | **Limitation** — documented |
 | UR-0026 | Sateesh (audit) | Risk | ClipGuard shared-memory version not checked | **Open (low)** |
 | UR-0027 | Sateesh / Peter Biancardi | Design | ClipGuard.exe outranks the app when running | **By design** — notice not yet added |
+| UR-0028 | Sateesh | Bug | Playback keys leaked from the open settings pane; a paused frame stepped (looked like playback) and Enter toggled pause | **Fixed** |
+| UR-0029 | Sateesh | Bug | Engine auto-selected the first subtitle track on graph open | **Fixed** |
+| UR-0030 | Sateesh | Clarification | NLS turned on around Ctrl+S captures | **Not a bug** — `N` is the NLS key; Ctrl+S does not touch it |
 
 ## New in this cycle (19–20 November)
 
@@ -135,6 +138,37 @@ The app's ClipGuard rows are hidden; its hotkeys are inert while the companion i
 running (UR-0027).
 **Open checks.** Projector A/B of the 2.60 algorithm, look-ahead 12-frame memory,
 overlay placement (UR-0023), `[CG]` cost.
+
+### UR-0028 — playback keys leaked from the settings pane (Sateesh)
+**Symptom.** With a frame paused, switching **Display gamut** made the picture
+advance; Enter could start playback; subtitles and NLS appeared to change on
+their own.
+**Evidence.** `KEY vk=27` (Right) with **no** "settings rail consumed" line,
+immediately followed by `[ENGINE] step dir=1`. The engine log also shows
+`paused redraw after a geometry/settings change`: the pipeline never resumed —
+the player was stepping frames. `KEY vk=20` (Space) toggles pause; `KEY vk=4E`
+(N) is the NLS key and appears before each Ctrl+S capture.
+**Cause — two, both real.**
+1. **The graph rebuilt.** `out.sdrBt2020` was in the engine's rebuild-only list,
+   so changing Display gamut tore the graph down and re-opened it; the re-open
+   resumed at the current position, losing the pause:
+   `settings: a rebuild-only row changed ...` then
+   `[GRAPH] Open: resume at 2059.0 s`. This is the "video plays" that was
+   reported.
+2. **Keys leaked.** The settings rail consumed keys only after keyboard mode was
+   armed (Tab or click). With the pane visible but not armed, Left/Right fell
+   through to the player (`StepFrameKey` while paused) and Enter fell through to
+   play/pause.
+**Fix.**
+- **Engine:** SDR BT.2020 is no longer held back. The renderer already applies it
+  live (`Configure()` detects `bSdrBt2020`, sets `changeWindow`, and
+  `InitSwapChain` re-creates the swap chain on the next frame), so no graph
+  re-open occurs and the paused frame stays paused.
+- **App `f8a4bb7a0`:** the first Left/Right arms the rail; option rows cycle
+  with Left/Right/Enter; Enter is consumed instead of reaching the player.
+**Related — UR-0029.** The engine auto-selected the first subtitle stream on
+graph open; the app now owns the choice (default Off) and re-asserts it with
+`subtrack enforce -1` when the engine differs.
 
 ## Existing reports — detail pointers
 
