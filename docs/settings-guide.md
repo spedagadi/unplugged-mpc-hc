@@ -359,7 +359,8 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
-| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | The display's **HDR/wide-gamut** mode. **SDR titles always run BT.709** — the SDR BT.2020 container is retired, because declaring SDR as P2020 caused a visible colour shift; this row applies to HDR10/HLG/DV titles only. Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. The app derives the HDR conversion, the declaration and WCG from it. For SDR, leave the display in its 709/sRGB mode; for HDR, in its wide mode. The full chain and verification are in **10-bit output — end-to-end setup** below. |
+| **SDR BT.2020 (projector)** | On/Off | Off | Declares SDR output as BT.2020 and converts SDR to BT2020, so a projector that honours SDR BT.2020 switches to its wide-gamut mode. Many displays ignore the SDR flag and show a colour shift — leave it **Off** unless the projector is known to honour it. HDR/DV titles always use **Display gamut**, not this row. |
+| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | The display's **HDR/wide-gamut** mode. **SDR titles run BT.709 by default** (see the row above for the explicit projector flag); this row applies to HDR10/HLG/DV titles. Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. The app derives the HDR conversion, the declaration and WCG from it. For SDR, leave the display in its 709/sRGB mode unless the SDR BT.2020 flag is On; for HDR, in its wide mode. The full chain and verification are in **10-bit output — end-to-end setup** below. |
 | **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
@@ -596,9 +597,10 @@ signal-information page is the final authority for what reaches the panel.
 
 ### What Display gamut does
 
-Only **HDR10/HLG/DV** titles use this row. **SDR titles are always BT.709** —
-neutral SDR, WCG off, no P2020 container — because the SDR BT.2020 container
-caused a visible colour shift.
+Only **HDR10/HLG/DV** titles use this row. **SDR titles are BT.709** — neutral
+SDR, WCG off, no P2020 container — **unless** **SDR BT.2020 (projector)** is
+explicitly On, in which case SDR uses the BT.2020/P2020 signal for a projector
+that honours it.
 
 | Display gamut | HDR/DV picture | WCG | 10-bit |
 | --- | --- | --- | --- |

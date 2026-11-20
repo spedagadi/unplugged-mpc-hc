@@ -740,6 +740,7 @@ static void MatchRefreshRestore();
 static void TenBitBegin();      // 10-bit SDR output (WCG ownership), see below
 static void TenBitRestore();
 static void ApplyDisplayGamut(bool push);   // one axis -> outGamut + SDR BT.2020 + WCG
+static void ApplyContentGamutPolicy();      // SDR: 709 unless the projector flag
 static void SaveIni(const char* why);
 
 struct Row{ int grp,kind; const wchar_t* section,*label; const char* key;
@@ -887,7 +888,7 @@ static Row g_rows[]={
  // TEST: declare the SDR swap chain as BT.2020 SDR so the display may switch to
  // its wide-gamut mode. Requires Output gamut = BT.2020 (the image must actually
  // be BT.2020) and forces WCG on for the session. Effect is display-dependent.
- {2,0,L"DISPLAY TARGET",L"SDR signal: BT.2020","out.sdrBt2020",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
+ {2,0,L"DISPLAY TARGET",L"SDR BT.2020 (projector)","out.sdrBt2020",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,2,L"DISPLAY TARGET",L"Display transfer","hdr.transfer",0,0,0,0,false,0,kDisplayTransfer,6,kDisplayTransferV,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Static nits (max)","hdr.maxNits",10,1000,1,1000,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Display black (nits)","hdr.blackNits",0,2,0.001,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -3340,11 +3341,10 @@ protected:
       if(!strcmp(r.key,"hdr.tenBitSdr")){
         LogF("10bit: user setting=%s",r.on?"ON":"OFF");
         if(r.on) TenBitBegin(); else TenBitRestore(); }
-      // SDR BT.2020 test: the row rebuilds the graph (engine holds it back) and
-      // needs WCG on; TenBitBegin owns that state either way.
+      // SDR BT.2020 projector flag: re-derive the SDR output gamut and WCG.
       if(!strcmp(r.key,"out.sdrBt2020")){
         LogF("bt2020: user setting=%s",r.on?"ON":"OFF");
-        TenBitBegin(); }
+        ApplyContentGamutPolicy(); }
       if(!strcmp(r.key,"geo.nlsAspectRule")){
         LogF("nlsaspect: user setting=%s",r.on?"ON":"OFF");
         if(!r.on) NlsAspectRelease(); }
@@ -7285,10 +7285,12 @@ static void TenBitAdvise(const OutDepth& od){
 static void TenBitBegin(){
   Row* dg=FindRow("hdr.displayGamut");
   const int gamut=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
-  const bool wantWcg=(gamut==1 && !g_sdrContentNow);
-  // SDR content is BT.709: the BT.2020 container and the 2020 conversion are a
-  // wide-gamut HDR path. Using them on SDR produced a clear colour shift
-  // (reported 2026-11-20), so an SDR title always runs the neutral SDR path.
+  Row* sbRow=FindRow("out.sdrBt2020");
+  const bool sdrContainer = sbRow && sbRow->on;
+  // HDR/DV: the Display gamut decides. SDR: BT.709 by default; the explicit
+  // "SDR BT.2020 (projector)" flag opts into the P2020 container and WCG for
+  // displays that honour it.
+  const bool wantWcg = g_sdrContentNow ? sdrContainer : (gamut==1);
   OutDepth od=CurrentOutputDepth();
   if(!od.ok){ LogF("displaygamut: output depth unavailable (Windows too old for advanced colour info)"); return; }
   if(od.mode==2){ LogF("displaygamut: Windows HDR is active - WCG untouched"); return; }
@@ -7332,29 +7334,28 @@ static void ApplyDisplayGamut(bool push){
   // kGamut index: 0 Follow source, 1 BT.709, 2 BT.2020, 3 DCI-P3.
   // SDR content is always BT.709; the Display gamut choice describes the
   // display's HDR/wide-gamut mode and applies to HDR/DV titles.
-  const int ogIdx=g_sdrContentNow?1:((g==1)?2:(g==2)?3:1);
+  const bool sdrContainer=(FindRow("out.sdrBt2020")&&FindRow("out.sdrBt2020")->on);
+  const int ogIdx=g_sdrContentNow?(sdrContainer?2:1):((g==1)?2:(g==2)?3:1);
   if(Row* og=FindRow("hdr.outputGamut")){
     if(og->opt!=ogIdx){ og->opt=ogIdx;
       if(push) PushRow(*og); else SaveRowIni(*og); } }
-  if(Row* sb=FindRow("out.sdrBt2020")){
-    // The SDR BT.2020 container is retired: SDR must not be declared P2020.
-    if(sb->on){ sb->on=false;
-      if(push) PushRow(*sb); else SaveRowIni(*sb); } }
   if(push) TenBitBegin();
-  LogF("displaygamut: %s -> outGamut=%d sdrBt2020=0 (SDR=%d)%s",
-       g==1?"BT.2020":g==2?"DCI-P3":"BT.709", g_sdrContentNow?0:g, (int)g_sdrContentNow, push?"":" (load)"); }
+  LogF("displaygamut: %s -> outGamut=%d SDRcontainer=%d (SDR=%d)%s",
+       g==1?"BT.2020":g==2?"DCI-P3":"BT.709", g_sdrContentNow?(sdrContainer?1:0):g,
+       (int)sdrContainer,(int)g_sdrContentNow,push?"":" (load)"); }
 static void ApplyContentGamutPolicy(){
   // The engine decided the title's class (0=SDR, 1=HDR10, 2=HLG, 3=DV).
   // SDR: BT.709, neutral composition, no P2020 container. HDR/DV: the Display
   // gamut setting. Applied when the class changes, before the first frames.
   Row* dg=FindRow("hdr.displayGamut");
   const int g=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
-  const int ogIdx=g_sdrContentNow?1:((g==1)?2:(g==2)?3:1);
+  Row* sb=FindRow("out.sdrBt2020");
+  const bool sdrContainer = sb && sb->on;
+  const int ogIdx=g_sdrContentNow?(sdrContainer?2:1):((g==1)?2:(g==2)?3:1);
   if(Row* og=FindRow("hdr.outputGamut")) if(og->opt!=ogIdx){ og->opt=ogIdx; PushRow(*og); }
-  if(Row* sb=FindRow("out.sdrBt2020")) if(sb->on){ sb->on=false; PushRow(*sb); }
   TenBitBegin();
-  LogF("contentgamut: SDR=%d display=%d -> outGamut=%d, SDR BT2020 container off",
-       (int)g_sdrContentNow, g, g_sdrContentNow?0:g); }
+  LogF("contentgamut: SDR=%d display=%d container=%d -> outGamut=%d",
+       (int)g_sdrContentNow, g, (int)sdrContainer, g_sdrContentNow?(sdrContainer?1:0):g); }
 static void TenBitCrashRecovery(){
   if(IniBool(IniGet("ui.wcgRestoreOn"))){
     LogF("displaygamut: previous run left WCG forced on - restoring off");

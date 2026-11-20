@@ -10,7 +10,7 @@ supports it.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.3.0.exe` | 125,610,845 bytes | `F8BD198400D1DA0F803F40A30487EAD4EF255FD5981EBCEF4852810E3B4B2BA9` |
+| `Unplugged-setup-2.3.0.exe` | 125,593,005 bytes | `46417B21F643CE5F9008B656FB6881F5DF8EC44BD0F20E057F79738EABACA9D8` |
 
 The standalone renderer remains at its 2.2.1 release; no new renderer package is
 published with 2.3.0.
@@ -92,9 +92,10 @@ published with 2.3.0.
 
 ## Bug Fixes
 
-- **SDR titles no longer use the BT.2020 container.** Declaring SDR as P2020 and
-  converting it to 2020 caused a visible colour shift; SDR now always runs
-  BT.709/neutral and `Display gamut` applies to HDR/DV only.
+- **SDR titles use BT.709 by default.** Declaring SDR as P2020 caused a colour
+  shift on displays that ignore the flag. The **SDR BT.2020 (projector)** row is
+  restored as an explicit opt-in for a projector that honours SDR BT.2020;
+  `Display gamut` applies to HDR/DV only.
 - **Switching Display gamut no longer starts playback.** SDR BT.2020 is applied
   live by the renderer (swap-chain re-creation) instead of rebuilding the graph,
   so a paused frame stays paused through the switch.
