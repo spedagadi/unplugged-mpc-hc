@@ -578,7 +578,7 @@ source:
 
 | OUTPUT DEPTH | Meaning |
 | --- | --- |
-| `10-bit RGB WCG` | 10-bit link with Windows wide-colour mode active. This is the normal 10-bit SDR result when **SDR BT.2020** is On and the driver is at Default/10 bpc. |
+| `10-bit RGB WCG` | 10-bit link with Windows wide-colour mode active. This is the 10-bit SDR result when **SDR BT.2020** is On, the driver is at Default/10 bpc, **and the display mode itself exposes 10-bit**. |
 | `10-bit RGB SDR` | 10-bit link without WCG. The target of **10-bit SDR output** with the driver at 10 bpc. |
 | `8-bit RGB WCG` | WCG is on but the link is 8-bit — the driver or EDID is capping it. |
 | `8-bit RGB SDR` | Ordinary 8-bit SDR. |
@@ -590,18 +590,25 @@ signal-information page is the final authority for what reaches the panel.
 ### Choose ONE 10-bit owner
 
 There are two supported ways to run 10-bit. They are alternatives; doing both
-makes them fight and leaves the NVIDIA box greyed for no benefit.
+makes them fight and leaves the NVIDIA box greyed for no benefit. **Both
+require the display mode itself to expose 10-bit** — neither can create one.
 
-**A. WCG path (simplest, no driver step).** Windows' wide-colour mode owns the
-depth.
+**A. WCG path (no driver step).** Windows' wide-colour mode owns the depth, but
+only on a mode the display already exposes as 10-bit.
 
 1. Unplugged: **SDR BT.2020 = On** (HDR → Display Target), **10-bit SDR = Off**.
 2. Driver: leave NVIDIA on **Default** (or set 10 bpc explicitly).
-3. Expect `10-bit RGB WCG` in the Info panel about a second after playback
-   starts. The NVIDIA "Output colour depth" box will be **greyed** — Windows
-   owns the mode; that is normal, not a fault.
-4. The signal declares SDR BT.2020, so a display whose gamut is on **Auto**
-   can switch itself to BT.2020.
+3. If the display mode is 10-bit, expect `10-bit RGB WCG` about a second after
+   playback starts and the NVIDIA "Output colour depth" box **greyed** —
+   Windows owns the mode; that is normal. If the display's mode is 8-bit
+   (projector in Auto/PC, or a forced 8 bpc), WCG still enables but the result
+   is `8-bit RGB WCG`; fix the display mode first — see **Projector and TV
+   gamut** below.
+4. The signal declares SDR BT.2020. That only makes a display's **Auto** gamut
+   switch if the display honours SDR BT.2020 — many do **not** and stay on
+   BT.709 (washed-out colour); some also keep an 8-bit PC EDID while on Auto.
+   If yours does not switch, force the display's BT2020 mode and set **Output
+   gamut = BT2020**.
 
 **B. Explicit SDR path (neutral, no WCG).** The mode itself is 10-bit.
 
