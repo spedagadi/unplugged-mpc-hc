@@ -359,7 +359,7 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
-| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | What the display itself is set to, and the **only** output-chain question. The app derives everything else: the conversion (SDR 709→2020 or P3, HDR already 2020), the SDR signal declaration (P709, or SDR P2020 for BT.2020), WCG ownership (on only for BT.2020) and 10-bit (automatic whenever the display link reports 10 bpc). Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. If a display's own gamut is on Auto but it does not follow SDR BT.2020 (many only switch for HDR), colours look washed out — force the display to BT2020 and set this row to BT2020. The full chain and verification are in **10-bit output — end-to-end setup** below. |
+| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | The display's **HDR/wide-gamut** mode. **SDR titles always run BT.709** — the SDR BT.2020 container is retired, because declaring SDR as P2020 caused a visible colour shift; this row applies to HDR10/HLG/DV titles only. Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. The app derives the HDR conversion, the declaration and WCG from it. For SDR, leave the display in its 709/sRGB mode; for HDR, in its wide mode. The full chain and verification are in **10-bit output — end-to-end setup** below. |
 | **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
@@ -596,11 +596,15 @@ signal-information page is the final authority for what reaches the panel.
 
 ### What Display gamut does
 
-| Display gamut | Picture sent | WCG | 10-bit |
+Only **HDR10/HLG/DV** titles use this row. **SDR titles are always BT.709** —
+neutral SDR, WCG off, no P2020 container — because the SDR BT.2020 container
+caused a visible colour shift.
+
+| Display gamut | HDR/DV picture | WCG | 10-bit |
 | --- | --- | --- | --- |
-| Auto (BT.709) | BT.709 SDR | off | automatic |
-| BT.2020 | BT.2020 SDR | on | automatic |
-| DCI-P3 | P3 SDR | off | automatic |
+| Auto (BT.709) | BT.709 | off | automatic |
+| BT.2020 | BT.2020 | on | automatic |
+| DCI-P3 | P3 | off | automatic |
 
 10-bit is not a second row. The renderer uses a 10-bit internal texture and a
 10-bit swap chain whenever the display link reports 10 bpc — including for

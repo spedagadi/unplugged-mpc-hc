@@ -10,7 +10,7 @@ supports it.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.3.0.exe` | 125,607,335 bytes | `17E3EB43ED2B48890BCEC1E2B90E2B2363497DC5B433D5A7310F392D9C60D0DB` |
+| `Unplugged-setup-2.3.0.exe` | 125,610,845 bytes | `F8BD198400D1DA0F803F40A30487EAD4EF255FD5981EBCEF4852810E3B4B2BA9` |
 
 The standalone renderer remains at its 2.2.1 release; no new renderer package is
 published with 2.3.0.
@@ -68,11 +68,11 @@ published with 2.3.0.
   typing a number (or F2) opens it directly. No mouse required.
 - **Info panel** reports display refresh separately from presented FPS, and the
   output bit depth.
-- **One Display gamut setting; 10-bit is automatic.** HDR → Display Target →
-  **Display gamut** (`Auto (BT.709)` / `BT.2020` / `DCI-P3`) derives the output
-  conversion, the SDR BT.2020 declaration and WCG ownership. 10-bit output is
-  automatic whenever the display link reports 10 bpc, including for 8-bit SDR
-  sources. The old 10-bit SDR, SDR BT.2020 and Output gamut rows are internal.
+- **One Display gamut setting for HDR; SDR is always BT.709.** HDR → Display
+  Target → **Display gamut** (`Auto (BT.709)` / `BT.2020` / `DCI-P3`) selects
+  the display's HDR/wide-gamut mode and derives the HDR conversion, declaration
+  and WCG. SDR titles always run BT.709, neutral, with no P2020 container; the
+  old 10-bit SDR, SDR BT.2020 and Output gamut rows are internal.
 - **Active picture fit.** A new Geometry → **Fit mode = Active picture** crops
   the detected letterbox and fits the real picture uniformly (no NLS stretch),
   so a scope film fills a scope screen instead of sitting in the coded 16:9
@@ -92,6 +92,9 @@ published with 2.3.0.
 
 ## Bug Fixes
 
+- **SDR titles no longer use the BT.2020 container.** Declaring SDR as P2020 and
+  converting it to 2020 caused a visible colour shift; SDR now always runs
+  BT.709/neutral and `Display gamut` applies to HDR/DV only.
 - **Switching Display gamut no longer starts playback.** SDR BT.2020 is applied
   live by the renderer (swap-chain re-creation) instead of rebuilding the graph,
   so a paused frame stays paused through the switch.

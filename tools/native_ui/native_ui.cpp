@@ -7285,7 +7285,10 @@ static void TenBitAdvise(const OutDepth& od){
 static void TenBitBegin(){
   Row* dg=FindRow("hdr.displayGamut");
   const int gamut=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
-  const bool wantWcg=(gamut==1);   // BT.2020 needs wide-colour composition
+  const bool wantWcg=(gamut==1 && !g_sdrContentNow);
+  // SDR content is BT.709: the BT.2020 container and the 2020 conversion are a
+  // wide-gamut HDR path. Using them on SDR produced a clear colour shift
+  // (reported 2026-11-20), so an SDR title always runs the neutral SDR path.
   OutDepth od=CurrentOutputDepth();
   if(!od.ok){ LogF("displaygamut: output depth unavailable (Windows too old for advanced colour info)"); return; }
   if(od.mode==2){ LogF("displaygamut: Windows HDR is active - WCG untouched"); return; }
@@ -7327,17 +7330,31 @@ static void ApplyDisplayGamut(bool push){
   Row* dg=FindRow("hdr.displayGamut"); if(!dg) return;
   const int g=dg->optvals?dg->optvals[dg->opt]:dg->opt;
   // kGamut index: 0 Follow source, 1 BT.709, 2 BT.2020, 3 DCI-P3.
-  const int ogIdx=(g==1)?2:(g==2)?3:1;
+  // SDR content is always BT.709; the Display gamut choice describes the
+  // display's HDR/wide-gamut mode and applies to HDR/DV titles.
+  const int ogIdx=g_sdrContentNow?1:((g==1)?2:(g==2)?3:1);
   if(Row* og=FindRow("hdr.outputGamut")){
     if(og->opt!=ogIdx){ og->opt=ogIdx;
       if(push) PushRow(*og); else SaveRowIni(*og); } }
   if(Row* sb=FindRow("out.sdrBt2020")){
-    const bool want=(g==1);
-    if(sb->on!=want){ sb->on=want;
+    // The SDR BT.2020 container is retired: SDR must not be declared P2020.
+    if(sb->on){ sb->on=false;
       if(push) PushRow(*sb); else SaveRowIni(*sb); } }
   if(push) TenBitBegin();
-  LogF("displaygamut: %s -> outGamut=%d sdrBt2020=%d%s",
-       g==1?"BT.2020":g==2?"DCI-P3":"BT.709", g, (int)(g==1), push?"":" (load)"); }
+  LogF("displaygamut: %s -> outGamut=%d sdrBt2020=0 (SDR=%d)%s",
+       g==1?"BT.2020":g==2?"DCI-P3":"BT.709", g_sdrContentNow?0:g, (int)g_sdrContentNow, push?"":" (load)"); }
+static void ApplyContentGamutPolicy(){
+  // The engine decided the title's class (0=SDR, 1=HDR10, 2=HLG, 3=DV).
+  // SDR: BT.709, neutral composition, no P2020 container. HDR/DV: the Display
+  // gamut setting. Applied when the class changes, before the first frames.
+  Row* dg=FindRow("hdr.displayGamut");
+  const int g=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
+  const int ogIdx=g_sdrContentNow?1:((g==1)?2:(g==2)?3:1);
+  if(Row* og=FindRow("hdr.outputGamut")) if(og->opt!=ogIdx){ og->opt=ogIdx; PushRow(*og); }
+  if(Row* sb=FindRow("out.sdrBt2020")) if(sb->on){ sb->on=false; PushRow(*sb); }
+  TenBitBegin();
+  LogF("contentgamut: SDR=%d display=%d -> outGamut=%d, SDR BT2020 container off",
+       (int)g_sdrContentNow, g, g_sdrContentNow?0:g); }
 static void TenBitCrashRecovery(){
   if(IniBool(IniGet("ui.wcgRestoreOn"))){
     LogF("displaygamut: previous run left WCG forced on - restoring off");
@@ -11439,7 +11456,11 @@ public:
       if(mclass!=s_lastClass||srcNow!=s_lastSrc){ s_lastClass=mclass; s_lastSrc=srcNow;
         LogF("sdr: engine class=%d known=%.0f src=%d (valid=%.0f hdr=%.0f tf=%.0f dovi=%.0f)",
              mclass,known,srcNow,mvalid,mhdr,tf,dv); } }
+    const bool wasSdr=g_sdrContentNow;
     g_sdrContentNow=(mclass==0);
+    // Content class changed: SDR must not use the BT.2020 container / wide-gamut
+    // conversion; HDR/DV uses the Display gamut setting.
+    if(g_sdrContentNow!=wasSdr) ApplyContentGamutPolicy();
     if(g_sdrUserTouched){ g_sdrUserTouched=false; m_sdrAuto=false; }
     if(sameSrc) UpdateSdrMl(mclass,known>0.5);
     // ASPECT-AWARE NLS (UR-0007): the engine's detected active-picture aspect
@@ -12283,6 +12304,7 @@ protected:
     NlsAspectRelease();
     RestoreSdrMl("stop");
     m_sdrPath.clear(); m_sdrNotified=false; g_sdrContentNow=false;
+    ApplyContentGamutPolicy();
     if(!m_mediaPath.empty()&&m_pos>0) m_lib.WriteHistory(m_mediaPath,m_pos,m_dur);
     // Pause kept the renderer's last frame parented in the host, so the stopped
     // picture stayed visible around/behind the library. File playback uses the
