@@ -10,7 +10,7 @@ supports it.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.3.0.exe` | 125,596,507 bytes | `2B679218FD652E006796B829784C36813DD89694A2F6B22E85414B9A0C5DEC83` |
+| `Unplugged-setup-2.3.0.exe` | 125,618,160 bytes | `ABD89A9844AC8BB1799FC3CD02D9C970FC8387BD42382909DFD60D863D1B331C` |
 
 The standalone renderer remains at its 2.2.1 release; no new renderer package is
 published with 2.3.0.
@@ -73,6 +73,14 @@ published with 2.3.0.
   conversion, the SDR BT.2020 declaration and WCG ownership. 10-bit output is
   automatic whenever the display link reports 10 bpc, including for 8-bit SDR
   sources. The old 10-bit SDR, SDR BT.2020 and Output gamut rows are internal.
+- **Active picture fit.** A new Geometry → **Fit mode = Active picture** crops
+  the detected letterbox and fits the real picture uniformly (no NLS stretch),
+  so a scope film fills a scope screen instead of sitting in the coded 16:9
+  frame with extra bars. It falls back to Source until the bar detector has a
+  band.
+- **Smooth shell transitions.** The picture rect is applied and the paused
+  redraw completes before the shell region widens, so hiding the shell no longer
+  reveals the old frame scaled to a different size.
 - **Update card renders release notes.** Headings, bullets, rules and table rows
   are formatted; long notes scroll with the wheel instead of showing raw
   markdown.
@@ -84,6 +92,14 @@ published with 2.3.0.
 
 ## Bug Fixes
 
+- **Switching Display gamut no longer starts playback.** SDR BT.2020 is applied
+  live by the renderer (swap-chain re-creation) instead of rebuilding the graph,
+  so a paused frame stays paused through the switch.
+- **Subtitles stay Off unless chosen.** The engine's auto-selection of the first
+  subtitle stream on graph open is overridden by the user's choice, default Off.
+- **No ClipGuard hotkeys in the shell.** ClipGuard has no controls in the shell
+  and the companion app owns its OSD and hotkeys; Unplugged no longer registers
+  F7–F11 or the arrow set, so it cannot steal them from ClipGuard.exe.
 - **No double roll-off.** The 2.2.0 final-pass DBLE path is removed, so only
   ClipGuard processes highlights.
 - **Upgrading keeps the user’s DBLE configuration.** A 2.2.0 profile with
