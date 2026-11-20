@@ -140,7 +140,7 @@ setups against the same paused frame.
   and a preset never drags the input along with it.
 - **Exception — the display rows.** **SDR display nits**, **Static nits (max)**,
   **Display black (nits)**, **Convert to SDR**, **Display gamut**,
-  **Display transfer** and the **ClipGuard** rows describe the screen
+  **SDR BT.2020 (projector)** and **Display transfer** describe the screen
   you calibrated, not a look, so they are never part of a preset. They can be
   changed at any time — on `Default` or on any preset — the change applies to
   every preset, and it neither marks the preset dirty nor shows the popup.
@@ -153,15 +153,12 @@ setups against the same paused frame.
 
 ### What a preset does *not* contain
 
-Twenty-one rows describe the **display you calibrated, not your taste**, so they
+Seven rows describe the **display you calibrated, not your taste**, so they
 stay with the machine and switching presets never changes them — and, as above,
 they are always editable, even on `Default`:
 
 > **SDR display nits · Static nits (max) · Display black (nits) ·
-> Convert to SDR · Display gamut · Display transfer · Enable ClipGuard ·
-> Strength · Fix shape · Fix starts (%) · Full effect (%) · Highlight start ·
-> Color protect · Text skip (%) · Hot spot · Hot spot below (%) ·
-> Graded spot · Grid · Look-ahead · View · OSD**
+> Convert to SDR · Display gamut · SDR BT.2020 (projector) · Display transfer**
 
 Also not part of a preset: the **Playback** and **Source** tabs (audio mode,
 input device, setup), the two UI-only rows on the System tab (context banner,
@@ -195,6 +192,7 @@ itself) or switch to `Default` first.
 | Setting | Choices | Default | What it does |
 | --- | --- | --- | --- |
 | **Track** | `Off` / every subtitle stream | `Off` | Picks the subtitle track. Names keep the format in brackets — `(SRT)` etc. — because only **text** subtitles can be styled; bitmap ones (PGS, VobSub) are images and always look how the disc made them. |
+| **Text size** | 50 – 200 % | 65 % | Size of **text** subtitles (SRT/ASS/SSA/WebVTT/MOV_TEXT). Bitmap subtitles (PGS, VobSub) are images and ignore it. On a scope title the text is pinned into the bottom black bar. |
 
 ---
 
@@ -253,13 +251,10 @@ adjustment surface, and no Curve Settings section appears at all.
 
 ### ClipGuard
 
-> **ClipGuard ships separately.** The feature is developed and packaged by its
-> own author; Unplugged no longer exposes the tuning rows in the rail. Install
-> the author's ClipGuard package, then use **HDR → Tone Mapping → ClipGuard →
-> Configure**: it opens the `clipguard` folder next to the Unplugged executable,
-> where the package's presets live. The settings below are documented for the
-> package's own configuration; the values remain honoured by the engine.
-> ClipGuard stays off until it is enabled by the package.
+> **ClipGuard is not part of this Unplugged build.** It is developed and released
+> separately by its author; this shell has **no ClipGuard controls, hotkeys or
+> Configure action**. Install and configure it from that release. The settings
+> below document the engine's ClipGuard behaviour, not a shell UI.
 
 For projectors with **dynamic black / laser dimming**. The projector decides its
 own brightness from the scene; in a dark scene it dims the laser, and the
@@ -664,6 +659,38 @@ identifiers, no telemetry.
 
 ## Recipes — start here
 
+**"I want tone-mapped HDR to look right on a projector."**
+A tone-mapped HDR film is an **SDR** signal. Use the projector's SDR mode:
+- **Projector:** SDR picture mode, gamut **BT.709 / Auto**, calibrated gamma
+  2.2 or BT.1886; HDMI **Enhanced / Deep Color** on.
+- **NVIDIA:** **Default**; for explicit 10-bit, **10 bpc / RGB / Full**. Never
+  force 8 bpc.
+- **Unplugged:** **Convert to SDR = On**, **Display gamut = Auto (BT.709)**,
+  **SDR BT.2020 = Off**, **Display transfer** = Follow source or the calibrated
+  transfer, **Static nits (max)** / **Display black (nits)** / **SDR display
+  nits** = your measured values.
+- The projector's info page must say **SDR**. This is the accurate tone-mapped
+  path; BT2020 does not enter it.
+
+**"My projector has a real SDR BT.2020 mode."**
+Only if the projector's info page says **SDR + BT.2020**:
+- Projector: that SDR BT.2020 mode.
+- Unplugged: **Display gamut = BT.2020**, **SDR BT.2020 = On**.
+- NVIDIA: Default (WCG owns 10-bit; the depth box will be greyed).
+HDR/DV titles still use **Display gamut**.
+
+**"I want HDR, not tone-mapped SDR."**
+- Projector: its **HDR / BT2020** mode.
+- Unplugged: **Convert to SDR = Off** (HDR passthrough or local HDR tone
+  mapping). The projector does the HDR tone mapping; the SDR BT.2020 row is
+  irrelevant.
+
+**"SDR titles look shifted, HDR looks fine."**
+The projector is in the wrong mode for SDR, or the SDR BT.2020 flag is On while
+the display is not. Turn **SDR BT.2020 Off**, set **Display gamut = Auto
+(BT.709)**, and put the projector in its SDR/709 mode. Check the info page:
+**SDR** for tone-mapped/SDR, **HDR** for passthrough.
+
 **"Everything looks dim."**
 Check **SDR display nits** holds your display's *measured* white — a number
 above the measurement is exactly what renders every film dark, and the fix is
@@ -760,6 +787,6 @@ the measured picture brightness and the applied fix. It works with the grade Off
   are being resampled when **Axis = Split**. Lower **Strength** or **Centre
   protection** if it bothers you.
 - Disc images (ISO) and BDMV folder playback are not supported; rip to a file.
-- Subtitle *styling* (font, size, colour) is not in this panel; only track
-  selection is.
+- Subtitle *styling* (font and colour) is not in this panel; **Text size** and
+  track selection are. Bitmap subtitles (PGS, VobSub) ignore both.
 

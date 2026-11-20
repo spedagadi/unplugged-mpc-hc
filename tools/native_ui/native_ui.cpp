@@ -835,8 +835,7 @@ static Row g_rows[]={
  {2,1,L"TONE MAPPING",L"Highlight desat","hdr.hiDesat",0,1,0.01,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  // ClipGuard is an external package; its tuning rows are hidden. One entry
  // belongs in an existing section rather than a one-item section of its own.
- {2,3,L"TONE MAPPING",L"ClipGuard","__clipguardCfg",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
- // ?????? CURVE SETTINGS ??? rows hide themselves unless the selected Tone curve reads
+  // ?????? CURVE SETTINGS ??? rows hide themselves unless the selected Tone curve reads
  // them (the curves= gating from build_rows; with the default two-curve rail only
  // "GT7 Adapt" (10) shows any of them) ??????
  {2,1,L"CURVE SETTINGS",L"Title peak (nits)","hdr.titlePeak",100,4000,1,1000,false,0,nullptr,0,nullptr,{},0,0,0,CM_MAXCLL},
@@ -3237,7 +3236,6 @@ protected:
         if(!strcmp(r.key,"zion.reset")||!strcmp(r.key,"sys.resetRenderer")) cta=L"Reset";
         else if(!strcmp(r.key,"__capFrame")) cta=L"Save\x2026";
         else if(!strcmp(r.key,"__report"))   cta=L"Report\x2026";
-        else if(!strcmp(r.key,"__clipguardCfg")) cta=L"Configure";
     else if(!strcmp(r.key,"sys.updateNow")) cta=L"Check\x2026";
         if(*cta) TxtW(dc,CRect(cright-CONTROL_W,y,cright-Px(PAD),y+RowH()),cta,ACCENT2,13,false,DT_RIGHT|DT_VCENTER); }
       else if(r.kind==4){ // FILE: basename on the right, full path remains in r.file
@@ -3362,7 +3360,6 @@ protected:
       else if(!strcmp(r.key,"sys.resetRenderer")) AfxGetMainWnd()->PostMessageW(WM_APP+12,0,0);
       else if(!strcmp(r.key,"__capFrame")) AfxGetMainWnd()->PostMessageW(WM_APP+14,0,0);
     else if(!strcmp(r.key,"__report"))   AfxGetMainWnd()->PostMessageW(WM_APP+58,0,0);
-      else if(!strcmp(r.key,"__clipguardCfg")) AfxGetMainWnd()->PostMessageW(WM_APP+60,0,0);
       else if(!strcmp(r.key,"sys.updateNow")) AfxGetMainWnd()->PostMessageW(WM_APP+56,0,0);
       else if(!strcmp(r.key,"src.rescan")) AfxGetMainWnd()->PostMessageW(WM_APP+19,0,0);
       else if(!strcmp(r.key,"src.rename")) AfxGetMainWnd()->PostMessageW(WM_APP+20,0,0);
@@ -11629,32 +11626,6 @@ public:
     return 0; }
   afx_msg LRESULT OnUpdateNow(WPARAM,LPARAM){ StartUpdateCheck(true); return 0; }
   afx_msg LRESULT OnReportProblem(WPARAM,LPARAM){ m_report.ShowCard(); return 0; }
-  // CLIPGUARD PACKAGE (external). The ClipGuard author ships presets/config as a
-  // separate package: Unplugged keeps the feature and its settings rows hidden,
-  // and this row opens the folder next to the executable that the package
-  // installs into, so users who opted in can work with it there.
-  afx_msg LRESULT OnClipGuardConfig(WPARAM,LPARAM){
-    wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
-    std::wstring base(exe); size_t p=base.find_last_of(L'\\');
-    base=(p==std::wstring::npos)?std::wstring(L"."):base.substr(0,p);
-    // The package lives NEXT TO the executable and nowhere else: no fallbacks and
-    // no creating an empty folder, because "the folder is missing" is exactly the
-    // signal that ClipGuard is not installed.
-    const std::wstring dir=base+L"\\clipguard";
-    LogF("clipguard: configure -> '%S'",dir.c_str());
-    if(GetFileAttributesW(dir.c_str())==INVALID_FILE_ATTRIBUTES){
-      g_toastText=L"ClipGuard is not installed";
-      g_toastReason=L"Install the ClipGuard package next to Unplugged to use this feature.";
-      LogF("clipguard: not installed - notice shown");
-      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0);
-      return 0; }
-    const HINSTANCE r=ShellExecuteW(m_hWnd,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
-    if((INT_PTR)r<=32){
-      LogF("clipguard: open failed rc=%lld",(long long)(INT_PTR)r);
-      g_toastText=L"ClipGuard could not be opened";
-      g_toastReason=L"The clipguard folder next to Unplugged could not be opened.";
-      if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0); }
-    return 0; }
   // Match display refresh toggled: act on what is playing right now. A file is
   // re-probed and the monitor switched; a live source re-evaluates the cadence
   // the status poll already has (and says so if no signal is locked yet).
@@ -12526,7 +12497,6 @@ BEGIN_MESSAGE_MAP(CMainFrame,CFrameWnd)
   ON_MESSAGE(WM_APP+56, &CMainFrame::OnUpdateNow)
   ON_MESSAGE(WM_APP+57, &CMainFrame::OnAcquireSwitchInput)
   ON_MESSAGE(WM_APP+58, &CMainFrame::OnReportProblem)
-  ON_MESSAGE(WM_APP+60, &CMainFrame::OnClipGuardConfig)
   ON_MESSAGE(WM_REFRESH_MATCH, &CMainFrame::OnRefreshMatch)
   ON_MESSAGE(WM_UPDATE_DONE, &CMainFrame::OnUpdateDone)
 END_MESSAGE_MAP()

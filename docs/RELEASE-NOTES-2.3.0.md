@@ -17,12 +17,15 @@ published with 2.3.0.
 
 ## New Features
 
+> **ClipGuard is not part of this build's shell.** It is developed and released
+> separately by its author; this Unplugged build has **no ClipGuard rows,
+> hotkeys or Configure action**. The bullets below describe the renderer's
+> ClipGuard engine, which the separate release drives.
+
 - **ClipGuard replaces DBLE compensation.** The compensation runs in the
-  renderer. This build hides the tuning rows and exposes a single
-  **ClipGuard → Configure** row under **Tone Mapping**, which opens the
-  ClipGuard package installed next to Unplugged; if the package is missing the
-  app says so instead of opening anything. The controls below describe the
-  system's behaviour.
+  renderer. The shell exposes no ClipGuard UI; install and configure it from the
+  separate ClipGuard release. The controls below describe the system's
+  behaviour.
 - **Fix shape Normal / Anchor.** Anchor keeps the peak of large bright areas
   (windows, lit walls) so the projector's laser dimming does not pump, and cuts
   gently below it while preserving local ratios. Normal squeezes every
@@ -138,21 +141,15 @@ published with 2.3.0.
 ## Upgrade
 
 Install over 2.2.0. The media library, presets and calibration data are
-preserved. On first launch, an existing DBLE configuration is migrated to
-ClipGuard — if DBLE was On, ClipGuard is On with the old strength/trigger/
-highlight start and Normal shape. If DBLE was Off, ClipGuard starts Off. The
-overlay is always Off at launch; press `F7` to show it.
+preserved. The renderer still maps an existing 2.2.0 DBLE configuration into its
+ClipGuard block (engine-side); the shell has no ClipGuard UI or hotkeys.
 
 ## Known Limitations
 
-- ClipGuard is SDR-output only; HDR passthrough is untouched.
-- Look-ahead delays video relative to audio. It is Off by default and forced
-  Off in Video Processor mode; in file playback add the same delay on the
-  receiver if it is enabled.
-- The standalone renderer property page no longer carries ClipGuard controls;
-  ClipGuard has its own application and the renderer applies the stored block.
-- The ClipGuard package is installed separately next to Unplugged. Without it,
-  the Configure row shows a notice and opens nothing.
+- **ClipGuard is not part of this shell.** It is developed and released
+  separately by its author; Unplugged has no ClipGuard rows, hotkeys or
+  Configure action. The renderer still applies a ClipGuard block when the
+  separate release drives it (SDR output only).
 - **The display link depth is not settable by the app.** A forced 8 bpc in the
   GPU driver is a hard cap; WCG still enables, but the link stays 8-bit.
 - **SDR BT.2020 auto-switching is display-dependent.** Many displays only switch
