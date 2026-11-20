@@ -249,104 +249,6 @@ adjustment surface, and no Curve Settings section appears at all.
 | **GT7 shoulder reach** | 0.02…0.90 | 0.25 | Highlight headroom: **lower = longer shoulder**, more brightness band survives before detail merges to white; higher punches mid-highs but clips sooner. The first dial to turn down if explosions clip. |
 | **GT7 debug view** | `Off` + 4 greyscale modes | Off | Diagnostic overlays of the curve's internals. Leave Off for watching. |
 
-### ClipGuard
-
-> **ClipGuard is not part of this Unplugged build.** It is developed and released
-> separately by its author; this shell has **no ClipGuard controls, hotkeys or
-> Configure action**. Install and configure it from that release. The settings
-> below document the engine's ClipGuard behaviour, not a shell UI.
-
-For projectors with **dynamic black / laser dimming**. The projector decides its
-own brightness from the scene; in a dark scene it dims the laser, and the
-brightest highlights are pushed into clipping. ClipGuard lowers highlights in
-dark pictures first, so after the projector's gain they land below clipping.
-It is measured from the finished picture, so it is independent of the ML grade
-and works with the grade Off, Auto or Manual. SDR output only.
-
-| Setting | Range | Default | What it does |
-| --- | --- | --- | --- |
-| **Enable ClipGuard** | On / Off | Off | Turn compensation on only when the projector's dynamic dimming is on. With it off the picture is unchanged. |
-| **Strength** | 0…1 | 0.35 | How far highlights are pulled. 1.0 puts peak white at 50%; more is not always better because the projector's laser dimming reacts to the dimmer picture and can raise its own gain. Tune on a dark scene with a white shirt or lamp. |
-| **Fix shape** | `Normal` / `Anchor` | Anchor | **Normal** squeezes every pixel above Highlight start. **Anchor** leaves the peak of large bright areas (windows, lit walls) so the projector's gain does not pump, and cuts gently just below them, keeping local ratios and detail. Small lights are left to Hot spot. |
-| **Fix starts (%)** | 1…50 | 10 | Measured picture brightness (percent of SDR white, shown as **Picture** on the overlay) below which the fix begins. Brighter pictures are untouched. |
-| **Full effect (%)** | 0.5…49.5 | 3 | At or below this picture brightness the fix is at full strength; between the two it fades in. Always below Fix starts. |
-| **Highlight start** | 0.20…0.95 | 0.40 | The picture-code level where the pull begins; everything below is untouched. |
-| **Color protect** | 0…1 | 0.90 | 0 judges a pixel by its strongest channel (bright red/blue is pulled like white); 1 judges by brightness, so saturated colours are pulled far less. Whites and pale colours are unchanged either way. |
-| **Text skip (%)** | 0…100 | 25 | When more than this share of a frame's highlights is bright-on-black with no glow (titles, credits, stars), the fix is held off for that frame. 0 = off. |
-| **Hot spot** | 0…1 | 0.60 | In a dark frame, small intense lights (headlamp, flashlight, streetlight) get a darker exposure in a soft patch; the rest of the picture is untouched. 0.50 ≈ 1.5 stops, 1.00 = 3 stops. 0 = off. |
-| **Hot spot below (%)** | 0…20 | 3 | Hot spot only in pictures darker than this. Full up to two-thirds of it, fading to none at it. 0 = no hot spots. |
-| **Graded spot** | 0…1 | 0.50 | Gentle local dimming of small graded highlights that are not lights (a lit cheek, a shirt shoulder) in the same dark scenes. Only their highlights are pulled; everything below Highlight start is untouched. 0 = off. |
-| **Grid** | `Normal` / `Fine` | Fine | Measuring grid. **Fine** (256×144) fits patches more tightly and finds small lights better; **Normal** (128×72) costs less. |
-| **Look-ahead** | `Off` / `2` / `4` / `6` frames | Off | Holds the picture back so the fix lands on the frame it was measured on. It delays video relative to audio: add the same delay on the receiver, or leave it Off. **Forced Off in live capture** (Video Processor mode), where there is no audio delay path. |
-| **View** | `Normal` / `Fix areas` / `Split screen` / `Side by side` | Normal | Diagnostic views. **Fix areas** tints lowered pixels yellow (3–10 %), red (10–25 %) and blue (25 %+), with hot-spot rings; **Split screen** shows unfixed left / fixed right; **Side by side** shows the whole picture twice at half size. They change the picture, so do not judge the final look from them. |
-| **OSD** | On / Off | Off | Draws the ClipGuard panel at the bottom left of the visible picture: the settings, keys and readout (Picture, Fix, White, Peak, spots, ADL before/after, GPU/CPU cost). It is drawn after the picture and is never measured by the fix. |
-
-The overlay shortcuts work over the video, without changing focus:
-
-| Shortcut | Action |
-| --- | --- |
-| `F7` / `Ctrl+Alt+0` | Show / hide the overlay |
-| `F8` / `Ctrl+Alt+D` | ClipGuard On / Off |
-| `F9` | Fix areas view On / Off |
-| `F10` | Hot spot Off / back to its last value |
-| `F11` | Save the last 30 s of readout plus a screenshot to `%LOCALAPPDATA%\Unplugged\logs\clipguard` |
-| `↑` / `↓` or `Ctrl+Alt+↑/↓` | Select an overlay row |
-| `←` / `→` or `Ctrl+Alt+←/→` | Change the selected row |
-
-Plain arrows belong to ClipGuard only while the overlay is showing; when it
-hides they return to seeking. The overlay hides 8 seconds after the last
-shortcut unless its **Overlay** row is set to `Always`.
-
-ClipGuard runs on the finished SDR picture, before the final display transfer
-and calibration LUT. Its Highlight start is therefore picture code, not the
-selected **Display transfer** target code.
-
-Upgrading from 2.2.0 migrates the old DBLE settings: if DBLE was On, ClipGuard
-starts On with the old Strength, Trigger (as Fix starts), quarter trigger (as
-Full effect) and Highlight start, using Normal shape and no Hot spot/Graded
-spot/Text skip/look-ahead. If DBLE was Off, ClipGuard starts Off.
-
-The overlay and its **View** are session-only: they always start **Off** and
-**Normal** at launch, even if they were left on last time. Press `F7` to bring
-the overlay up. This keeps a diagnostic view from tinting the film after a
-restart. The **Overlay** row inside the panel is `Auto-hide` or `Always`; the
-separate **OSD** row in this panel controls whether the overlay is shown at all.
-
-### ClipGuard recipes
-
-Starting points from the contributor’s testing on an XGIMI laser projector with
-dynamic dimming on. Start from the defaults, change only what the recipe lists,
-then fine-tune one setting at a time on a paused frame with `F8`.
-
-| Recipe | Change from defaults | Why |
-| --- | --- | --- |
-| **Balanced** (start here) | Nothing: Strength 0.35, Anchor, Hot spot 0.60, Graded spot 0.50, Look-ahead Off | Tested across night streets, lamp-lit rooms, windows, faces and headlights. |
-| **Brisk action** (fast cuts, explosions, muzzle flashes, headlights) | Look-ahead 4–6, Hot spot 0.70–0.80 | Look-ahead fades a new light’s dimming in before it appears; tune Hot spot until headlights stop blooming. Add the same audio delay on the receiver. |
-| **Bright punchy picture** | Strength 0.20–0.25, Highlight start 0.50, Graded spot 0.25 | Keeps the picture bright and touches only the very top of the highlights. Hot spot still catches the worst lights. |
-| **Maximum highlight detail** (big windows, snow at night, white curtains) | Strength 0.50–0.70, keep Anchor | Anchor keeps large bright areas at their peak, so the projector does not push back, and more Strength can be used without harming curtain or snow detail. |
-| **Dark, moody films** (night interiors, lamps, candles) | Hot spot 0.70, Hot spot below 4.0 % | Gives lamps and candles a little more room without dimming the scene. |
-| **Faces and white clothing clip** | Graded spot 0.75–1.00, Color protect stays 0.90 | Gently lowers lit cheeks, foreheads and shirts in dark scenes, with no dark patch. |
-| **Neon / tail lights / coloured lights clip** | Color protect 0.60–0.75 | Lets saturated lights be pulled down more. |
-| **Titles, credits, space scenes look dimmed** | Text skip 15 % | Skips the fix on more text-on-black frames. |
-| **No audio delay possible** | Look-ahead Off or 2 | Off means no picture delay; a new light may show a brief jump before its dimming catches up. |
-| **Slow PC** | Grid Normal, Look-ahead 2 | Less measuring work per frame. |
-
-### ClipGuard tips
-
-- **Too much Strength adds clipping.** The projector’s laser dimming reacts to
-  the picture it receives: dim the highlights a lot and it raises its own gain,
-  pushing them back into clipping. Use the lowest Strength that works and let
-  Hot spot and Anchor do the rest.
-- **Small areas can be dimmed hard; large ones cannot.** Small lights barely
-  move the projector’s gain, which is why Hot spot can dim them strongly.
-  Large bright areas drive the gain, which is why Anchor leaves their peak
-  alone.
-- **Test on dark scenes.** Above Fix starts the fix does nothing, so daylight
-  scenes look the same. Use night scenes with a lamp, a window or a white shirt.
-- **One setting at a time, paused, flipping F8.** Judge the result on the
-  projector, not in a screenshot: the screenshot shows the signal, but the
-  clipping happens inside the projector.
-
 ### Display Target
 
 These describe **your TV/projector**, not the content. Set once per display.
@@ -354,8 +256,8 @@ These describe **your TV/projector**, not the content. Set once per display.
 | Setting | Range | Default | What it does |
 | --- | --- | --- | --- |
 | **Windows HDR** | `Do not change` / `On (fullscreen)` / `On` / `On/off (fullscreen)` / `On/off` | Do not change | Whether this app toggles Windows' own HDR mode for the display when playing. Leave `Do not change` if you set HDR/SDR mode in Windows yourself; the others switch it for you at playback start (the "on/off" pair restores your previous state afterwards). |
-| **SDR BT.2020 (projector)** | On/Off | Off | Declares SDR output as BT.2020 and converts SDR to BT2020, so a projector that honours SDR BT.2020 switches to its wide-gamut mode. Many displays ignore the SDR flag and show a colour shift — leave it **Off** unless the projector is known to honour it. HDR/DV titles always use **Display gamut**, not this row. |
-| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | The display's **HDR/wide-gamut** mode. **SDR titles run BT.709 by default** (see the row above for the explicit projector flag); this row applies to HDR10/HLG/DV titles. Set **BT.2020** for a projector or TV in its BT.2020 mode and **DCI-P3** for one in P3 mode; otherwise leave Auto. The app derives the HDR conversion, the declaration and WCG from it. For SDR, leave the display in its 709/sRGB mode unless the SDR BT.2020 flag is On; for HDR, in its wide mode. The full chain and verification are in **10-bit output — end-to-end setup** below. |
+| **SDR BT.2020 (projector)** | On/Off | Off | **Direct SDR only.** On: convert SDR from BT.709 to BT.2020 and send it as SDR P2020; leave the display in its real SDR BT.2020 mode. Off: SDR stays BT.709; the display must be in 709/sRGB for SDR. Leave it Off unless the display is known to have an SDR BT2020 mode — many displays ignore the flag and show a colour shift. It has no effect on HDR/DV. |
+| **Display gamut** | `Auto (BT.709)` / `BT.2020` / `DCI-P3` | Auto (BT.709) | **HDR10/HLG/DV only.** The gamut the tone mapper writes for the display: `Auto` for 709/sRGB, `BT.2020` for a real SDR BT2020 mode, `DCI-P3` only for a forced P3 mode. It does not affect direct SDR. The app derives the HDR conversion and WCG from it. Full setup is in **10-bit output — end-to-end setup** below. |
 | **Display transfer** | `Follow source` / `Gamma 2.2` / `Gamma 2.4` / `BT.1886` / `sRGB` / `Gamma 2.0` | `Follow source` | The transfer the renderer encodes for at the last display stage. **Follow source** passes SDR through and keeps the house 2.2 for HDR→SDR — the 2.1.0 look. An explicit value converts SDR as well and re-encodes HDR→SDR: BT.709 video is decoded as the BT.1886 reference and re-encoded to the target; sRGB and plain-gamma sources use their own curve. Set it to the projector's calibrated transfer; the **SOURCE TRANSFER (EOTF)** row in the status panel is what the source is actually sending. A calibration LUT must be authored for the same transfer. |
 | **Static nits (max)** | 10…1000 | 1000 | Your display's measured peak white in SDR mode. This is the destination the tone curve maps **to** — get it wrong and everything is wrong. Measured 174 on a projector? Type nothing: drag near it, then mouse-wheel over the bar, 1 nit per click. A display brighter than 1000 nits: edit `hdr.maxNits` in the INI directly (the engine accepts up to 10000). |
 | **Display black (nits)** | 0…2 | 0 | Your display's measured black level. At 0 the curve assumes a perfect black and spends shadow detail on range you can't actually see. A projector measuring 0.3: enter 0.3 — the destination range starts there and the shadow band is redistributed into what the panel shows. For OLED (true black), 0 is right. |
@@ -523,10 +425,10 @@ spot.
 | **Post NLS Y-Crop** | 0 – 45 % | 0 % | Same for the screen height. This is the "remove the remaining letterbox" dial: with Bars removed below 100, raise Y-Crop until the top/bottom bars disappear, then stop; raising it further cuts into the picture (the first thing to go is heads). On a scope screen the same logic applies to X-Crop and pillarbox bars. |
 | **Fill mode** | Auto / Stretch / Crop / Off | Auto | How the picture is fitted. **Stretch** warps the outer band (keeps everything, distorts the sides; fine while small) and never crops, so it never caps. **Crop** is the zero-distortion baseline: it grows with **Bars removed** and covers with geometry, so at 0 % it is the plain fit rect and at 100 % it fills by cropping. **Auto** does the same but spends **Max distortion** on warping before cropping. **Off** letterboxes at the picture's own aspect. |
 | **Lock band** | On/Off | Off | Keeps the black band found at the start of a title for the whole title. Bars are a property of the title, but some titles switch aspect mid-film (IMAX sequences); with this On the picture keeps one shape instead of changing size. Off lets the detector re-find the band after it holds for a few seconds. **Ignored while the Aspect rule is On** — the rule needs the live band. |
-| **Aspect rule** | On/Off | Off | Switches the NLS values above per **detected picture aspect**, so one tuning can serve a library of mixed formats. Three windows: **Native** (aspect ≤ Native max) bypasses NLS entirely — bars 0, crops 0 — so 16:9 and IMAX sections are never zoomed; **Small bars** (between the bounds) uses **Small-bar removal** with crops 0; **Scope** (≥ Scope min) uses your own Bars removed / Post-NLS crops as tuned. The detected aspect is shown in the Info panel, and the switch needs about a second of stable detection (a dark frame holds the current window). |
-| **Native max aspect** | 1.50 – 2.10 | 1.90 | Upper bound of the Native window. Content at or below it runs with NLS bypassed. Covers 16:9 (1.78) and 1.85 flat. |
+| **Aspect rule** | On/Off | Off | Switches the NLS values above per **detected picture aspect**, so one tuning can serve a library of mixed formats. Three windows: **Native** (aspect ≤ Native max, plus a 0.05 detection tolerance) bypasses NLS entirely — bars 0, crops 0 — so 16:9 and IMAX sections are never zoomed; **Small bars** (between the bounds) uses **Small-bar removal** with crops 0; **Scope** (≥ Scope min) uses your own Bars removed / Post-NLS crops as tuned. The detected aspect is shown in the Info panel, and the switch needs about a second of stable detection (a dark frame holds the current window). |
+| **Native max aspect** | 1.50 – 2.10 | 1.90 | Upper bound of the Native window. Content at or below it, plus a **0.05 detection tolerance**, runs with NLS bypassed. The tolerance exists because a real 1.90 IMAX section is detected slightly high (1.92–1.94): with the default 1.90, everything up to 1.95 stays Native, while a 2.00 film still gets Small bars. Covers 16:9 (1.78), 1.85 flat and 1.90 IMAX. |
 | **Scope min aspect** | 2.00 – 2.60 | 2.15 | Lower bound of the Scope window. Content at or above it uses your own NLS tuning. 2.00:1 falls between the bounds and gets the Small-bars window. |
-| **Small-bar removal** | 0 – 100 % | 100 % | Bars removed for content inside the Small-bars window (e.g. 2.00:1). Post-NLS crops are forced to 0 there, so a crop tuned for scope cannot over-zoom a narrower film. |
+| **Small-bar removal** | 0 – 100 % | 100 % | Bars removed for content inside the Small-bars window — above Native max + 0.05 and below Scope min (e.g. 2.00:1). Post-NLS crops are forced to 0 there, so a crop tuned for scope cannot over-zoom a narrower film. |
 
 Nothing asks for your screen size. The app is full-screen, so the window it covers **is** the screen: every aspect decision (fill, crop, NLS) reads that surface. Press **Info** to see it as the `DISPLAY` row — resolution and aspect, e.g. `3840 × 2160 · 1.78:1`. Physical size (a 185" screen, a projector, an anamorphic lens) does not enter the maths; only the aspect of that surface does. With the rail up, the picture is the same screen-aspect composition scaled into the visible area, so settings can be judged without waiting for the chrome to hide.
 
@@ -554,21 +456,47 @@ While tuning, the Info panel's **Warp H / V**, **Geom crop** and **Post-NLS X/Y-
 display. Unplugged uses it when it is there, but cannot create it — so there is
 no 10-bit switch in the app. Describe the display once, and 10-bit follows.
 
+### The simple rule
+
+Look at your projector/TV menu and answer one question: **does it have an SDR
+BT.2020 mode?**
+
+| Your display | Set the display to | Display gamut | SDR BT.2020 |
+| --- | --- | --- | --- |
+| **Yes** — a real SDR BT.2020 mode (e.g. Hisense PX4-Pro, JVC, Panasonic “SDR/BT.2020”) | its **SDR BT.2020** mode | **BT.2020** | **On** |
+| **No** — it only uses BT2020 for HDR, or has no wide gamut | **709/sRGB** for SDR | **Auto (BT.709)** | **Off** |
+
+If you are not sure, use the **No** row. That is the safe default: SDR content
+is BT.709, and it will look correct on a 709 display. You can change it later.
+
+> **“BT2020” on the projector must mean its SDR BT2020 colour space — not its
+> HDR mode.** Unplugged is sending SDR after tone mapping. The projector’s
+> HDR/PQ mode is the wrong mode for this signal.
+
+On a projector that is left in BT2020 for SDR but does not honour the SDR
+BT.2020 signal, **SDR looks washed out**. Put it in 709/sRGB for SDR — or use
+the **Yes** row if it really has an SDR BT2020 mode.
+
+This table is for **HDR/DV tone-mapped to SDR** and **direct SDR**. If you use
+HDR passthrough instead, the display must be in its HDR mode; the SDR BT.2020
+row does not apply.
+
 ### Set it up in three steps
 
 1. **Set the display itself.** In the display's own menu, choose its gamut and
    turn on its high-bandwidth input:
-   - **BT.2020** for a projector or TV you want in wide-gamut mode;
-   - **sRGB / BT.709** for a standard display;
+   - **SDR BT.2020** if it has one (the “Yes” row above);
+   - **sRGB / BT.709** otherwise;
    - **DCI-P3** only if it has a real P3 mode.
    On a projector or TV enable **HDMI Enhanced / Deep Color / HDMI 2.0** (the
    name varies by brand); on a monitor use its **10-bit / Deep Color** input
    mode if it has one.
 
-2. **Tell Unplugged what you set.** HDR → Display Target → **Display gamut**:
-   `Auto (BT.709)` for sRGB/709, `BT.2020` for a BT2020 display, `DCI-P3` for a
-   P3 display. This is the only output setting; the app derives the conversion,
-   the SDR BT.2020 declaration and WCG from it.
+2. **Tell Unplugged what you set.** HDR → Display Target:
+   - **Display gamut:** `Auto (BT.709)` for sRGB/709, `BT.2020` for an SDR
+     BT2020 mode, `DCI-P3` for a P3 display. This controls **HDR/DV** output.
+   - **SDR BT.2020 (projector):** `On` only for the “Yes” row above; otherwise
+     `Off`. This controls **direct SDR** output.
 
 3. **Leave the GPU driver on Default** (NVIDIA Control Panel → Change
    resolution → "Use default color settings"). If you prefer to choose,
@@ -607,9 +535,83 @@ that honours it.
 10-bit swap chain whenever the display link reports 10 bpc — including for
 8-bit SDR sources. If the link is 8-bit, no app setting can change it.
 
+### The two rows are independent
+
+This is the part that is easy to get wrong:
+
+- **Display gamut** applies only to **HDR10/HLG/DV** titles. It chooses the
+  gamut the tone mapper writes.
+- **SDR BT.2020 (projector)** applies only to **direct SDR** titles. It chooses
+  whether SDR is converted to BT.2020 and declared as SDR P2020.
+- Neither row affects the other content class. `Display gamut` is ignored for
+  direct SDR; `SDR BT.2020` is ignored for HDR/DV.
+
+| Content | Display gamut | SDR BT.2020 | What Unplugged sends | Display must be in |
+| --- | --- | --- | --- | --- |
+| HDR/DV, tone-mapped | Auto (BT.709) | ignored | BT.709 SDR, WCG off | 709/sRGB SDR |
+| HDR/DV, tone-mapped | BT.2020 | ignored | BT.2020 **SDR**, P2020, WCG on | BT.2020 **SDR** (not HDR/PQ) |
+| HDR/DV, tone-mapped | DCI-P3 | ignored | P3 SDR, no P3 flag, WCG off | P3 SDR (force it) |
+| Direct SDR | ignored | Off | BT.709 SDR, WCG off | 709/sRGB SDR |
+| Direct SDR | ignored | On | BT.2020 SDR, P2020, WCG on | SDR BT.2020 / BT2020 SDR |
+
+**BT.2020 here means SDR BT.2020, not HDR.** A tone-mapped HDR title leaves
+Unplugged as an SDR signal (gamma 2.2, P2020 primaries). The display's PQ/HDR
+mode must be **off** for this path; if the display only offers BT2020 inside its
+HDR mode, it cannot show the tone-mapped BT2020 SDR correctly. Use 709 SDR
+(`Display gamut = Auto`) instead, or use HDR passthrough rather than tone
+mapping.
+
+A mismatch is visible in one of two ways:
+
+- **Washed out / desaturated:** Unplugged is sending BT.709, but the display is
+  in its wide (BT.2020/P3) mode.
+- **Over-saturated / punchy:** Unplugged is sending BT.2020/P3, but the display
+  is in its 709/sRGB mode.
+
+WCG is not the display's gamut switch. It is Windows' wide-colour composition
+state, which Unplugged owns for the session. The display's own menu still has to
+be in the matching mode; the app cannot change it.
+
+### If the picture looks wrong
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| **Washed out / grey** | Unplugged is sending BT.709; the display is in BT2020/P3 | Put the display in 709/sRGB — or, if it has a real SDR BT2020 mode, use that mode and set **SDR BT.2020 = On**. |
+| **Punchy / over-saturated** | Unplugged is sending BT2020/P3; the display is in 709 | Put the display in BT2020/P3, or set **Display gamut = Auto** and **SDR BT.2020 = Off**. |
+| **HDR wrong, SDR fine** | `Display gamut` does not match the mode used for HDR | Set it to the display’s SDR mode. If the display only has BT2020 in HDR mode, use **Auto (BT.709)** for tone-mapped HDR. |
+| **SDR wrong, HDR fine** | `SDR BT.2020` does not match the display’s SDR mode | On for a real SDR BT2020 mode; Off and display 709/sRGB otherwise. |
+
+**DCI-P3 displays:** use `Display gamut = DCI-P3` for HDR/DV and force the
+display to P3. Windows has no SDR P3 signal, so **SDR stays BT.709**; put the
+display in 709/sRGB for SDR. There is no SDR P3 row.
+
 The old **10-bit SDR output**, **SDR signal: BT.2020** and **Output gamut**
 rows are internal now (visible only with grade internals); they are
 consequences of this choice, not questions of their own.
+
+### Upgrading from 2.2.0
+
+Public 2.2.0 had only **Output gamut**. It is migrated once, on first launch of
+2.3.0:
+
+| 2.2.0 Output gamut | 2.3.0 Display gamut | 2.3.0 SDR BT.2020 | Why |
+| --- | --- | --- | --- |
+| Follow source (default) | **BT.2020** | **Off** | HDR/DV kept BT.2020; SDR was a 709 pass-through |
+| BT.709 | **Auto (BT.709)** | **Off** | unchanged |
+| BT.2020 | **BT.2020** | **On** | 2.2.0 converted SDR to BT.2020 too; keeping it On preserves the SDR picture |
+| DCI-P3 | **DCI-P3** | **Off** | HDR/DV keeps P3; there is no SDR P3 signal, so SDR moves to 709 |
+
+The 10-bit SDR output and SDR BT.2020 rows did **not** exist in public 2.2.0,
+so there is nothing to migrate for 10-bit. 10-bit is automatic in 2.3.0.
+
+An explicit 2.2.0 Output gamut = BT.2020 now carries **SDR BT.2020 = On** so
+the upgrade does not shift SDR colours. Follow source and BT.709 keep SDR at
+709. If the display ignores the SDR BT.2020 flag, turn the row Off (and put the
+display in 709/sRGB for SDR). DCI-P3 has no SDR signal; use SDR BT.2020 only if
+the display has that mode.
+
+Output gamut was a device row in 2.2.0, so presets do not contain it and do not
+need rewriting. Display gamut is a device row in 2.3.0 as well.
 
 ### If it is not 10-bit
 
@@ -739,21 +741,56 @@ Otherwise leave both on their defaults (Auto (BT.709) / Follow source) and let
 the projector's own 709/2.2 mode do the work.
 
 **Black bars on a 2.39 or 2.00 film?** Set **Aspect rule = On**: native
-pictures (up to **Native max aspect**) are never zoomed, 1.90–2.15 titles lose
-their bars via **Small-bar removal**, and 2.15+ uses **Scope bar removal**
-(default 100 %). IMAX/16:9 sections inside a scope film are never zoomed.
+pictures (up to **Native max aspect**, plus its 0.05 detection tolerance) are
+never zoomed, 1.95–2.15 titles lose their bars via **Small-bar removal**, and
+2.15+ uses **Scope bar removal** (default 100 %). IMAX/16:9 sections inside a
+scope film are never zoomed.
+
+**One tuning for 16:9, 2.00 and scope.** This is the field-tested profile:
+
+| Row | Value |
+| --- | --- |
+| **Enable NLS** | On |
+| **Aspect rule** | On |
+| **Native max aspect** | 1.90 (accepts up to 1.95) |
+| **Scope min aspect** | 2.15 |
+| **Small-bar removal** | 100 % |
+| **Scope bar removal** | 50 % |
+| **Post NLS X-Crop / Y-Crop** | 0 % |
+| **Axis** | Horizontal |
+| **Lock band** | Off |
+
+Result: 16:9/IMAX is untouched, a 2.00 film removes its small bars with no
+crop, and scope uses 50 % bar removal. If your scope tuning also uses a crop,
+put it in **Post NLS X/Y-Crop**; the aspect rule keeps it out of the narrower
+windows.
+
+Minimal preset file (`%LOCALAPPDATA%\Unplugged\presets\2.00 + Scope 50.ini`):
+
+```ini
+[preset]
+name=2.00 + Scope 50
+
+[values]
+geo.nls=1
+geo.nlsAspectRule=1
+geo.nlsAspectNativeMax=1.9
+geo.nlsAspectScopeMin=2.15
+geo.nlsAspectWideBars=100
+geo.nlsAspectScopeBars=50
+geo.nlsBars=50
+geo.nlsCropX=0
+geo.nlsCropY=0
+geo.nlsLock=0
+geo.nlsAxis=1
+geo.nlsFillMode=0
+```
 
 **Washed-out colours on a projector with SDR BT.2020?** Its gamut on Auto is
 treating the SDR signal as BT.709 — many displays only auto-switch for HDR.
 Force the projector's gamut to **BT2020** and set Unplugged **Display gamut =
 BT.2020**; SDR titles are converted to 2020, so colours are correct. See
 **10-bit output — end-to-end setup** for the depth side.
-
-**Highlights clip only in dark scenes (laser dimming).** Enable **ClipGuard**,
-keep **Fix starts** at 10 % and **Full effect** at 3 %, and start with
-**Strength** 0.35 and **Fix shape** Anchor; add **Hot spot** for small lights
-and **Graded spot** for lit faces. Turn on **OSD** while tuning so you can see
-the measured picture brightness and the applied fix. It works with the grade Off.
 
 ---
 
@@ -769,8 +806,6 @@ the measured picture brightness and the applied fix. It works with the grade Off
 - **Display transfer** applies to SDR as well as HDR→SDR. A calibration LUT is
   only valid for the transfer it was authored at; re-fit it if you change the
   transfer.
-- **ClipGuard** is an SDR-output feature; HDR passthrough is untouched. Its
-  look-ahead is forced Off in live capture.
 - **The display link depth is not settable by the app.** A forced 8 bpc in the
   GPU driver is a hard cap: WCG still enables, but the link stays 8-bit
   (`8-bit RGB WCG`) and no application can override it. See **10-bit output —

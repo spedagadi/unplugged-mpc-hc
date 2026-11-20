@@ -8,8 +8,12 @@ media library with real titles.
 
 - HDR → Tone Mapping → **Aspect rule = On**
 - Native max aspect **1.90**, Scope min aspect **2.15**, Small-bar removal **100 %**
+- Native has a **0.05 detection tolerance**: 1.90 IMAX detected at 1.92–1.94 is
+  still Native; Small bars starts above 1.95. A 2.00 film still gets Small bars.
 - Scope window = the user's own Bars removed / Post-NLS X-Y crop tuning
 - **Lock band Off** (the rule forces it off and logs if it was On)
+- Test on a **16:9 canvas** (3840×2160), not the 3440×1440 ultrawide: on 21:9,
+  IMAX is pillarboxed and the geometry being judged is different.
 
 ## Material (from `library.db`, 23 titles)
 
@@ -58,7 +62,9 @@ restore afterwards.
 
 ## Pass criteria
 
-- No title is over-zoomed: Native sections are never stretched or cropped.
-- A 2.00 title gets the Small-bars window (100 %, crops 0), not the scope crop.
+- No title is over-zoomed: Native sections, including a 1.90 IMAX section that
+  detects at 1.92–1.94, are never stretched or cropped.
+- A 2.00 title gets the Small-bars window (100 %, crops 0), not the scope crop,
+  and is not swallowed by the Native tolerance.
 - The scope tuning applies only to scope content.
 - Switches are clean (one per cut, no flicker), and the log records each one.

@@ -177,7 +177,7 @@ vp: no saved input -> default '<url>' (ports=N)`, a picture, and`active_input_ur
 
 **Requested / specified.** Aspect-aware NLS: three windows (Native <=1.90, Small bars 1.90-2.15, Scope >=2.15) with per-window Bars removed and Post-NLS X/Y crops; live classification with a 0.05 deadband and a 3-poll confirmation; when the rule is On, `Lock band` is ignored and greyed. Spec in [HANDOVER-2.3.0.md](HANDOVER-2.3.0.md) section 3.11.
 
-**Status.** **Implemented** in the 2.3.0 tree (2026-11-18). Verified in the log: `nlsaspect: 2.462 -> scope (bars=100 crop=0/0)`, the small-bars window by moving the bound to 2.60, and release on close. Native (<=1.90) awaits a 16:9/IMAX source; see HANDOVER §3.11.
+**Status.** **Implemented and field-verified 2026-11-20** on a 3840×2160 canvas. IMAX sections detected at 1.926/1.941 now log `native (bars=0 crop=0/0)` and alternate cleanly with `2.415 -> scope`; native 1.200/1.333/1.501/1.79/1.85 stay native; a forced Small-bars window logs `2.370 -> small-bars (bars=100 crop=0/0)`; Lock band is forced off. Native now accepts a 0.05 tolerance above the 1.90 row so real 1.90 IMAX detection is not misread as Small-bars. A real 2.00:1 title is not in the library, so Small-bars was proven with the documented threshold-move fallback; see HANDOVER §3.11 and NLS-ASPECT-TEST-PLAN.md.
 
 ## Feature requests
 

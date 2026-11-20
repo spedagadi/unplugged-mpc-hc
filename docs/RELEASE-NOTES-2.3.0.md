@@ -10,10 +10,12 @@ supports it.
 
 | Download | Size | SHA-256 |
 | --- | --- | --- |
-| `Unplugged-setup-2.3.0.exe` | 125,593,005 bytes | `46417B21F643CE5F9008B656FB6881F5DF8EC44BD0F20E057F79738EABACA9D8` |
+| `Unplugged-setup-2.3.0.exe` | 125,595,846 bytes | `87E3EF6E13B96AD2EA60D5481F7B3FFBBA7BC711BA5D2453EB36C86BC2B4FB70` |
+| `UnpluggedRenderer-setup-2.3.0.exe` | 41,804,451 bytes | `D43244D161E7DDC9D7C15565A3A310666CD72D9CDD0F5F2F63A3580E75526B94` |
 
-The standalone renderer remains at its 2.2.1 release; no new renderer package is
-published with 2.3.0.
+The standalone renderer package now matches the 2.3.0 renderer and exposes the
+display-calibration 3D LUT and SDR BT.2020 controls directly on its property
+pages.
 
 ## New Features
 
@@ -49,7 +51,10 @@ published with 2.3.0.
   `%LOCALAPPDATA%\ClipGuard`.
 - **Standalone renderer.** The HDR property page no longer carries ClipGuard
   controls; ClipGuard has its own application. The renderer still applies the
-  stored ClipGuard block.
+  stored ClipGuard block. The page now loads a **3D calibration LUT** directly
+  (file picker, Off/Gamma only/Greyscale/Full 3D, persisted across graph
+  restarts) and exposes **SDR BT.2020 (projector)** beside Output gamut. The
+  10-bit note states that output depth follows the display link.
 
 ## Playback and interface
 
@@ -131,6 +136,11 @@ published with 2.3.0.
 - **Scope content loses its bars again.** The aspect rule's scope window has its
   own **Scope bar removal** value (default 100 %); tuning edits are kept in any
   window and preset autosave no longer overwrites them with a forced value.
+- **IMAX 1.90 sections stay native.** A real 1.90 IMAX section is detected
+  slightly high (1.92–1.94 on Spider-Man: Far From Home), which put it in the
+  Small-bars window and zoomed it. Native now accepts a 0.05 tolerance above
+  Native max, and entering Native from Scope no longer requires crossing below
+  the bound. A 2.00 film still gets Small bars.
 - **8-bit SDR gets a 10-bit chain on a 10-bit display.** The renderer's Auto
   texture format now follows the display link as well as the source depth.
 - **WCG is journaled in both directions.** A display state the app forces for
@@ -143,6 +153,36 @@ published with 2.3.0.
 Install over 2.2.0. The media library, presets and calibration data are
 preserved. The renderer still maps an existing 2.2.0 DBLE configuration into its
 ClipGuard block (engine-side); the shell has no ClipGuard UI or hotkeys.
+
+### From 2.2.0: gamut, WCG and 10-bit
+
+Public 2.2.0 had **one** control in this area: **Output gamut**. The 10-bit SDR
+output and SDR BT.2020 rows are new in 2.3.0, so a 2.2.0 profile cannot contain
+them. The upgrade maps the old control by what it actually did:
+
+| 2.2.0 Output gamut | 2.3.0 result | Picture |
+| --- | --- | --- |
+| Follow source (default) | Display gamut = **BT.2020**, SDR BT.2020 **Off** | HDR/DV keeps BT.2020; SDR stays BT.709 (what Follow source did) |
+| BT.709 | Display gamut = **Auto (BT.709)**, SDR BT.2020 **Off** | HDR/DV and SDR stay BT.709 |
+| BT.2020 | Display gamut = **BT.2020**, SDR BT.2020 **On** | HDR/DV keeps BT.2020; SDR stays BT.2020 (2.2.0 converted SDR too) |
+| DCI-P3 | Display gamut = **DCI-P3**, SDR BT.2020 **Off** | HDR/DV keeps P3; SDR moves to BT.709 (no SDR P3 signal exists) |
+
+- **SDR stays BT.709 unless the old profile explicitly used BT.2020.** An
+  explicit 2.2.0 Output gamut = BT.2020 is preserved as **SDR BT.2020 = On**,
+  because 2.2.0 converted SDR to BT.2020 as well; turning it Off would shift the
+  SDR picture on upgrade. Follow source and BT.709 profiles keep SDR at BT.709,
+  which is what they did before. DCI-P3 has no SDR signal in Windows, so its SDR
+  path becomes BT.709; if the display has a real SDR BT.2020 mode, enable **SDR
+  BT.2020 (projector)** manually. Leave it Off otherwise.
+- **10-bit has nothing to migrate.** 2.2.0 had no 10-bit SDR control. 2.3.0
+  uses a 10-bit texture and swap chain automatically when the display link
+  reports 10 bpc. The old **10-bit SDR output** row is internal and ignored.
+- **WCG is app-owned.** There was no 2.2.0 WCG setting. Unplugged turns WCG on
+  or off for the session according to Display gamut / SDR BT.2020, journals the
+  change, and restores the user's original state on exit or after a crash.
+- **Presets need no rewrite.** Output gamut was a device row in 2.2.0, so no
+  preset contains it. Display gamut is a device row in 2.3.0 too; it is not
+  copied into a preset.
 
 ## Known Limitations
 

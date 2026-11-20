@@ -884,9 +884,11 @@ static Row g_rows[]={
  // bitsPerColorChannel=10 in plain SDR, i.e. R10G10B10A2 with no OS wide-gamut
  // mapping on top. Off by default: it changes display state (a brief resync).
  {2,0,L"DISPLAY TARGET",L"10-bit SDR output","hdr.tenBitSdr",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,1,0},
- // TEST: declare the SDR swap chain as BT.2020 SDR so the display may switch to
- // its wide-gamut mode. Requires Output gamut = BT.2020 (the image must actually
- // be BT.2020) and forces WCG on for the session. Effect is display-dependent.
+ // Direct-SDR wide gamut: convert 709 SDR to BT.2020, declare the swap chain as
+ // SDR P2020 and force WCG on. This row ALONE drives the SDR path; Display gamut
+ // is ignored while SDR is playing (ApplyContentGamutPolicy). Set Display gamut
+ // = BT.2020 as well only so HDR/DV titles use the same display mode. Effect is
+ // display-dependent: many displays ignore the SDR P2020 flag and show a shift.
  {2,0,L"DISPLAY TARGET",L"SDR BT.2020 (projector)","out.sdrBt2020",0,0,0,0,false,0,nullptr,0,nullptr,{},0,0,0,0},
  {2,2,L"DISPLAY TARGET",L"Display transfer","hdr.transfer",0,0,0,0,false,0,kDisplayTransfer,6,kDisplayTransferV,{},0,0,0,0},
  {2,1,L"DISPLAY TARGET",L"Static nits (max)","hdr.maxNits",10,1000,1,1000,false,0,nullptr,0,nullptr,{},0,0,0,0},
@@ -1155,13 +1157,22 @@ static void NlsAspectPoll(){
   const float nativeMax=t1?(float)t1->val:1.90f;
   const float scopeMin=t2?(float)t2->val:2.15f;
   const float a=g_nlsPicAspect;
-  // Hysteresis: keep the window until the aspect clears its bound by 0.05, so
-  // detector jitter of a row cannot bounce the picture.
+  // A real IMAX 1.90 section is detected slightly high (1.926/1.941 measured on
+  // Spider-Man). Native therefore accepts a 0.05 tolerance ABOVE the row value:
+  // <=1.95 with the default 1.90. Without this, an IMAX cut from scope landed in
+  // Small bars and was zoomed - exactly the sammy1001 failure. Small bars starts
+  // above that tolerance, so a 2.00 film still gets its 100% bar removal.
+  //
+  // Hysteresis is directional but must never require crossing back BELOW the
+  // native bound to enter native: entering from scope/small uses +tolerance,
+  // leaving native needs >nativeMax+tolerance. This keeps 1.90/1.94 IMAX native
+  // from every direction while still damping jitter around the boundary.
+  const float kTol=0.05f;
   int win;
-  if(g_nlsAspectWin==0) win = a > nativeMax+0.05f ? (a >= scopeMin+0.05f ? 2 : 1) : 0;
-  else if(g_nlsAspectWin==2) win = a < scopeMin-0.05f ? (a <= nativeMax-0.05f ? 0 : 1) : 2;
-  else if(g_nlsAspectWin==1) win = a > scopeMin+0.05f ? 2 : (a < nativeMax-0.05f ? 0 : 1);
-  else win = a <= nativeMax ? 0 : (a >= scopeMin ? 2 : 1);
+  if(g_nlsAspectWin==0) win = a > nativeMax+kTol ? (a >= scopeMin+kTol ? 2 : 1) : 0;
+  else if(g_nlsAspectWin==2) win = a < scopeMin-kTol ? (a <= nativeMax+kTol ? 0 : 1) : 2;
+  else if(g_nlsAspectWin==1) win = a > scopeMin+kTol ? 2 : (a <= nativeMax+kTol ? 0 : 1);
+  else win = a <= nativeMax+kTol ? 0 : (a >= scopeMin ? 2 : 1);
   if(win==g_nlsAspectWin){ g_nlsAspectCand=-1; g_nlsAspectStable=0; return; }
   if(win!=g_nlsAspectCand){ g_nlsAspectCand=win; g_nlsAspectStable=0; }
   if(++g_nlsAspectStable<3) return;
@@ -1841,7 +1852,8 @@ static bool PresetDeviceRow(const Row& r){
   return !strcmp(r.key,"hdr.sdrNits") || !strcmp(r.key,"hdr.maxNits") ||
          !strcmp(r.key,"hdr.blackNits") || !strcmp(r.key,"hdr.convertToSdr") ||
          !strcmp(r.key,"hdr.displayGamut") ||
-         !strcmp(r.key,"hdr.outputGamut") || !strcmp(r.key,"hdr.transfer") ||
+         !strcmp(r.key,"hdr.outputGamut") || !strcmp(r.key,"hdr.tenBitSdr") ||
+         !strcmp(r.key,"hdr.transfer") ||
          !strcmp(r.key,"hdr.cgEnabled") || !strcmp(r.key,"hdr.cgStrength") ||
          !strcmp(r.key,"hdr.cgShape") || !strcmp(r.key,"hdr.cgFixStart") ||
          !strcmp(r.key,"hdr.cgFull") || !strcmp(r.key,"hdr.cgKnee") ||
@@ -2050,27 +2062,61 @@ static void MigrateNlsDefaults(){
   g_ini["ui.nlsDefaultsV"]="2"; g_iniDirty=true; SaveIni("nls defaults v2");
   LogF("nls defaults: fill limit 105->200 migrated (%s)",changed?"changed":"no stored default");
 }
-// One-time migration to the unified Display gamut axis. The old build asked two
-// separate questions (Output gamut + SDR BT.2020) plus a 10-bit row; derive the
-// one answer from them: BT.2020 if the output gamut was 2020 or the SDR BT.2020
-// signal was on, DCI-P3 if the output gamut was P3, BT.709 otherwise (including
-// the old "Follow source" default, which no longer exists in the user UI).
-static void MigrateDisplayGamut(){
+// One-time migration to the unified Display gamut axis.
+//
+// Public 2.2.0 had ONE of these controls: Output gamut (engine 0 = BT.709,
+// 1 = BT.2020, 2 = DCI-P3, 3 = Follow source, the default). The 10-bit SDR and
+// SDR BT.2020 rows are 2.3.0-only, so a public 2.2.0 profile cannot contain
+// them; their safe 2.3.0 values are Off and 10-bit automatic.
+//
+// Preserve the HDR/DV picture, which is what Output gamut drove:
+//   0 BT.709        -> Auto (BT.709)
+//   1 BT.2020       -> BT.2020
+//   2 DCI-P3        -> DCI-P3
+//   3 Follow source -> BT.2020. On HDR/DV, Follow source kept the source's
+//                      BT.2020 primaries (shader slot 2 value 3); mapping it to
+//                      Auto would silently convert those titles to BT.709 and
+//                      desaturate every existing wide-gamut install.
+// On SDR, Follow source was a pass-through (BT.709), and 2.3.0 keeps SDR at
+// BT.709 unless the explicit projector flag is on, so this mapping preserves
+// both halves of the old default. Old Output gamut = BT.2020/P3 did declare SDR
+// wide gamut in 2.2.0; 2.3.0 deliberately stops doing that because displays
+// that ignore the SDR flag showed a colour shift. That is the documented 2.3.0
+// fix, not a migration accident: the user can opt back in with SDR BT.2020
+// (projector).
+//
+// A FRESH install has no old Output gamut to preserve; it must start at
+// Auto (BT.709), not inherit the row's compiled Follow-source default.
+static void MigrateDisplayGamut(bool hadIni){
   if(!IniGet("ui.displayGamutV").empty()) return;
   Row* dg=FindRow("hdr.displayGamut");
   Row* og=FindRow("hdr.outputGamut");
   Row* sb=FindRow("out.sdrBt2020");
   const int ogv=og?(og->optvals?og->optvals[og->opt]:og->opt):0;
-  const bool sdrB=sb&&sb->on;
+  const bool sdrB=!hadIni?false:(sb&&sb->on);
   int g=0;
-  if(ogv==1||sdrB) g=1; else if(ogv==2) g=2;
+  if(hadIni){
+    // 1 = BT.2020 and 3 = Follow source both end in BT.2020 HDR/DV output.
+    if(ogv==1||ogv==3||sdrB) g=1; else if(ogv==2) g=2;
+  }
+  // Preserve an explicit 2.2.0 SDR wide-gamut choice. Output gamut = BT.2020
+  // also converted SDR in 2.2.0 (GamutTransferActive saw 709 source != 2020
+  // output), so leaving the new SDR row Off would change the SDR picture on
+  // upgrade - the exact colour offset migration must not introduce. Follow
+  // source did NOT convert SDR (it was a pass-through), so it stays Off. DCI-P3
+  // has no SDR signal declaration in Windows; it is left Off and documented.
+  bool sdrPreserved=sdrB;
+  if(hadIni&&ogv==1&&sb&&!sb->on){
+    sb->on=true; SaveRowIni(*sb); sdrPreserved=true;
+  }
   if(dg){
     dg->opt=(g==1?1:(g==2?2:0));   // kDisplayGamutV index == engine value
     SaveRowIni(*dg);
     ApplyDisplayGamut(false); }
   g_ini["ui.displayGamutV"]="1"; g_iniDirty=true;
   SaveIni("display gamut migration");
-  LogF("displaygamut: migrated outGamut=%d sdrBt2020=%d -> %d",ogv,(int)sdrB,g);
+  LogF("displaygamut: %s outGamut=%d sdrBt2020=%d (kept=%d) -> %d",
+       hadIni?"migrated":"fresh install",ogv,(int)sdrB,(int)sdrPreserved,g);
 }
 // 2.2.0 users tuned DBLE compensation; 2.3.0 replaces it with ClipGuard. Their
 // previous state must survive the upgrade, not silently switch the feature off.
@@ -7273,12 +7319,17 @@ static void TenBitRestore(){
     g_ini["ui.wcgRestore"]="False"; g_iniDirty=true; SaveIni("10-bit restore");
     LogF("displaygamut: WCG restore-on %s",SetWcgState(true)?"ok":"FAILED"); } }
 static void TenBitAdvise(const OutDepth& od){
-  static bool advised=false;   // once per launch: a nag at every title is worse than none
+  static bool advised=false;   // once per launch, log only
   if(advised) return; advised=true;
-  g_toastText=L"10-bit output requested: link is 8-bit";
-  g_toastReason=GpuAdvice(GpuName());
-  LogF("displaygamut: link is %d-bit; advice shown",od.bits);
-  if(AfxGetMainWnd()) AfxGetMainWnd()->PostMessageW(WM_APP+51,0,0); }
+  // NEVER toast here. With NVIDIA "Default", the driver has already negotiated
+  // the best link the active mode can carry; it is not waiting for the user to
+  // choose 10 bpc. This box proves it: 3440x1440@100Hz over HDMI on the RTX
+  // 4060 stays 8-bit for as long as you poll it, while the same panel on DP (or
+  // at a lower refresh) has room for 10-bit. The app cannot raise the link from
+  // inside the process, so "set 10 bpc in NVIDIA Control Panel" is unactionable
+  // at that mode and reads as an Unplugged defect. OUTPUT DEPTH in the Info
+  // panel states the link; the guide explains the mode/connection limit.
+  LogF("10bit: wide-gamut link is %d-bit (driver-negotiated; no notice)",od.bits); }
 static void TenBitBegin(){
   Row* dg=FindRow("hdr.displayGamut");
   const int gamut=dg?(dg->optvals?dg->optvals[dg->opt]:dg->opt):0;
@@ -7324,7 +7375,13 @@ static void TenBitBegin(){
     else LogF("displaygamut: WCG off FAILED (SET_WCG_STATE unavailable)"); }
   od=CurrentOutputDepth();
   if(od.ok&&od.bits>=10) LogF("displaygamut: link %d-bit %S %S - target state",od.bits,EncName(od.enc),ColModeName(od.mode));
-  else if(od.ok) TenBitAdvise(od); }
+  else if(od.ok) {
+    // A plain SDR 8-bit link is NORMAL: the user did not request 10-bit and
+    // NVIDIA's Default SDR mode often is 8-bit. Nagging here sent users to the
+    // driver settings for nothing (reported 2026-11-20). The advice belongs to
+    // the wide-gamut path above, where 10-bit is actually the target.
+    LogF("displaygamut: SDR link %d-bit %S - normal SDR link, no action needed",
+         od.bits,EncName(od.enc)); } }
 static void ApplyDisplayGamut(bool push){
   Row* dg=FindRow("hdr.displayGamut"); if(!dg) return;
   const int g=dg->optvals?dg->optvals[dg->opt]:dg->opt;
@@ -10880,7 +10937,7 @@ public:
     TenBitCrashRecovery();   // WCG off is journaled because a crash cannot restore it
     MigrateDbleToClipGuard(hadCgKey); // 2.2 DBLE profile -> ClipGuard, preserving state
     MigrateNlsDefaults();   // 105 -> 200 for the pre-2026-11-01 default only
-    MigrateDisplayGamut();  // old Output gamut + SDR BT.2020 -> one Display gamut axis
+    MigrateDisplayGamut(hadIni);  // 2.2.0 Output gamut -> one Display gamut axis
     // ClipGuard's overlay and diagnostic view are SESSION state. A saved
     // "Overlay: On" must not reappear over the picture at the next launch: the
     // user brings it up with F7, and it starts Off every time. The view is reset

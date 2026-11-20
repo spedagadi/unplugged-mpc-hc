@@ -80,8 +80,9 @@ over the tuning.
 **Fix.** App `ee6058df5`: **Scope bar removal** row (default 100 %), edits
 captured in every window with the window override immediately re-imposed, preset
 autosave writes the tuning instead of the forced value, release restores it.
-**Evidence.** `nlsaspect: 2.415 -> scope (bars=100 …)`, `1.941 -> small-bars`,
-back to scope; reporter confirmed "it locks well".
+**Evidence.** `nlsaspect: 2.415 -> scope (bars=100 …)`, back to scope; reporter
+confirmed "it locks well". The later IMAX-native fix (2026-11-20) changes the
+1.941 cut to `native (bars=0 crop=0/0)`; see UR-0007 and HANDOVER §3.11.
 
 ### UR-0018 — 10-bit and projector gamut were a five-way guessing game (Sateesh)
 **Symptom.** The projector on **Auto** presented an 8-bit PC EDID and treated

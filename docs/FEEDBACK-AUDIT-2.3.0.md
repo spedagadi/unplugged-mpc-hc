@@ -13,7 +13,7 @@ row says otherwise; it does not mean packaged.
 
 | Reporter | Item | Status |
 | --- | --- | --- |
-| sammy1001 | NLS: scope tuning over-zooms 2.00 films / IMAX / native 16:9; lock band no help | **Fixed in tree** — aspect-aware NLS (UR-0007, HANDOVER §3.11). Field test on IMAX cuts pending |
+| sammy1001 | NLS: scope tuning over-zooms 2.00 films / IMAX / native 16:9; lock band no help | **Fixed + field-verified 2026-11-20** — IMAX 1.926/1.941 native, native 16:9, 2.00 Small-bars window, Lock band forced off (UR-0007, HANDOVER §3.11) |
 | sammy1001 | Projector pseudo-FFTB: faint glowing rectangle outline in fully dark scenes | **Fixed (pre-2.3.0, carried through)** — DWM light ring removed; ask reporter to retest on 2.3.0 |
 | VHT | Subtitles (internal or external) in MKV show nothing | **Internal fixed + user-verified** (UR-0005). **External: not supported** — feature gap |
 | va_lemon | Publish metrics (aspect, refresh, colour space) via webhook / Home Assistant | **Open — feature** |
@@ -22,18 +22,22 @@ row says otherwise; it does not mean packaged.
 | va_lemon | Output downscaled 3840x2160 → 3831x2152 | **Fixed + field-verified** (UR-0004) |
 | va_lemon | No frame-rate matching (everything at 60 Hz) | **Fixed in tree** — §3.5 + VP leg. Projector test pending |
 | legeirk | 921 NAS titles all UNAVAILABLE | **Fixed + field-verified** (UR-0001) |
-| ramiroalvaro.ra | Automatic per-aspect bar removal/zoom (16:9 none, 2.00 100 %, scope 50 %) | **Fixed in tree** — same aspect rule (UR-0007) |
+| ramiroalvaro.ra | Automatic per-aspect bar removal/zoom (16:9 none, 2.00 100 %, scope 50 %) | **Fixed + profile-verified 2026-11-20** — Native 0/0, Small 100/0, Scope 50/0 (UR-0007) |
 
 ## Details
 
-### sammy1001 — NLS (fixed, field test pending)
+### sammy1001 — NLS (fixed, field-verified 2026-11-20)
 The three cases are exactly the aspect rule:
-Native ≤ 1.90 (NLS bypass), Small bars 1.90–2.15 (100 %, crops 0), Scope ≥ 2.15
-(the user's own tuning, e.g. 50 % + crop). Verified in the dev logs:
-`nlsaspect: 2.415 -> scope`, `1.846 -> native`, `2.462 -> small-bars` (threshold
-moved), `released - user values restored`. **Remaining:** a real IMAX cut
-(Dune / Catching Fire) and the ultrawide note from the user — see
-[NLS-ASPECT-TEST-PLAN.md](NLS-ASPECT-TEST-PLAN.md).
+Native ≤ 1.95 effective (1.90 row + 0.05 detection tolerance; NLS bypass),
+Small bars 1.95–2.15 (100 %, crops 0), Scope ≥ 2.15 (the user's own tuning,
+e.g. 50 % + crop). Verified on a **3840×2160** canvas:
+`nlsaspect: 1.941 -> native (bars=0 crop=0/0)` on the Spider-Man IMAX sections,
+alternating cleanly with `2.415 -> scope`; native 1.200/1.333/1.501/1.79/1.85;
+forced Small-bars `2.370 -> small-bars (bars=100 crop=0/0)` with Scope min
+temporarily 2.60; `nlsaspect: Lock band forced off`; and
+`released - user values restored`. A real 2.00:1 title is not in the library,
+so the Small-bars window was proven with the documented threshold-move fallback.
+See [NLS-ASPECT-TEST-PLAN.md](NLS-ASPECT-TEST-PLAN.md).
 
 ### sammy1001 — FFTB rectangle (fixed; retest on 2.3.0)
 The "faint glowing rectangle outline" is the **1-2px light ring and rounded
@@ -93,15 +97,18 @@ has no 23–30 Hz modes; the projector test is the outstanding item.
 UR-0001: `PathRoot()` keeps the separator after a UNC share so
 `GetDriveTypeW` returns `DRIVE_REMOTE`. User-verified.
 
-### ramiroalvaro.ra — per-aspect zoom (fixed)
-Same feature as sammy1001. His exact profile is expressible: Native (none),
-Small bars 100 % with crops 0, Scope 50 % from his own tuning. Field test
-pending.
+### ramiroalvaro.ra — per-aspect zoom (fixed, profile-verified 2026-11-20)
+Same feature as sammy1001. His exact profile is verified: Native (none, bars=0
+crop=0/0), Small bars 100 % with crops 0, Scope 50 % from his own tuning. With
+Scope tuned to 50 %, a scope title logged `2.415 -> scope (bars=50 crop=0/0)`,
+a native title stayed `1.333 -> native (bars=0 crop=0/0)`, and a forced
+Small-bars test gave `2.370 -> small-bars (bars=100 crop=0/0)` — the 50 % scope
+tuning did not leak into either narrower window. Lock band was forced off.
 
 ## Recommendation for the 2.3.0 release
 
-Ship as fixed/verified: aspect rule (field test), subtitles internal, 4K canvas,
-refresh matching, NAS fix, wiped-profile VP (UR-0006).
+Ship as fixed/verified: aspect rule (field-verified 2026-11-20), subtitles
+internal, 4K canvas, refresh matching, NAS fix, wiped-profile VP (UR-0006).
 
 Do **not** claim in the release notes: external subtitles, webhook, keyboard
 sliders, static-nits change. Keep the FFTB rectangle as a known open issue

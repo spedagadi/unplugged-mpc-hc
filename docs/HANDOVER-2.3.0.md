@@ -553,15 +553,22 @@ Design:
 
 | Window | Detected aspect | NLS | Bars removed | Post-NLS X/Y crop |
 | --- | --- | --- | --- | --- |
-| Native | ≤ 1.90 | bypass | 0 | 0 |
-| Small bars | 1.90 – 2.15 | on | 100 | 0 |
+| Native | ≤ 1.95 (1.90 row + 0.05 tolerance) | bypass | 0 | 0 |
+| Small bars | 1.95 – 2.15 | on | 100 | 0 |
 | Scope | ≥ 2.15 | on | user's scope tuning | user's |
 
+- The 0.05 tolerance above the Native row is deliberate: a real 1.90 IMAX
+  section detects at 1.92–1.94 (measured 1.926/1.941 on Spider-Man: Far From
+  Home). Without it the IMAX cut landed in Small bars and was zoomed. Entering
+  Native uses `aspect <= Native max + 0.05`; leaving needs
+  `> Native max + 0.05`. A 2.00 film stays in Small bars.
 - Engine publishes `nls.picAspect` (detected active picture aspect) and
   `nls.conf` (confidence) in the status JSON.
 - Classification in `PollStats`: ±0.05 deadband around each bound, switch only
   after 3 consecutive polls (~0.9 s) with confidence ≥ 0.8; an uncertain read
-  holds the current window.
+  holds the current window. The native tolerance is applied on entry from any
+  window, so a 1.90/1.94 IMAX section is native from scope, small-bars and
+  start-up alike.
 - On a window change the app overrides the NLS rows engine-only (`g_rowNoSave`,
   like the SDR policy) and restores the user's values on stop / rule Off.
 - When the rule is On, **Lock band is ignored and greyed** (it would stop the
