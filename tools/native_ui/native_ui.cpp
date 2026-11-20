@@ -725,6 +725,11 @@ static void PushRow(const Row& r);
 // alone: the user's HDR preference must survive an SDR title.
 static bool g_rowNoSave=false;
 static bool g_inDisplayGamut=false;
+// The user's subtitle choice for this session (-1 = Off, else engine track
+// index). The engine auto-selects the first subtitle stream on some graphs;
+// the status sync must not turn that into a user choice.
+static int g_subWant=-1;
+static ULONGLONG g_subSent=0;
 // Display refresh matching: the helpers live with the ffprobe block far below,
 // but the settings rail and the play paths above them call into it.
 static bool MatchRefreshOn();
@@ -1604,6 +1609,8 @@ static void PushRow(const Row& r){ char b[192];
   // the derived pushes cannot re-enter this block.
   if(!strcmp(r.key,"hdr.displayGamut")&&!g_inDisplayGamut&&!g_applyingPreset){
     g_inDisplayGamut=true; ApplyDisplayGamut(true); g_inDisplayGamut=false; }
+  // Remember a user subtitle choice so an engine default cannot overwrite it.
+  if(!strcmp(r.key,"pb.subTrack")) g_subWant=r.opt-r.noff;
   // Aspect-rule scope tuning (UR-0007). Every user edit of the live Bars/crop
   // rows and of the dedicated Scope row lands here; forced pushes carry
   // g_rowNoSave and must not touch the tuning. This lives in PushRow, not in
@@ -3017,7 +3024,13 @@ public:
     // HTPC (no pointer) had no way in: KeyFocused() was false so the frame never
     // even offered keys to the rail (UR feedback, 2026-11-19).
     if(vk==VK_TAB){ MoveFocus((::GetKeyState(VK_SHIFT)&0x8000)?-1:1); return true; }
-    if(!m_kb)return false;
+    // The settings pane is an overlay the user deliberately opened. The first
+    // Left/Right arms keyboard mode here instead of falling through to the
+    // player, where it stepped the paused picture (user report 2026-11-20:
+    // switching Display gamut made the video appear to play).
+    if(!m_kb){
+      if(vk==VK_LEFT||vk==VK_RIGHT){ m_kb=true; if(m_focus<0) m_focus=0; }
+      else return false; }
     // TYPE-TO-EDIT: with a SLIDER focused, a digit, '.' or '-' opens the
     // exact-value card pre-filled; F2 does the same without a character. Both
     // are context-only — with no slider focused these keys fall through to the
@@ -3034,20 +3047,33 @@ public:
     // full-chrome toggle 1.3.0 users press, Down is volume during playback.
     switch(vk){
     case VK_RETURN: {
-      // Enter on a focused slider opens the exact-value card; on anything else
-      // it is not the rail's key and falls through to global handling.
+      // Enter activates the focused row: a slider opens the exact-value card,
+      // an option row cycles. It must NEVER fall through to the player, where
+      // Enter is play/pause (user report 2026-11-20).
       const int idx=FocusActual();
-      if(idx>=0&&idx<NROWS&&g_rows[idx].kind==1&&!RowLocked(g_rows[idx])){ OpenNumEntry(idx); return true; }
-      return false; }
+      if(idx>=0&&idx<NROWS){
+        Row& r=g_rows[idx];
+        if(RowLocked(r)) return true;
+        if(r.kind==1){ OpenNumEntry(idx); return true; }
+        if(r.kind==2&&r.nopts>1){
+          r.opt=(r.opt+1)%r.nopts;
+          LogF("rail option '%S' -> %d",r.label?r.label:L"?",r.opt);
+          PushRow(r); ShowHelp(m_focus); Invalidate(FALSE); return true; } }
+      return true; }
     case VK_LEFT: case VK_RIGHT: {
       const int d=(vk==VK_RIGHT)?1:-1;
-      // A focused SLIDER adjusts its VALUE by one step — this is the fine
-      // control the 0.001-granularity rows need without a mouse. Everything
-      // else keeps the old behaviour (Left/Right walk the focus ring).
       const int idx=FocusActual();
-      if(idx>=0&&idx<NROWS&&g_rows[idx].kind==1&&!RowLocked(g_rows[idx])){
-        LogF("rail step '%S' vk=%02X",g_rows[idx].label,vk);
-        StepRow(g_rows[idx],d); return true; }
+      if(idx>=0&&idx<NROWS){
+        Row& r=g_rows[idx];
+        // A focused OPTION row cycles; a focused SLIDER steps (the fine control
+        // the 0.001 rows need). Everything else walks the focus ring.
+        if(!RowLocked(r)&&r.kind==2&&r.nopts>1){
+          r.opt=(r.opt + (d>0?1:r.nopts-1))%r.nopts;
+          LogF("rail option '%S' -> %d",r.label?r.label:L"?",r.opt);
+          PushRow(r); ShowHelp(m_focus); Invalidate(FALSE); return true; }
+        if(!RowLocked(r)&&r.kind==1){
+          LogF("rail step '%S' vk=%02X",g_rows[idx].label,vk);
+          StepRow(g_rows[idx],d); return true; } }
       LogF("rail focus move vk=%02X (row=%d kind=%d locked=%d)",vk,idx,
            idx>=0&&idx<NROWS?g_rows[idx].kind:-1, idx>=0&&idx<NROWS?RowLocked(g_rows[idx]):0);
       MoveFocus(d); return true; } }
@@ -11425,11 +11451,14 @@ public:
           g_rows[i].opt=(act<0)?0:act; changed=true; } }
       if(g_rows[i].kind==7){ std::vector<std::wstring> nm; int act=-1; ParseTracks(st,"subtitle",nm,act);
         for(auto&w:nm)w=CleanName(w,false); nm.insert(nm.begin(),L"Off");
-        // act=-1 is the engine's current:-1 (Off); Off is index 0 after the
-        // insert, a real track is act+1. Also re-sync opt when the engine's
-        // selection changes without the names changing ??? the row must never
-        // claim a track the engine does not have enabled.
-        const int want=(act<0)?0:act+1;
+        // The row reflects the USER's choice, not a stream the engine enabled by
+        // itself on graph open. If the engine differs, re-assert the choice (at
+        // most once a second; the status arrives about three times a second).
+        const int want=(g_subWant<0)?0:g_subWant+1;
+        if(g_subWant!=act && GetTickCount64()-g_subSent>1000){
+          char cb[64]; snprintf(cb,sizeof(cb),"{\"a\":\"subtrack\",\"index\":%d}",g_subWant);
+          const int rc=Cmd(cb); g_subSent=GetTickCount64();
+          LogF("subtrack enforce %d (engine %d) rc=%d",g_subWant,act,rc); }
         if(nm.size()>1&&(nm!=g_rows[i].names||g_rows[i].opt!=want)){
           g_rows[i].names=nm; g_rows[i].opt=want; changed=true; } } }
     if(changed){ m_settings.Invalidate(FALSE);
